@@ -1,0 +1,67 @@
+/* Guided operation: a readable instruction lane, never floating over the scene. */
+.training-panel { position: absolute; inset: 0 auto 72px 0; z-index: 26; width: 360px; padding: 24px; overflow: auto; background: #edf0e8; color: #173c32; border-right: 1px solid #acbfb2; scrollbar-width: thin; scrollbar-color: #809c8d #edf0e8; }
+.training-panel h1 { font-size: 22px; line-height: 1.4; margin: 0 0 8px; }
+.training-panel h2 { font-size: 18px; line-height: 1.45; margin: 0 0 10px; }
+.training-panel p { font-size: 14px; line-height: 1.7; margin: 8px 0 16px; color: #3e5e51; }
+.training-panel > section, .training-panel > details { border-top: 1px solid #b5c7ba; padding-top: 22px; margin-top: 24px; }
+.training-panel button { display: inline-flex; align-items: center; justify-content: center; gap: 8px; min-height: 44px; margin: 4px 4px 4px 0; padding: 10px 14px; border: 1px solid #466e5b; border-radius: 6px; color: #f3f5ef; background: #21513f; font-size: 14px; line-height: 1.45; cursor: pointer; }
+.training-panel button:hover:not(:disabled) { background: #123e2c; }
+.training-panel button:disabled { opacity: .58; cursor: not-allowed; }
+.training-panel button:focus-visible { outline: 2px solid #805000; outline-offset: 2px; }
+.training-panel label { display: grid; gap: 8px; font-size: 14px; line-height: 1.6; }
+.training-panel select { width: 100%; min-width: 0; font-size: 16px; background: #fff; color: #173c32; border: 1px solid #7e9989; padding: 10px; border-radius: 6px; }
+.training-panel .task-workflow { background: transparent; border: 0; padding: 8px 0; margin: 0; box-shadow: none; --exercise-line: #9bb0a2; --exercise-muted: #3e5e51; }
+.training-panel .task-workflow p, .training-panel .task-workflow small, .training-panel .task-workflow__steps li { color: #3e5e51; }
+.training-panel .task-workflow__steps li[data-done='true'] { color: #1b5535; }
+.training-panel .task-workflow > header strong { color: #805000; }
+.training-panel .task-workflow > header strong[data-overdue='true'] { color: #9a3822; }
+.training-panel .task-workflow__blockers { color: #843923; }
+.training-panel .training-link { background: transparent; color: #24513e; }
+.training-flow { display: flex; gap: 10px; padding: 8px 0 12px; font-size: 13px; font-weight: 600; }
+.training-floor { display: grid; grid-template-columns: 30px 1fr 35px; align-items: center; min-height: 52px; border-bottom: 1px solid #a8bcae; gap: 8px; }
+.training-floor > div { display: flex; flex-wrap: wrap; }
+.training-panel .training-floor button { width: 25px; height: 32px; min-height: 32px; padding: 0; margin: 0; background: transparent; border: 0; }
+.training-floor button span { width: 12px; height: 12px; border-radius: 50%; background: #4d8970; border: 1px solid #174f38; }
+.training-floor button[data-vulnerable='true'] span { background: #c88b20; border-color: #79501e; }
+.training-floor button[data-stage='stairs'] span { background: #387ba0; border-color: #1e516f; }
+.training-floor small { font-size: 12px; }
+.training-panel .training-key { font-size: 12px; }
+.training-panel summary { cursor: pointer; min-height: 44px; font-weight: 600; }
+.training-feedback small { display: block; margin-top: 10px; color: #456150; font-size: 12px; line-height: 1.65; }
+.training-omissions { padding-left: 20px; font-size: 14px; line-height: 1.8; color: #793a25; }
+.training-mode .director-stage > .twin-stage { position: relative; left: 360px; width: calc(100% - 360px); }
+.training-mode .director-metrics, .training-mode .director-intelligence, .training-mode .spatial-tool-rack, .training-mode .director-cue { display: none; }
+.training-mode .director-stage .twin-views { top: 12px; left: 16px; bottom: auto; translate: 0; width: auto; }
+.training-mode .director-stage .twin-object-nav { top: 74px; left: 16px; right: auto; width: min(230px, calc(100% - 112px)); }
+.training-mode .director-stage .twin-inspector { left: 16px; max-width: min(300px, calc(100% - 112px)); }
+.training-mode .director-rail { top: 18px; }
+.training-mode .director-stage .twin-stage__legend { left: 16px; }
+.training-mode .director-stage .director-drawer { max-width: calc(100% - 464px); }
+.training-mode .director-actions > button:first-child { color: #dcebdd; border-color: #678678; }
+@media (max-width: 900px) {
+  .training-panel { width: 310px; padding: 20px; }
+  .training-mode .director-stage > .twin-stage { left: 310px; width: calc(100% - 310px); }
+  .training-mode .director-stage .director-drawer { max-width: calc(100% - 414px); }
+}
+@media (min-width: 701px) and (max-width: 1280px) {
+  .training-mode .director-stage .twin-views { display: grid; grid-template-columns: 1fr 1fr; width: 280px; max-width: calc(100% - 112px); height: auto; padding: 4px; gap: 4px; }
+  .training-mode .director-stage .twin-object-nav { top: 120px; }
+}
+@media (max-width: 700px) {
+  .training-mode { overflow: auto; }
+  .training-mode .director-topbar { position: sticky; top: 0; z-index: 40; }
+  .training-mode .director-stage { min-height: 1050px; height: auto; overflow: visible; padding-bottom: 72px; display: flex; flex-direction: column; }
+  .training-mode .director-stage > .twin-stage { position: relative; left: 0; width: 100%; height: 400px; min-height: 400px; order: 0; }
+  .training-panel { position: relative; inset: auto; width: 100%; padding: 24px; order: 1; overflow: visible; }
+  .training-mode .director-stage .director-rail { position: absolute; top: 325px; bottom: auto; }
+  .training-mode .director-stage .director-drawer, .training-mode .director-stage .scene-control-popover, .training-mode .director-stage .participant-invite { position: fixed; inset: 80px 10px 90px; width: auto; max-width: none; z-index: 45; }
+  .training-mode .director-stage .twin-inspector { top: 142px; bottom: auto; max-height: 170px; }
+  .training-mode .exercise-timeline { position: fixed; z-index: 40; }
+  .training-mode .director-stage .twin-views { display: grid; grid-template-columns: 1fr 1fr; height: auto; right: 12px; gap: 4px; padding: 4px; }
+  .training-mode .director-stage .twin-object-nav { top: 120px; }
+  .training-mode .director-stage .twin-views button { font-size: 12px; }
+  .training-mode .director-brand strong { max-width: 10ch; }
+  .training-mode .director-actions { gap: 4px; flex-shrink: 0; }
+  .training-mode .director-actions > button:first-child { width: 66px; min-width: 66px; max-width: 66px; font-size: 12px; padding: 4px; white-space: normal; }
+}
+@media (prefers-reduced-motion: reduce) { .training-panel * { scroll-behavior: auto; transition: none; } }

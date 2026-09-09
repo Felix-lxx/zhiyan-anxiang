@@ -1,0 +1,121 @@
+/* The immersive shell owns positioning. Legacy exercise styles only own content. */
+.operations-center--immersive {
+  --scene-left: 12px;
+  --scene-bottom: calc(var(--director-timeline) + 12px);
+  --scene-rail-space: 92px;
+}
+.operations-center--immersive.coach-open { --scene-left: calc(var(--director-coach) + 24px); }
+.operations-center--immersive > .director-topbar { height: var(--director-topbar); min-height: var(--director-topbar); box-sizing: border-box; }
+.operations-center--immersive > .director-stage { overflow: hidden; min-height: 0; }
+.operations-center--immersive > .director-stage > .twin-stage,
+.operations-center--immersive > .director-stage .twin-stage__viewport { height: 100%; min-height: 0; }
+
+.operations-center--immersive > .director-stage .twin-views {
+  inset: 12px auto auto var(--scene-left);
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  width: 224px;
+  max-width: none;
+  padding: 4px;
+  gap: 4px;
+  translate: none;
+}
+.operations-center--immersive > .director-stage .twin-views button {
+  width: auto; min-width: 0; min-height: 44px; padding: 0 4px;
+  justify-content: center; font-size: 12px; gap: 4px;
+}
+.operations-center--immersive > .director-stage .director-metrics {
+  inset: 12px auto auto calc(var(--scene-left) + 248px);
+  width: min(420px, calc(100% - var(--scene-left) - 560px));
+  translate: none;
+}
+.operations-center--immersive > .director-stage .director-metrics > div { min-width: 0; flex: 1; padding: 9px; }
+.operations-center--immersive > .director-stage .director-metrics > button { min-width: 0; max-width: 132px; flex: 1.4; padding: 8px; }
+.operations-center--immersive > .director-stage .twin-object-nav {
+  inset: 12px var(--scene-rail-space) auto auto;
+  display: grid; width: 216px;
+}
+.operations-center--immersive > .director-stage .twin-object-nav select { width: 100%; min-width: 0; min-height: 44px; }
+.operations-center--immersive > .director-stage .spatial-tool-rack {
+  inset: 124px auto auto var(--scene-left); width: 224px;
+  max-height: calc(100% - 252px - var(--scene-bottom)); overflow: auto; overscroll-behavior: contain;
+}
+.operations-center--immersive > .director-stage .indoor-toggle { inset: auto auto calc(var(--scene-bottom) + 72px) var(--scene-left); }
+.operations-center--immersive > .director-stage .twin-stage__legend {
+  inset: auto auto var(--scene-bottom) var(--scene-left); width: 224px; max-width: 224px;
+  max-height: 60px; overflow: auto; padding: 8px; gap: 6px;
+}
+.operations-center--immersive > .director-stage .director-intelligence { display: none; }
+.operations-center--immersive > .director-stage .twin-inspector,
+.operations-center--immersive > .director-stage .resident-pov-hud {
+  inset: auto var(--scene-rail-space) var(--scene-bottom) auto;
+  display: block; width: min(360px, calc(100% - var(--scene-left) - 340px));
+  max-width: none; max-height: calc(100% - 180px); overflow: auto; overscroll-behavior: contain;
+}
+.operations-center--immersive > .director-stage .training-panel {
+  position: absolute; inset: 12px auto var(--scene-bottom) 12px; width: var(--director-coach);
+  min-height: 0; overflow: auto; overscroll-behavior: contain; scrollbar-gutter: stable;
+}
+.operations-center--immersive > .director-stage .director-drawer,
+.operations-center--immersive > .director-stage .scene-assistant {
+  top: 12px; right: var(--scene-rail-space); bottom: var(--scene-bottom);
+  max-height: none;
+}
+.operations-center--immersive > .director-stage .director-drawer { width: min(420px, calc(100% - 116px)); }
+.operations-center--immersive > .director-stage .director-drawer > header { flex: 0 0 auto; }
+.operations-center--immersive > .director-stage .experience-guide { inset: 12px auto var(--scene-bottom) 12px; overflow: auto; }
+
+/* Auxiliary tools temporarily replace, rather than cover, the coach and scene controls.
+   CSS hiding preserves form inputs and the selected residents when the panel closes. */
+.operations-center--immersive.detail-panel-open > .director-stage :is(
+  .training-panel, .director-metrics, .twin-views, .twin-object-nav,
+  .spatial-tool-rack, .indoor-toggle, .twin-stage__legend, .twin-inspector, .resident-pov-hud
+) { display: none; }
+
+@media (min-width: 761px) and (max-width: 1279px) {
+  .operations-center--immersive.coach-open > .director-stage :is(
+    .director-metrics, .twin-views, .twin-object-nav, .spatial-tool-rack, .indoor-toggle, .twin-stage__legend
+  ) { display: none; }
+}
+@media (min-width: 761px) and (max-width: 1000px) {
+  .operations-center--immersive > .director-stage .director-metrics { width: calc(100% - 364px); }
+  .operations-center--immersive > .director-stage .twin-object-nav { top: 90px; }
+}
+@media (max-width: 760px) {
+  .operations-center--immersive { --scene-bottom: calc(var(--director-timeline) + 88px); --scene-left: 8px; }
+  .operations-center--immersive > .director-stage .director-rail { position: fixed; inset: auto 8px calc(var(--director-timeline) + 12px); width: auto; height: 64px; max-height: none; }
+  .operations-center--immersive > .director-stage .director-metrics { inset: 8px 8px auto; width: auto; }
+  .operations-center--immersive > .director-stage .twin-views { inset: 80px auto auto 8px; grid-template-columns: repeat(4, 44px); width: auto; }
+  .operations-center--immersive > .director-stage .twin-views button { font-size: 0; }
+  .operations-center--immersive > .director-stage .twin-views button svg { width: 18px; height: 18px; }
+  .operations-center--immersive > .director-stage .spatial-tool-rack { inset: 140px auto auto 8px; width: auto; max-height: none; overflow: visible; }
+  .operations-center--immersive > .director-stage .twin-object-nav,
+  .operations-center--immersive > .director-stage .twin-stage__legend { display: none; }
+  .operations-center--immersive > .director-stage .indoor-toggle { inset: auto auto calc(var(--scene-bottom) + 8px) 8px; }
+  .operations-center--immersive > .director-stage .twin-inspector,
+  .operations-center--immersive > .director-stage .resident-pov-hud {
+    inset: auto 8px var(--scene-bottom) 8px; width: auto; max-height: calc(100% - 350px);
+  }
+  .operations-center--immersive > .director-stage:has(.twin-inspector, .resident-pov-hud) .indoor-toggle { display: none; }
+  .operations-center--immersive > .director-stage .training-panel,
+  .operations-center--immersive > .director-stage .director-drawer,
+  .operations-center--immersive > .director-stage .experience-guide {
+    position: fixed; inset: calc(var(--director-topbar) + 8px) 8px var(--scene-bottom); width: auto;
+    min-height: 0; max-height: none; overflow: auto;
+  }
+  .operations-center--immersive.coach-open > .director-stage :is(
+    .director-metrics, .twin-views, .twin-object-nav, .spatial-tool-rack, .indoor-toggle, .twin-inspector, .resident-pov-hud
+  ) { display: none; }
+  .operations-center--immersive.space-preview-open > .director-stage :is(.training-panel, .director-metrics, .twin-views, .spatial-tool-rack, .indoor-toggle, .resident-pov-hud) { display: none; }
+  body:has(.operations-center--immersive) .spatial-action-preview { position: fixed; inset: auto 8px 156px; width: auto; max-height: calc(100dvh - 232px); overflow: auto; }
+  /* The assistant is a full-viewport modal on phones; do not leave active chrome underneath. */
+  .operations-center--immersive.assistant-open > .director-topbar,
+  .operations-center--immersive.assistant-open > .director-stage :is(.director-rail, .exercise-timeline) { visibility: hidden; }
+  .operations-center--immersive > .director-stage .scene-assistant { position: fixed; right: 8px; left: 8px; width: auto; }
+  .operations-center--immersive > .director-stage .resident-command-inline { bottom: var(--scene-bottom); }
+}
+@media (max-height: 620px) and (min-width: 761px) {
+  .operations-center--immersive > .director-stage .twin-stage__legend { display: none; }
+  .operations-center--immersive > .director-stage .indoor-toggle { bottom: var(--scene-bottom); }
+  .operations-center--immersive > .director-stage .spatial-tool-rack { max-height: calc(100% - 190px - var(--scene-bottom)); }
+}

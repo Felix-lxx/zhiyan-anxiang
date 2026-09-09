@@ -1,0 +1,264 @@
+/* Immersive director shell: scene first, controls revealed by task and context. */
+.operations-center--immersive {
+  --director-topbar: 68px;
+  --director-timeline: 72px;
+  --director-coach: 340px;
+  --director-dock: 68px;
+  --director-surface: color-mix(in srgb, var(--surface-panel) 96%, transparent);
+  --director-surface-soft: color-mix(in srgb, var(--surface-raised) 90%, transparent);
+  --director-line: var(--border-default);
+  --director-text: var(--text-primary);
+  --director-muted: var(--text-secondary);
+  --director-accent: var(--status-success);
+  --director-danger: var(--status-danger);
+}
+
+.director-topbar {
+  height: var(--director-topbar);
+  grid-template-columns: minmax(250px, 1fr) auto minmax(250px, 1fr);
+  padding-inline: 14px;
+  background: #071a17;
+}
+
+.director-brand > button,
+.director-actions button {
+  min-width: 44px;
+  min-height: 44px;
+  border-radius: 10px;
+}
+
+.director-brand > button { width: 44px; height: 44px; border-radius: 12px; }
+.director-brand strong { font-size: 15px; }
+.director-brand span { color: #9bb9b1; font-size: 12px; }
+.director-status { justify-self: center; min-height: 36px; padding: 0 12px; border: 1px solid #31554e; border-radius: 10px; background: #0d2823; }
+.director-status > span { color: #b7cac5; font-size: 12px; }
+.director-status > strong { font-size: 19px; }
+.director-actions { justify-self: end; }
+.director-actions button { padding-inline: 13px; border-color: #3e675f; border-radius: 10px; font-size: 13px; }
+.director-actions__primary { border-color: #5db9ab; background: #246b61; color: #fff; }
+.director-actions__end { border-color: #7c4b43; color: #ffd0c8; }
+.director-actions__coach[aria-pressed="true"] { border-color: #70cfc1; background: #173f39; color: #fff; }
+
+.director-stage { height: calc(100dvh - var(--director-topbar)); }
+.director-stage > .twin-stage { inset: 0; width: 100%; }
+
+/* Map-editor hierarchy: the canvas leads; controls keep a quiet, solid surface. */
+.director-stage .spatial-tool-rack { border-radius: 8px; box-shadow: none; }
+.director-stage .spatial-tool-rack > button { border-radius: 6px; }
+.director-stage .spatial-guidance { background: transparent; border-radius: 0; padding-inline: 0; }
+.director-stage .twin-views { border-radius: 8px; }
+.director-stage .twin-object-nav { padding: 8px; border-radius: 8px; background: #192f2b; color: #d4e2dc; }
+.director-stage .indoor-toggle { min-height: 44px; bottom: calc(var(--director-timeline) + 92px); }
+.coach-open .director-stage .indoor-toggle { left: calc(var(--director-coach) + 24px); }
+
+.director-metrics {
+  top: 12px;
+  border-radius: 12px;
+  background: rgba(5, 24, 21, .92);
+}
+.director-metrics div { min-width: 94px; padding: 9px 12px; }
+.director-metrics span { font-size: 11px; }
+.director-metrics strong { font-size: 17px; }
+
+.director-rail {
+  top: 76px;
+  right: 12px;
+  width: var(--director-dock);
+  gap: 6px;
+  padding: 6px;
+  border: 1px solid var(--director-line);
+  border-radius: 14px;
+  background: rgba(5, 24, 21, .92);
+  box-shadow: -10px 18px 36px rgba(0, 0, 0, .26);
+}
+.director-rail button {
+  display: grid;
+  grid-template-rows: 22px auto;
+  place-items: center;
+  width: 54px;
+  height: 54px;
+  gap: 2px;
+  border: 0;
+  border-radius: 9px;
+  background: transparent;
+}
+.director-rail button > span { display: block; color: inherit; font-size: 11px; line-height: 1; }
+.director-rail button > b,
+.director-rail button > em { position: absolute; top: 3px; right: 4px; display: grid; place-items: center; min-width: 18px; height: 18px; padding: 0 4px; border: 2px solid #09201c; border-radius: 9px; background: #dd654f; color: #fff; font-size: 10px; font-style: normal; font-weight: 700; font-variant-numeric: tabular-nums; }
+.director-rail button > em { background: #2b675f; color: #dff9f3; }
+
+.director-drawer {
+  top: 12px;
+  right: 92px;
+  bottom: calc(var(--director-timeline) + 12px);
+  width: min(420px, calc(100% - 116px));
+  border-color: var(--director-line);
+  border-radius: 14px;
+  background: var(--director-surface);
+}
+.director-drawer > header { min-height: 70px; padding: 14px 16px; }
+.director-drawer > header h2 { margin: 0 0 4px; font-size: 18px; letter-spacing: -.015em; }
+.director-drawer > header p { color: var(--director-muted); font-size: 12px; letter-spacing: 0; }
+.director-drawer > header button { display: grid; place-items: center; width: 44px; height: 44px; border-radius: 9px; }
+.director-drawer > header button:hover { background: #163d36; color: #fff; }
+
+.director-more-menu { display: grid; align-content: start; gap: 2px; padding: 10px; overflow: auto; }
+.director-more-menu button { display: grid; grid-template-columns: 34px 1fr 18px; align-items: center; gap: 12px; min-height: 66px; padding: 10px 12px; border: 0; border-radius: 10px; background: transparent; color: var(--director-text); text-align: left; cursor: pointer; }
+.director-more-menu button:hover,
+.director-more-menu button:focus-visible { background: #143b34; }
+.director-more-menu button > svg:first-child { color: var(--director-accent); }
+.director-more-menu button > svg:last-child { color: #79948d; }
+.director-more-menu button > span { display: grid; gap: 3px; }
+.director-more-menu strong { font-size: 14px; }
+.director-more-menu small { color: var(--director-muted); font-size: 12px; line-height: 1.45; }
+
+.participant-invite--embedded,
+.scene-control-popover--embedded {
+  position: static;
+  z-index: auto;
+  width: auto;
+  max-height: none;
+  min-height: 0;
+  padding: 16px;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  box-shadow: none;
+  overflow: auto;
+}
+.participant-invite--embedded > button { position: static; }
+.participant-invite--embedded input,
+.scene-control-popover--embedded select { min-height: 44px; border-radius: 8px; font-size: 14px; }
+.participant-invite--embedded div button,
+.scene-control-popover--embedded > button { min-height: 44px; border-radius: 8px; }
+.scene-control-popover--embedded label { min-height: 58px; }
+.scene-control-popover--embedded label:first-child { border-top: 0; }
+.scene-control-popover--embedded .ui-field { display: grid; align-items: stretch; gap: var(--space-2); }
+.scene-control-popover--embedded .ui-field > span { display: block; }
+
+.director-intelligence { bottom: calc(var(--director-timeline) + 12px); max-width: min(620px, calc(100% - 520px)); border-radius: 10px; }
+.director-intelligence > strong { font-size: 12px; }
+.exercise-timeline { height: var(--director-timeline); }
+
+.coach-open .training-panel {
+  inset: 12px auto calc(var(--director-timeline) + 12px) 12px;
+  width: var(--director-coach);
+  padding: 20px;
+  border: 1px solid var(--director-line);
+  border-radius: 14px;
+  background: #edf1ea;
+  box-shadow: 18px 24px 55px rgba(0, 0, 0, .34);
+}
+.coach-open .director-stage > .twin-stage { left: 0; width: 100%; }
+.coach-open .director-stage .twin-views { left: calc(var(--director-coach) + 24px); }
+.coach-open .director-stage .spatial-tool-rack { left: calc(var(--director-coach) + 24px); }
+.coach-open .director-stage .twin-stage__legend { left: calc(var(--director-coach) + 24px); }
+.coach-open .director-metrics { left: calc(50% + 120px); }
+.coach-open .director-intelligence { left: calc(50% + 120px); max-width: min(540px, calc(100% - 760px)); }
+
+.experience-guide { top: 12px; left: 12px; width: min(360px, calc(100% - 116px)); border-radius: 14px; }
+
+.operations-empty--immersive > span { color: #83d6c6; font-size: 11px; font-weight: 700; letter-spacing: .12em; }
+.operations-empty--immersive > p { max-width: 42rem; margin: 0; color: #a8bdb7; font-size: 14px; line-height: 1.7; }
+.immersive-create { display: grid; grid-template-columns: minmax(220px, 1fr) minmax(280px, 1.25fr) auto; align-items: end; gap: 12px; width: min(920px, 100%); margin-top: 14px; padding: 18px; border: 1px solid rgba(125, 177, 165, .34); border-radius: 14px; background: rgba(10, 39, 34, .86); text-align: left; box-shadow: 0 24px 60px rgba(0, 0, 0, .24); }
+.immersive-create label { display: grid; gap: 7px; min-width: 0; color: #dcebe5; font-size: 12px; font-weight: 700; }
+.immersive-create select, .immersive-create input { width: 100%; min-height: 48px; border: 1px solid #41665c; border-radius: 9px; padding: 10px 12px; color: #f1f7f3; background: #102f29; font-size: 14px; }
+.immersive-create input::placeholder { color: #8ea9a0; }
+.immersive-create .primary-button { min-height: 48px; margin: 0; white-space: nowrap; }
+
+@media (max-width: 1180px) {
+  .operations-center--immersive { --director-coach: 310px; }
+  .director-topbar { grid-template-columns: minmax(210px, 1fr) auto auto; }
+  .director-status .sync-indicator { display: none; }
+  .director-actions button span { display: none; }
+  .director-actions button { width: 44px; padding: 0; }
+  .coach-open .director-metrics { left: calc(50% + 80px); }
+  .coach-open .director-intelligence { left: calc(50% + 90px); max-width: min(430px, calc(100% - 660px)); }
+}
+
+@media (max-width: 760px) {
+  .immersive-create { grid-template-columns: 1fr; align-items: stretch; padding: 14px; }
+  .immersive-create .primary-button { width: 100%; }
+}
+
+@media (max-width: 760px) {
+  .operations-center--immersive { --director-topbar: 64px; --director-timeline: 68px; }
+  .director-topbar { grid-template-columns: minmax(0, 1fr) auto; padding: 8px 10px; }
+  .director-brand { gap: 8px; }
+  .director-brand span,
+  .director-status { display: none; }
+  .director-brand strong { max-width: 12ch; font-size: 14px; }
+  .director-actions button { width: 44px; min-width: 44px; height: 44px; }
+  .director-metrics { right: 10px; left: 10px; translate: 0; }
+  .director-metrics div { min-width: 0; flex: 1; padding: 8px; }
+  .director-metrics .locate-unresolved { max-width: 106px; min-height: 52px; }
+  .director-rail { position: fixed; z-index: 50; top: auto; right: 8px; bottom: calc(var(--director-timeline) + 8px); left: 8px; display: grid; grid-template-columns: repeat(4, 1fr); width: auto; padding: 5px; }
+  .director-rail button { width: 100%; height: 50px; grid-template-columns: 22px auto; grid-template-rows: 1fr; gap: 7px; }
+  .director-rail button::after { display: none; }
+  .director-drawer { position: fixed; z-index: 55; inset: calc(var(--director-topbar) + 8px) 8px calc(var(--director-timeline) + 68px); width: auto; border-radius: 14px; }
+  .director-intelligence { display: none; }
+  .director-stage .twin-views { display: none; }
+  .director-stage .spatial-tool-rack {
+    display: grid;
+    grid-template-columns: repeat(4, 44px);
+    top: 76px;
+    bottom: auto;
+    left: 10px;
+    width: auto;
+    max-height: none;
+    padding: 5px;
+    overflow: visible;
+  }
+  .director-stage .spatial-tool-rack > header,
+  .director-stage .spatial-guidance,
+  .director-stage .spatial-event-group { display: none; }
+  .director-stage .spatial-tool-rack > button { display: grid; place-items: center; width: 44px; min-height: 44px; padding: 0; }
+  .director-stage .spatial-tool-rack > button > span { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
+  .director-stage .indoor-toggle { left: 10px; bottom: calc(var(--director-timeline) + 82px); }
+  .director-stage .resident-command-inline { position: fixed; right: 8px; bottom: calc(var(--director-timeline) + 68px); left: 8px; grid-template-columns: repeat(3, 1fr); padding: 8px; border: 1px solid var(--director-line); border-radius: 12px; background: var(--director-surface); }
+  .director-stage .resident-command-inline header { grid-column: 1 / -1; }
+  .director-stage .resident-command-inline button { justify-content: center; padding: 6px; text-align: center; }
+  .director-stage .resident-command-inline button span { display: inline; font-size: 12px; }
+  .coach-open .training-panel { position: fixed; z-index: 54; inset: calc(var(--director-topbar) + 8px) 8px calc(var(--director-timeline) + 68px); width: auto; padding: 18px; border-radius: 14px; }
+  .coach-open .director-stage .twin-views,
+  .coach-open .director-stage .spatial-tool-rack,
+  .coach-open .director-stage .twin-stage__legend { left: initial; }
+  .coach-open .director-metrics { left: 10px; }
+  .exercise-timeline { z-index: 60; }
+  .experience-guide { position: fixed; z-index: 56; inset: calc(var(--director-topbar) + 8px) 8px calc(var(--director-timeline) + 68px); width: auto; max-height: none; overflow: auto; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .director-rail button::after { transition: none; }
+}
+
+/* Layout pass: reserve explicit zones so the canvas remains the primary surface. */
+.operations-center--immersive .director-topbar { grid-template-columns: minmax(0, 1fr) auto minmax(0, auto); }
+.operations-center--immersive .director-brand { min-width: 0; }
+.operations-center--immersive .director-brand > div { min-width: 0; }
+.operations-center--immersive .director-brand strong { display: block; max-width: 36ch; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.operations-center--immersive .director-status { display: inline-flex; align-items: center; gap: 10px; max-width: 300px; min-width: 0; white-space: nowrap; }
+.operations-center--immersive .director-status > span { overflow: hidden; text-overflow: ellipsis; }
+.operations-center--immersive .director-actions { display: flex; flex-wrap: wrap; justify-content: flex-end; min-width: 0; max-width: 480px; }
+.operations-center--immersive .director-actions button { flex: 0 0 auto; }
+.operations-center--immersive > .director-stage .director-metrics { width: min(420px, calc(100% - var(--scene-left) - 590px)); max-width: none; }
+.operations-center--immersive > .director-stage .twin-object-nav { width: 224px; }
+.operations-center--immersive > .director-stage .twin-object-nav select { max-width: 100%; overflow: hidden; text-overflow: ellipsis; }
+.operations-center--immersive > .director-stage .spatial-tool-rack { width: 232px; }
+.operations-center--immersive > .director-stage .twin-inspector,
+.operations-center--immersive > .director-stage .resident-pov-hud { width: min(340px, calc(100% - var(--scene-left) - 360px)); }
+.operations-center--immersive > .director-stage :is(.director-metrics, .twin-object-nav, .spatial-tool-rack, .twin-inspector, .resident-pov-hud) { overflow-wrap: anywhere; }
+
+@media (min-width: 761px) and (max-width: 1100px) {
+  .operations-center--immersive .director-status { max-width: 220px; }
+  .operations-center--immersive .director-actions { max-width: 180px; }
+  .operations-center--immersive > .director-stage .director-metrics { width: min(360px, calc(100% - 420px)); }
+  .operations-center--immersive > .director-stage .twin-object-nav { width: 196px; }
+  .operations-center--immersive > .director-stage .spatial-tool-rack { width: 208px; }
+}
+
+@media (max-width: 760px) {
+  .operations-center--immersive .director-brand strong { max-width: 20ch; }
+  .operations-center--immersive .director-actions { max-width: none; flex-wrap: nowrap; }
+  .operations-center--immersive > .director-stage .director-metrics { width: auto; max-width: none; }
+}

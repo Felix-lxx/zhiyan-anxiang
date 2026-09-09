@@ -1,0 +1,16 @@
+{
+  "schemaVersion": 2,
+  "generatedAt": "2026-09-04T00:00:00+08:00",
+  "title": "Design System: 场景助手（局部实现记录）",
+  "extensions": {
+    "breakpoints": [
+      { "name": "assistant-mobile-max-width", "value": "760px" },
+      { "name": "assistant-compact-visual-height", "value": "560px" },
+      { "name": "assistant-short-viewport-max-height", "value": "650px" }
+    ]
+  },
+  "components": [],
+  "narrative": {
+    "overview": "范围仅为 frontend/src/components/SceneAssistant.vue 与 frontend/src/assistant.css；记录既有导演台内只读场景助手的实际实现，不定义全局视觉系统。"
+  }
+}

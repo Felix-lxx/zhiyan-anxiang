@@ -1,0 +1,26 @@
+# Node / Vite
+frontend/node_modules/
+frontend/dist/
+
+# Python
+backend/.venv/
+backend/__pycache__/
+backend/**/__pycache__/
+backend/.pytest_cache/
+*.py[cod]
+
+# Runtime configuration and data
+.env
+backend/.env
+postgres-data/
+
+# Local IDE and generated review artifacts
+.vscode/
+.idea/
+.pytest_cache/
+.tmp/
+tmp/
+output/
+assets/plates/
+.impeccable/build/
+.impeccable/review/

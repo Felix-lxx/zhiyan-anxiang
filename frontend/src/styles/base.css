@@ -1,0 +1,17 @@
+html { color: var(--text-primary); background: var(--surface-page); }
+body { color: var(--text-primary); background: var(--surface-page); -webkit-font-smoothing: antialiased; text-rendering: optimizeLegibility; }
+h1, h2, h3 { text-wrap: balance; }
+button, a, select { touch-action: manipulation; }
+.skip-link { position: fixed; z-index: 120; top: 12px; left: 12px; translate: 0 -180%; padding: 10px 14px; border-radius: 8px; color: #fff; background: var(--action-primary); font-size: 13px; font-weight: 700; text-decoration: none; transition: translate var(--motion-fast) var(--ease-out); }
+.skip-link:focus-visible { translate: 0 0; }
+button, input, textarea, select { caret-color: var(--action-focus); }
+button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-visible, summary:focus-visible, [tabindex]:focus-visible { outline: 3px solid var(--action-focus); outline-offset: 3px; }
+::selection { color: #fff; background: var(--action-primary); }
+* { scrollbar-width: thin; scrollbar-color: color-mix(in srgb, var(--text-secondary) 70%, transparent) color-mix(in srgb, var(--surface-panel) 88%, transparent); }
+::-webkit-scrollbar { width: 10px; height: 10px; }
+::-webkit-scrollbar-track { background: color-mix(in srgb, var(--surface-panel) 88%, transparent); }
+::-webkit-scrollbar-thumb { border: 2px solid transparent; border-radius: 8px; background: color-mix(in srgb, var(--text-secondary) 70%, transparent); background-clip: padding-box; }
+input::placeholder, textarea::placeholder { color: color-mix(in srgb, var(--text-secondary) 84%, transparent); opacity: 1; }
+button, input, select, textarea { accent-color: var(--action-primary); }
+button, [role="button"] { -webkit-tap-highlight-color: transparent; }
+@media (prefers-reduced-motion: reduce) { *, *::before, *::after { scroll-behavior: auto; animation-duration: .01ms; animation-iteration-count: 1; transition-duration: .01ms; } }

@@ -1,0 +1,80 @@
+:root {
+  color-scheme: light;
+
+  --color-brand-950: #071a17;
+  --color-brand-900: #0b2823;
+  --color-brand-800: #123b34;
+  --color-brand-700: #1b5147;
+  --color-brand-600: #246b61;
+  --color-brand-500: #3a8a7d;
+  --color-brand-300: #79cfc1;
+  --color-brand-200: #a9ded4;
+  --color-brand-100: #dceee8;
+  --color-brand-50: #eff7f3;
+
+  --color-paper: #f6f7f2;
+  --color-canvas: #efeee8;
+  --color-ink: #18332d;
+  --color-ink-muted: #586d66;
+  --color-line: #c7d2cc;
+  --color-danger: #a33f31;
+  --color-danger-soft: #f8e4de;
+  --color-warning: #8b5a16;
+  --color-warning-soft: #f3ead4;
+  --color-success: #246b4b;
+  --color-success-soft: #deeee5;
+
+  --surface-page: var(--color-canvas);
+  --surface-panel: var(--color-paper);
+  --surface-raised: #ffffff;
+  --text-primary: var(--color-ink);
+  --text-secondary: var(--color-ink-muted);
+  --border-default: var(--color-line);
+  --action-primary: var(--color-brand-700);
+  --action-primary-hover: var(--color-brand-800);
+  --action-focus: #267a73;
+  --status-danger: var(--color-danger);
+  --status-warning: var(--color-warning);
+  --status-success: var(--color-success);
+
+  --space-1: 4px;
+  --space-2: 8px;
+  --space-3: 12px;
+  --space-4: 16px;
+  --space-5: 20px;
+  --space-6: 24px;
+  --space-8: 32px;
+  --space-10: 40px;
+  --space-12: 48px;
+
+  --radius-sm: 8px;
+  --radius-md: 12px;
+  --radius-lg: 14px;
+  --control-height: 44px;
+  --panel-width: 420px;
+  --shadow-raised: 0 18px 48px rgba(16, 43, 36, .16);
+  --shadow-overlay: 0 24px 70px rgba(0, 0, 0, .42);
+  --motion-fast: 140ms;
+  --motion-normal: 220ms;
+  --ease-out: cubic-bezier(.16, 1, .3, 1);
+  --layer-header: 30;
+  --layer-panel: 40;
+  --layer-dialog: 100;
+  --layer-toast: 110;
+}
+
+[data-ui-theme="immersive"] {
+  color-scheme: dark;
+  --surface-page: var(--color-brand-950);
+  --surface-panel: #0a2722;
+  --surface-raised: #10342e;
+  --text-primary: #eef6f2;
+  --text-secondary: #a8bdb7;
+  --border-default: rgba(125, 177, 165, .32);
+  --action-primary: #246b61;
+  --action-primary-hover: #2e7b6f;
+  --action-focus: #79ddcd;
+  --status-danger: #ff826c;
+  --status-warning: #e8b966;
+  --status-success: #79ddcd;
+}
