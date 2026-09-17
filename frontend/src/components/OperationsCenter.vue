@@ -49,7 +49,7 @@ const spatialPreview = ref<SpatialPreview | null>(null)
 const spatialPreviewBusy = ref(false)
 let spatialPreviewRequest = 0
 const branchEvidence = ref<{at_seconds:number;source_name:string;branch_name:string;notice:string;worlds:{baseline:Simulation;alternative:Simulation};residents:Array<{id:string;label:string;original_status:string;branch_status:string;exposure_delta:number;queue_delta:number}>}|null>(null)
-function updateFromLab(value: unknown) { current.value = value as Drill; clearSpatialPreview() }
+function updateFromLab(value: unknown) { current.value = value as Drill; latestCue.value = '指令已写入现场：人员将按楼内通道容量、排队与会合规则连续移动'; clearSpatialPreview() }
 function forkFromLab(value: unknown) { const drill=value as Drill; drills.value=[drill,...drills.value]; selectDrill(drill); latestCue.value='已创建历史分支。点击继续训练，再选择另一条路线。' }
 async function compareEditable() { if(!current.value)return; try { branchEvidence.value=await api.request(`${props.apiBaseUrl}/drills/${current.value.id}/branch-comparison`, {headers:headers()}) } catch(cause) { error.value=cause instanceof Error?cause.message:'比较失败' } }
 const latestCue = ref('等待导演指令'), socketState = ref<'connecting' | 'live' | 'stale'>('connecting')
@@ -108,20 +108,20 @@ function connectSocket(drillId: string): void {
   socket.onopen = () => { socketState.value = 'live' }; socket.onmessage = (event) => { if(desiredDrillId!==drillId)return; const message = JSON.parse(event.data) as { type: string; data: Drill }; if (message.type === 'drill.snapshot') current.value = message.data }; socket.onerror = () => { socketState.value = 'stale' }
   socket.onclose = () => { socketState.value = 'stale'; if (desiredDrillId === drillId) reconnectTimer = window.setTimeout(() => connectSocket(drillId), 1800) }
 }
-async function requestDrill(path: string, method: 'POST' | 'PATCH', body?: unknown): Promise<void> {
+async function requestDrill(path: string, method: 'POST' | 'PATCH', body?: unknown, successMessage?: string): Promise<void> {
   if (!current.value || busy.value) return; busy.value = true; error.value = ''
-  try { current.value = await api.request<Drill>(`${props.apiBaseUrl}/drills/${current.value.id}${path}`, { method, headers: { ...headers(), ...(body ? { 'Content-Type': 'application/json' } : {}) }, body: body ? JSON.stringify(body) : undefined }) }
+  try { current.value = await api.request<Drill>(`${props.apiBaseUrl}/drills/${current.value.id}${path}`, { method, headers: { ...headers(), ...(body ? { 'Content-Type': 'application/json' } : {}) }, body: body ? JSON.stringify(body) : undefined }); if (successMessage) latestCue.value = successMessage }
   catch (cause) { error.value = cause instanceof Error ? cause.message : '现场操作失败。' } finally { busy.value = false }
 }
 async function act(action: 'start' | 'pause' | 'resume' | 'end'): Promise<void> {
   if (action === 'end') { endConfirmationOpen.value = true; return }
-  leaveReplay(); await requestDrill('/state', 'PATCH', { action })
+  leaveReplay(); await requestDrill('/state', 'PATCH', { action }, action === 'start' ? '演练时钟已启动，机器人开始自动巡检；现场状态将每秒更新' : action === 'pause' ? '演练已暂停，人员与车辆保持当前位置' : '演练已继续，人员与车辆恢复移动')
 }
 async function confirmEnd(): Promise<void> { leaveReplay(); await requestDrill('/state', 'PATCH', { action: 'end' }); if (!error.value) { endConfirmationOpen.value = false; drawer.value = 'report' } }
-async function inject(event_type: 'channel_blocked' | 'hydrant_failure' | 'resident_missing', context: { x?: number; y?: number; target?: string; road_edge_id?: string } = {}): Promise<void> { await requestDrill('/inject', 'POST', { event_type, ...context }) }
-async function robot(command: 'step' | 'broadcast' | 'replan'): Promise<void> { await requestDrill('/robot', 'POST', { command }) }
-async function cancelRobotTask(taskId: string): Promise<void> { await requestDrill('/robot', 'POST', { command: 'cancel', task_id: taskId }) }
-async function moveRobot(context: { x: number; y: number; target: string }): Promise<void> { await requestDrill('/robot', 'POST', { command: 'move', ...context }) }
+async function inject(event_type: 'channel_blocked' | 'hydrant_failure' | 'resident_missing', context: { x?: number; y?: number; target?: string; road_edge_id?: string } = {}): Promise<void> { await requestDrill('/inject', 'POST', { event_type, ...context }, '扰动已写入现场，路线、人员与评分证据正在同步更新') }
+async function robot(command: 'step' | 'broadcast' | 'replan'): Promise<void> { await requestDrill('/robot', 'POST', { command }, command === 'broadcast' ? '广播已执行，楼内居民开始准备并依次下楼' : command === 'replan' ? '机器人已按当前风险路网重新规划路线' : '机器人已推进到下一段路线') }
+async function cancelRobotTask(taskId: string): Promise<void> { await requestDrill('/robot', 'POST', { command: 'cancel', task_id: taskId }, '排队任务已取消，当前正在执行的任务不受影响') }
+async function moveRobot(context: { x: number; y: number; target: string }): Promise<void> { await requestDrill('/robot', 'POST', { command: 'move', ...context }, `指令已接收：机器人正前往${context.target}，到达前不能执行目标点任务`) }
 function clearSpatialPreview(): void {
   spatialPreviewRequest += 1
   spatialPreview.value = null
@@ -162,10 +162,10 @@ async function commandResidents(context: { residentIds: string[]; exit: 'north' 
   if ((current.value?.engine_version ?? 1) >= 3) { coachOpen.value=true; await nextTick(); await trainingLab.value?.previewCommand(context); return }
   await requestDrill('/residents', 'POST', { resident_ids: context.residentIds, exit: context.exit, action: context.action })
 }
-async function taskAction(taskId: string, action: 'accept' | 'arrive' | 'submit', evidence: string): Promise<void> { await requestDrill(`/tasks/${taskId}/actions`, 'POST', { action, evidence }) }
+async function taskAction(taskId: string, action: 'accept' | 'arrive' | 'submit', evidence: string): Promise<void> { const label = action === 'accept' ? '任务已接收，请到目标点后回执到位' : action === 'arrive' ? '到位回执已记录，请提交处置证据' : '处置证据已核验，现场影响和过程评分已更新'; await requestDrill(`/tasks/${taskId}/actions`, 'POST', { action, evidence }, label) }
 function locateTask(task: DrillTask): void { drawer.value = 'none'; if (task.target_position) arena.value?.focusPoint(task.target_position.x, task.target_position.y) }
 async function dispatchTask(task: DrillTask): Promise<void> { if (task.target_position) await moveRobot({ ...task.target_position, target: task.title }) }
-async function reopenRoad(id: string): Promise<void> { await requestDrill(`/roads/${id}/reopen`, 'POST') }
+async function reopenRoad(id: string): Promise<void> { await requestDrill(`/roads/${id}/reopen`, 'POST', undefined, '道路已恢复通行，人员与机器人从当前位置重新规划') }
 async function configureDirector(event: Event): Promise<void> { await requestDrill('/director/config', 'PATCH', { enabled: (event.target as HTMLInputElement).checked }) }
 async function seekReplay(at: number): Promise<void> {
   if (!current.value) return

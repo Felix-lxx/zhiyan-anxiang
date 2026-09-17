@@ -195,6 +195,18 @@ def test_main_case_runs_from_scene_to_score(client: TestClient, monkeypatch) -> 
         params={"baseline_id": drill_id, "candidate_id": drill_id},
     )
     assert invalid_comparison.status_code == 422
+    # Regression: a connected director must drive the simulation heartbeat.
+    # Previously websocket snapshots were read-only, so automatic sampling,
+    # movement milestones and score evidence stalled until another HTTP action.
+    import app.api.routes.operations as operations_route
+    heartbeat_calls: list[str] = []
+    original_advance = operations_route.advance_engine
+    monkeypatch.setattr(operations_route, "advance_engine", lambda session, active_drill: heartbeat_calls.append(active_drill.id))
+    access_token = headers["Authorization"].removeprefix("Bearer ")
+    with client.websocket_connect(f"/api/v1/ws/drills/{second_drill['id']}?token={access_token}") as websocket:
+        assert websocket.receive_json()["type"] == "drill.snapshot"
+    assert heartbeat_calls == [second_drill["id"]]
+    monkeypatch.setattr(operations_route, "advance_engine", original_advance)
     reset = client.post(f"/api/v1/communities/{community['id']}/demo-reset", headers=headers)
     assert reset.status_code == 200
     assert reset.json()["removed_drills"] == 2

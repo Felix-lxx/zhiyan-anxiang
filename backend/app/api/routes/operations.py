@@ -1390,6 +1390,11 @@ async def drill_socket(websocket: WebSocket, drill_id: str, token: str | None = 
         while True:
             with SessionLocal() as session:
                 drill = require_drill(session, drill_id, username) if username else require_participant_drill(session, drill_id, code or "")
+                # The websocket is the live simulation heartbeat, not only a
+                # snapshot transport.  Advancing here keeps robot movement,
+                # sensor sampling, resident evacuation and scoring evidence in
+                # step even when the director is only watching the scene.
+                advance_engine(session, drill)
                 await websocket.send_json({"type": "drill.snapshot", "data": snapshot(session, drill)})
             import asyncio
             await asyncio.sleep(1)

@@ -29,6 +29,20 @@
 .training-panel summary { cursor: pointer; min-height: 44px; font-weight: 600; }
 .training-feedback small { display: block; margin-top: 10px; color: #456150; font-size: 12px; line-height: 1.65; }
 .training-omissions { padding-left: 20px; font-size: 14px; line-height: 1.8; color: #793a25; }
+.training-live-state { margin-top: 18px; padding-top: 16px; border-top: 1px solid #9fb5a7; }
+.training-live-state__command { display: grid; grid-template-columns: auto 1fr; align-items: baseline; gap: 3px 12px; }
+.training-live-state__command > span { color: #567064; font-size: 12px; letter-spacing: .08em; }
+.training-live-state__command > strong { color: #173c32; font-size: 14px; }
+.training-live-state__command > small { grid-column: 2; color: #526b60; font-size: 12px; line-height: 1.5; }
+.training-flow-live { display: grid; grid-template-columns: repeat(4, 1fr); margin-top: 14px; border-block: 1px solid #b5c7ba; }
+.training-flow-live span { display: grid; gap: 2px; padding: 10px 6px; color: #526b60; font-size: 11px; line-height: 1.35; text-align: center; }
+.training-flow-live span + span { border-left: 1px solid #b5c7ba; }
+.training-flow-live b { color: #173c32; font-size: 18px; font-variant-numeric: tabular-nums; }
+.training-score-line { display: grid; grid-template-columns: auto 1fr; gap: 10px; align-items: baseline; padding-top: 12px; }
+.training-score-line > span { white-space: nowrap; color: #456150; font-size: 12px; }
+.training-score-line strong { color: #805000; font-size: 16px; }
+.training-score-line small { color: #526b60; font-size: 12px; line-height: 1.5; }
+.training-panel .training-score-gap { margin: 8px 0 0; color: #793a25; font-size: 12px; line-height: 1.55; }
 .training-mode .director-stage > .twin-stage { position: relative; left: 360px; width: calc(100% - 360px); }
 .training-mode .director-metrics, .training-mode .director-intelligence, .training-mode .spatial-tool-rack, .training-mode .director-cue { display: none; }
 .training-mode .director-stage .twin-views { top: 12px; left: 16px; bottom: auto; translate: 0; width: auto; }
@@ -61,6 +75,9 @@
   .training-mode .director-stage .twin-object-nav { top: 120px; }
   .training-mode .director-stage .twin-views button { font-size: 12px; }
   .training-mode .director-brand strong { max-width: 10ch; }
+  .training-flow-live { grid-template-columns: repeat(2, 1fr); }
+  .training-flow-live span:nth-child(3) { border-left: 0; border-top: 1px solid #b5c7ba; }
+  .training-flow-live span:nth-child(4) { border-top: 1px solid #b5c7ba; }
   .training-mode .director-actions { gap: 4px; flex-shrink: 0; }
   .training-mode .director-actions > button:first-child { width: 66px; min-width: 66px; max-width: 66px; font-size: 12px; padding: 4px; white-space: normal; }
 }
