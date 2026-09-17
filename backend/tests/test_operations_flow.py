@@ -174,6 +174,27 @@ def test_main_case_runs_from_scene_to_score(client: TestClient, monkeypatch) -> 
         json={"name": "闭环演练 02", "time_scale": 1},
     ).json()
     assert next(item for item in second_drill["tasks"] if item["id"] == task_id)["status"] == "waiting"
+    assert client.patch(f"/api/v1/drills/{second_drill['id']}/state", headers=headers, json={"action": "start"}).status_code == 200
+    clock["seconds"] += 20
+    second_ended = client.patch(f"/api/v1/drills/{second_drill['id']}/state", headers=headers, json={"action": "end"}).json()
+    detailed_comparison = client.get(
+        f"/api/v1/scenes/{scene['id']}/outcome-comparison",
+        headers=headers,
+        params={"baseline_id": drill_id, "candidate_id": second_drill["id"]},
+    )
+    assert detailed_comparison.status_code == 200
+    comparison_data = detailed_comparison.json()
+    assert len(comparison_data["runs"]) == 2
+    assert comparison_data["comparison"]["baseline"]["id"] == drill_id
+    assert comparison_data["comparison"]["candidate"]["id"] == second_drill["id"]
+    assert comparison_data["comparison"]["delta"]["score"] == second_ended["score"]["total_score"] - ended["score"]["total_score"]
+    assert comparison_data["comparison"]["baseline"]["evidence_count"] > 0
+    invalid_comparison = client.get(
+        f"/api/v1/scenes/{scene['id']}/outcome-comparison",
+        headers=headers,
+        params={"baseline_id": drill_id, "candidate_id": drill_id},
+    )
+    assert invalid_comparison.status_code == 422
     reset = client.post(f"/api/v1/communities/{community['id']}/demo-reset", headers=headers)
     assert reset.status_code == 200
     assert reset.json()["removed_drills"] == 2

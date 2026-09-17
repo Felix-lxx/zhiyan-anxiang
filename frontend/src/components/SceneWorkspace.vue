@@ -6,6 +6,7 @@ import AppIcon from './AppIcon.vue'
 import DecisionEditor from './DecisionEditor.vue'
 import ScenePublishPanel from './ScenePublishPanel.vue'
 import SceneLivePreview from './SceneLivePreview.vue'
+import TrainingComparison from './TrainingComparison.vue'
 import UiConfirmDialog from './ui/UiConfirmDialog.vue'
 import '../scene-preview.css'
 import { createApiClient } from '../api/client'
@@ -18,7 +19,7 @@ interface Preview {
 type WorkflowStep = 'parameters' | 'preview' | 'decisions' | 'publish'
 
 const props = defineProps<{ apiBaseUrl: string; accessToken: string; community: Community }>()
-const emit = defineEmits<{ back: [] }>()
+const emit = defineEmits<{ back: []; openDrill: [sceneId: string, drillId: string] }>()
 const api = createApiClient(props.apiBaseUrl, () => props.accessToken)
 const route = useRoute(), router = useRouter()
 const templates = ref<Template[]>([])
@@ -39,6 +40,7 @@ const parameterForm = ref({ fire_source_object_id: '', start_time: '20:15', wind
 const previewMinute = ref(0)
 const preview = ref<Preview | null>(null)
 const discardConfirmationOpen = ref(false)
+const comparisonSceneId = ref('')
 let previewRequest = 0
 let previewTimer: number | null = null
 let previewController: AbortController | null = null
@@ -47,6 +49,7 @@ let resolveLeave: ((value: boolean) => void) | null = null
 
 const activeScene = computed(() => scenes.value.find((scene) => scene.id === selectedSceneId.value) ?? null)
 const activeVersion = computed(() => activeScene.value ? latestVersion(activeScene.value) : null)
+const comparisonScene = computed(() => scenes.value.find(scene => scene.id === comparisonSceneId.value) ?? null)
 const previewIsDraft = computed(() => parametersDirty.value || !activeVersion.value?.parameters.fire_source_object_id)
 const workflowSteps: Array<{ id: WorkflowStep; label: string; helper: string; icon: string }> = [
   { id: 'parameters', label: '基本参数', helper: '定义火情与资源', icon: 'fire' },
@@ -95,6 +98,9 @@ function selectScene(scene: Scene, step: WorkflowStep = 'parameters') {
 }
 function leaveEditor() {
   guardUnsaved(() => { selectedSceneId.value = ''; activeStep.value = 'parameters'; preview.value = null; error.value = ''; notice.value = ''; previewError.value = ''; parametersDirty.value = false })
+}
+function toggleComparison(scene: Scene) {
+  comparisonSceneId.value = comparisonSceneId.value === scene.id ? '' : scene.id
 }
 function changeStep(step: WorkflowStep) {
   if (step === 'parameters' || step === 'preview') {
@@ -201,9 +207,10 @@ onBeforeUnmount(() => { window.removeEventListener('beforeunload', handleBeforeU
             <article v-for="scene in scenes" :key="scene.id" class="scene-card">
               <div class="scene-card__top"><div><strong>{{ scene.name }}</strong><p>版本 {{ latestVersion(scene)?.version_number ?? 0 }} · {{ latestVersion(scene)?.parameters.start_time || '待设置时间' }}</p></div><span class="status-badge" :data-status="scene.status">{{ scene.status === 'published' ? '已发布' : '草稿' }}</span></div>
               <div class="scene-card__facts"><span><AppIcon name="fire" :size="15" />{{ latestVersion(scene)?.parameters.fire_source_type || '未配置火源' }}</span><span><AppIcon name="users" :size="15" />{{ latestVersion(scene)?.parameters.resident_count || '—' }} 人</span></div>
-              <div class="scene-card__actions"><button class="secondary-button" type="button" @click="selectScene(scene)">编辑场景</button><button class="text-action icon-action" type="button" @click="selectScene(scene, 'preview')"><AppIcon name="eye" :size="16" />查看预览</button></div>
+              <div class="scene-card__actions"><button class="secondary-button" type="button" @click="selectScene(scene)">编辑场景</button><button class="text-action icon-action" type="button" @click="selectScene(scene, 'preview')"><AppIcon name="eye" :size="16" />查看预览</button><button class="text-action icon-action" type="button" :aria-expanded="comparisonSceneId === scene.id" @click="toggleComparison(scene)"><AppIcon name="compare" :size="16" />对比训练</button></div>
             </article>
           </div>
+          <TrainingComparison v-if="comparisonScene" :key="comparisonScene.id" :api-base-url="apiBaseUrl" :access-token="accessToken" :scene-id="comparisonScene.id" :scene-name="comparisonScene.name" @close="comparisonSceneId = ''" @open-drill="drillId => emit('openDrill', comparisonScene!.id, drillId)" />
         </section>
         <aside class="scene-create" aria-labelledby="scene-create-title"><div class="section-heading"><h2 id="scene-create-title">新建场景</h2></div><p>从规则模板创建独立草稿，不会覆盖正在运行的演练。</p><form class="map-object-form" @submit.prevent="createScene"><label for="scene-template">场景模板</label><select id="scene-template" v-model="selectedTemplateId" required :disabled="isLoading"><option v-for="template in templates" :key="template.id" :value="template.id">{{ template.name }}</option></select><p v-if="templates.find((item) => item.id === selectedTemplateId)?.description" class="field-hint">{{ templates.find((item) => item.id === selectedTemplateId)?.description }}</p><label for="scene-name">场景名称</label><input id="scene-name" v-model="name" required minlength="2" maxlength="120" placeholder="例如：3 号楼夜间充电棚火灾" /><button class="primary-button icon-button" type="submit" :disabled="isSaving || isLoading || !chargingSheds.length"><AppIcon name="plus" :size="18" />{{ isSaving ? '正在创建…' : '创建场景草稿' }}</button><p v-if="!isLoading && !chargingSheds.length" class="field-warning">当前社区没有充电棚对象，请先返回地图添加。</p></form></aside>
       </div>
@@ -311,10 +318,19 @@ onBeforeUnmount(() => { window.removeEventListener('beforeunload', handleBeforeU
   .workflow-nav { top: .5rem; }
 }
 
+@media (max-width: 900px) {
+  .scene-overview { grid-template-columns: minmax(0, 1fr); }
+  .scene-library, .scene-create { min-width: 0; }
+  .scene-card { grid-template-columns: minmax(0, 1fr); align-items: start; }
+  .scene-card__facts, .scene-card__actions { grid-column: 1; grid-row: auto; }
+  .scene-card__actions { justify-content: flex-start; flex-wrap: wrap; }
+}
+
 @media (max-width: 640px) {
   .scene-workspace .workspace-content { width: min(calc(100% - 1.5rem), 82rem); padding-top: 1.4rem; }
   .workflow-nav { position: static; }
   .scene-card__top { align-items: start; }
   .scene-card__actions { min-width: 0; }
+  .scene-card__actions > * { flex: 1 1 auto; }
 }
 </style>

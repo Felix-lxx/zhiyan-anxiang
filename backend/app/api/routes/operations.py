@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import math
+import re
 import socket
 import hashlib
 import secrets
@@ -451,7 +452,18 @@ def score_drill(session: Session, drill: DrillSession) -> DrillScore:
     existing = session.scalar(select(DrillScore).where(DrillScore.drill_session_id == drill.id))
     if existing:
         return existing
-    data = calculate_score_data(session, drill)
+    events = list(session.scalars(select(DrillEvent).where(DrillEvent.drill_session_id == drill.id).order_by(DrillEvent.sequence)))
+    simulation = simulation_state(drill, events, session=session)
+    data = calculate_score_data(session, drill, events, simulation)
+    ended_event = next((event for event in reversed(events) if event.event_type == "drill.ended"), None)
+    if ended_event:
+        completed_task_ids = {event.payload.get("task_id") for event in events if event.event_type == "task.completed"}
+        total_tasks = session.scalar(select(func.count(DecisionTask.id)).where(DecisionTask.scene_version_id == drill.scene_version_id)) or 0
+        ended_event.payload = {
+            **ended_event.payload,
+            "final_summary": simulation["summary"],
+            "task_summary": {"completed": len(completed_task_ids), "total": total_tasks},
+        }
     score = DrillScore(drill_session_id=drill.id, total_score=data["total_score"], details=data["details"], recommendations=data["recommendations"])
     session.add(score)
     return score
@@ -1188,6 +1200,163 @@ def compare_drills(scene_id: str, identity: AuthenticatedIdentity = Depends(get_
         score = session.scalar(select(DrillScore).where(DrillScore.drill_session_id == drill.id))
         result.append({"id": drill.id, "name": drill.name, "elapsed_seconds": drill.elapsed_seconds, "score": score.total_score if score else 0})
     return result
+
+
+def completed_drill_record(session: Session, drill: DrillSession) -> dict:
+    """Build a comparison record from frozen evidence without replaying the whole world."""
+    score_row = session.scalar(select(DrillScore).where(DrillScore.drill_session_id == drill.id))
+    score = {"total_score": score_row.total_score, "details": score_row.details, "recommendations": score_row.recommendations} if score_row else {"total_score": 0, "details": [], "recommendations": []}
+    ended_event = session.scalar(select(DrillEvent).where(DrillEvent.drill_session_id == drill.id, DrillEvent.event_type == "drill.ended").order_by(DrillEvent.sequence.desc()))
+    stored_summary = (ended_event.payload or {}).get("final_summary") if ended_event else None
+    task_summary = (ended_event.payload or {}).get("task_summary") if ended_event else None
+    parsed_summary: dict[str, int | None] = {"total": None, "evacuated": None, "counted": None, "smoke_exposed": None, "missing": None, "congested": None}
+    if stored_summary:
+        parsed_summary.update({key: stored_summary.get(key) for key in parsed_summary})
+    else:
+        for detail in score["details"]:
+            evidence = str(detail.get("evidence", ""))
+            if match := re.search(r"已到达\s*(\d+)/(\d+).*已核验\s*(\d+)/(\d+)", evidence):
+                parsed_summary.update({"evacuated": int(match.group(1)), "total": int(match.group(2)), "counted": int(match.group(3))})
+            if match := re.search(r"暴露\s*(\d+)\s*人；失联\s*(\d+)\s*人", evidence):
+                parsed_summary.update({"smoke_exposed": int(match.group(1)), "missing": int(match.group(2))})
+            if match := re.search(r"smoke_exposed=(\d+),missing=(\d+)", evidence):
+                parsed_summary.update({"smoke_exposed": int(match.group(1)), "missing": int(match.group(2))})
+    if not task_summary:
+        completed = session.scalar(select(func.count(func.distinct(DrillEvent.id))).where(DrillEvent.drill_session_id == drill.id, DrillEvent.event_type == "task.completed")) or 0
+        total = session.scalar(select(func.count(DecisionTask.id)).where(DecisionTask.scene_version_id == drill.scene_version_id)) or 0
+        task_summary = {"completed": completed, "total": total}
+    evidence_count = session.scalar(
+        select(func.count(DrillEvent.id)).where(DrillEvent.drill_session_id == drill.id)
+    ) or 0
+    return {
+        "id": drill.id,
+        "name": drill.name,
+        "ended_at": drill.ended_at.isoformat() if drill.ended_at else None,
+        "elapsed_seconds": drill.elapsed_seconds,
+        "score": score["total_score"],
+        "score_details": score["details"],
+        "recommendations": score["recommendations"],
+        "summary": {
+            "total": parsed_summary["total"],
+            "evacuated": parsed_summary["evacuated"],
+            "counted": parsed_summary["counted"],
+            "smoke_exposed": parsed_summary["smoke_exposed"],
+            "missing": parsed_summary["missing"],
+            "congested": parsed_summary["congested"],
+        },
+        "tasks": task_summary,
+        "evidence_count": evidence_count,
+    }
+
+
+def completed_drill_index_record(session: Session, drill: DrillSession) -> dict:
+    """Return selector metadata without replaying the resident simulation."""
+    score = session.scalar(select(DrillScore).where(DrillScore.drill_session_id == drill.id))
+    evidence_count = session.scalar(
+        select(func.count(DrillEvent.id)).where(DrillEvent.drill_session_id == drill.id)
+    ) or 0
+    return {
+        "id": drill.id,
+        "name": drill.name,
+        "ended_at": drill.ended_at.isoformat() if drill.ended_at else None,
+        "elapsed_seconds": drill.elapsed_seconds,
+        "score": score.total_score if score else 0,
+        "score_details": score.details if score else [],
+        "recommendations": score.recommendations if score else [],
+        "summary": {"total": 0, "evacuated": 0, "counted": 0, "smoke_exposed": 0, "missing": 0, "congested": 0},
+        "tasks": {"completed": 0, "total": 0},
+        "evidence_count": evidence_count,
+    }
+
+
+def comparison_findings(baseline: dict, candidate: dict) -> tuple[list[str], list[str]]:
+    improvements: list[str] = []
+    regressions: list[str] = []
+    score_delta = candidate["score"] - baseline["score"]
+    if score_delta > 0:
+        improvements.append(f"综合评分提高 {score_delta} 分")
+    elif score_delta < 0:
+        regressions.append(f"综合评分下降 {abs(score_delta)} 分")
+    duration_delta = candidate["elapsed_seconds"] - baseline["elapsed_seconds"]
+    if duration_delta < 0:
+        improvements.append(f"处置用时缩短 {abs(duration_delta)} 秒")
+    elif duration_delta > 0:
+        regressions.append(f"处置用时增加 {duration_delta} 秒")
+    labels = {"evacuated": "到达集合点", "smoke_exposed": "烟气暴露", "missing": "失联", "congested": "拥堵"}
+    for key, label in labels.items():
+        if baseline["summary"][key] is None or candidate["summary"][key] is None:
+            continue
+        delta = candidate["summary"][key] - baseline["summary"][key]
+        higher_is_better = key == "evacuated"
+        if delta and ((delta > 0) == higher_is_better):
+            improvements.append(f"{label}{'增加' if higher_is_better else '减少'} {abs(delta)} 人")
+        elif delta:
+            regressions.append(f"{label}{'减少' if higher_is_better else '增加'} {abs(delta)} 人")
+    return improvements, regressions
+
+
+@router.get("/scenes/{scene_id}/outcome-comparison")
+def compare_completed_drill_outcomes(
+    scene_id: str,
+    baseline_id: str | None = None,
+    candidate_id: str | None = None,
+    identity: AuthenticatedIdentity = Depends(get_current_identity),
+    session: Session = Depends(get_db),
+):
+    scene = session.get(Scene, scene_id)
+    if scene is None:
+        raise HTTPException(status_code=404, detail="未找到场景。")
+    owned_community(session, scene.community_id, identity.username)
+    drills = list(session.scalars(
+        select(DrillSession)
+        .where(DrillSession.scene_id == scene_id, DrillSession.status == "ended")
+        .order_by(DrillSession.ended_at.desc())
+        .limit(8)
+    ))
+    records = [completed_drill_index_record(session, drill) for drill in drills]
+    if not baseline_id or not candidate_id:
+        return {"runs": records, "comparison": None}
+    if baseline_id == candidate_id:
+        raise HTTPException(status_code=422, detail="基线训练和复演训练不能是同一场次。")
+    indexed_drills = {drill.id: drill for drill in drills}
+    if baseline_id not in indexed_drills or candidate_id not in indexed_drills:
+        raise HTTPException(status_code=404, detail="所选训练不存在、尚未结束，或不属于当前场景。")
+    baseline = completed_drill_record(session, indexed_drills[baseline_id])
+    candidate = completed_drill_record(session, indexed_drills[candidate_id])
+    improvements, regressions = comparison_findings(baseline, candidate)
+    score_delta = candidate["score"] - baseline["score"]
+    if score_delta > 0 and not regressions:
+        verdict = "复演整体优于基线，关键安全指标未出现退步。"
+    elif score_delta > 0:
+        verdict = "复演总分提高，但仍有退步指标需要复盘。"
+    elif score_delta == 0 and not regressions:
+        verdict = "两次训练总分持平，处置结果没有出现明显退步。"
+    else:
+        verdict = "复演尚未形成稳定提升，建议回看退步指标对应的事件证据。"
+    def metric_delta(key: str) -> int | None:
+        before, after = baseline["summary"][key], candidate["summary"][key]
+        return None if before is None or after is None else after - before
+
+    return {
+        "runs": records,
+        "comparison": {
+            "baseline": baseline,
+            "candidate": candidate,
+            "delta": {
+                "score": score_delta,
+                "elapsed_seconds": candidate["elapsed_seconds"] - baseline["elapsed_seconds"],
+                "evacuated": metric_delta("evacuated"),
+                "smoke_exposed": metric_delta("smoke_exposed"),
+                "missing": metric_delta("missing"),
+                "congested": metric_delta("congested"),
+                "tasks_completed": candidate["tasks"]["completed"] - baseline["tasks"]["completed"],
+            },
+            "verdict": verdict,
+            "improvements": improvements,
+            "regressions": regressions,
+            "disclaimer": "对比来自两次已结束训练的最终快照与事件证据，仅用于演练复盘，不代表真实火场因果结论。",
+        },
+    }
 
 
 @router.post("/communities/{community_id}/demo-reset")

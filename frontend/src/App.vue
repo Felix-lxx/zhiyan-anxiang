@@ -120,6 +120,7 @@ function openMap(community: Community): void {
   void router.push({ name: 'map', params: { communityId: community.id } })
 }
 function openOperations(community: Community): void { selectedCommunity.value = community; void router.push({ name: 'operations', params: { communityId: community.id }, query: { autostart: '1' } }) }
+function openDrill(sceneId: string, drillId: string): void { if (selectedCommunity.value) void router.push({ name: 'operations', params: { communityId: selectedCommunity.value.id }, query: { scene: sceneId, drill: drillId } }) }
 function openParticipant(): void { if (selectedCommunity.value) void router.push({ name: 'participant-local', params: { communityId: selectedCommunity.value.id } }) }
 function returnToOperations(): void { if (selectedCommunity.value) void router.push({ name: 'operations', params: { communityId: selectedCommunity.value.id } }) }
 function leaveParticipant(): void {
@@ -175,7 +176,7 @@ onMounted(() => {
     <div v-if="routeError"><button class="primary-button" @click="routeError = ''; restoreSession(); syncRouteCommunity()">重新加载</button><button class="secondary-button" @click="routeError = ''; returnToProjects()">返回项目</button></div>
   </main>
   <RouterView v-else-if="activeView !== 'login' && (participantDrillId || accessToken && (activeView === 'projects' || selectedCommunity))" v-slot="{ Component }">
-    <component :is="Component" :key="String(route.name) + String(route.params.communityId ?? route.params.drillId ?? '')" :api-base-url="apiBaseUrl" :access-token="accessToken" :community="selectedCommunity" :username="activeUsername" :role="activeRole" :drill-id="participantDrillId || undefined" :invite-code="participantInviteCode || undefined" @logout="logout" @open-map="openMap" @open-operations="openOperations" @open-scenes="openScenes" @participant="openParticipant" @back="routeBack" />
+    <component :is="Component" :key="String(route.name) + String(route.params.communityId ?? route.params.drillId ?? '')" :api-base-url="apiBaseUrl" :access-token="accessToken" :community="selectedCommunity" :username="activeUsername" :role="activeRole" :drill-id="participantDrillId || undefined" :invite-code="participantInviteCode || undefined" @logout="logout" @open-map="openMap" @open-operations="openOperations" @open-drill="openDrill" @open-scenes="openScenes" @participant="openParticipant" @back="routeBack" />
   </RouterView>
 
   <main id="main-content" v-else class="entry-login">
