@@ -49,8 +49,10 @@
 .exercise-timeline output { min-width: 48px; font-variant-numeric: tabular-nums; font-size: 15px; }
 .exercise-timeline > span { font-size: 12px; }
 .director-event-list { padding: 18px; }
-.director-event-list li { align-items: start; gap: 12px; }
-.director-event-list li > button { background: #1a3b30; color: #bfdbc9; border: 1px solid #496657; border-radius: 6px; font-variant-numeric: tabular-nums; padding: 8px; }
+.director-event-list li { grid-template-columns: 64px minmax(0, 1fr); align-items: start; gap: 12px; }
+.director-event-list li > div { min-width: 0; }
+.director-event-list li > button { display: grid; place-items: center; width: 64px; min-width: 64px; min-height: 44px; background: #1a3b30; color: #bfdbc9; border: 1px solid #496657; border-radius: 6px; padding: 0 6px; font-size: 14px; line-height: 1; font-variant-numeric: tabular-nums; white-space: nowrap; }
+.director-event-list li > button time { color: inherit; font: inherit; letter-spacing: 0; }
 .director-event-list li strong { font-size: 14px; line-height: 1.6; }
 .director-event-list li span { font-size: 12px; color: #b1c7bb; }
 .score-drawer { padding: 20px; }
