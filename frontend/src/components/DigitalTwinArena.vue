@@ -1,7 +1,10 @@
 <script setup lang="ts">
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import * as THREE from 'three'
-import { createApartment, createChargingShed, createFireStation, createStreet } from '../three/communityModels'
+import { createApartment, createChargingShed, createFireStation, createStreet, createStreetFurniture } from '../three/communityModels'
+import { SceneMaterials, displayHeight } from '../three/sceneMaterials'
+import { createPerson, createPatrolRobot, posePerson } from '../three/actors'
+import { FireEffects } from '../three/fireEffects'
 import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js'
 import AppIcon from './AppIcon.vue'
 
@@ -20,16 +23,20 @@ interface Simulation {
 }
 interface Robot { state: string; battery: number; x: number; y: number; route: string[]; reason: string; task_queue?: Array<{ id: string; label: string; status: string; route_points?: Array<{ x: number; y: number; height?: number }> }> }
 interface DrillEvent { sequence: number; event_type: string; message: string; payload?: { x?: number; y?: number; target?: string; route_points?: Array<{ x: number; y: number; height?: number }>; severity?: string } }
+export interface AssistantSceneContext { kind: 'resident' | 'road' | 'robot' | 'object'; id?: string; label: string; type?: string; detail?: string; x?: number; y?: number }
+type SelectedObject = { title: string; type: string; detail: string; action?: string; residentId?: string; roadEdgeId?: string; x?: number; y?: number }
 type SpatialIntent =
   | { kind: 'road'; edgeId: string }
   | { kind: 'robot'; x: number; y: number; target: string }
   | { kind: 'residents'; residentIds: string[]; exit: 'north' | 'south'; action: 'evacuate' | 'priority_assist' }
 interface OperationPreview {
   kind: 'road' | 'robot' | 'residents'; can_apply: boolean; title?: string; notice: string
+  expected_sequence?: number
   route_points?: Array<{ x: number; y: number; height?: number }>; route_edge_ids?: string[]; route_distance?: number
   planned_duration_seconds?: number | null; queue_position?: number; risk_score?: number; width_meters?: number
   affected_residents?: number; affected_robot_tasks?: number; residents?: Resident[]; exit?: 'north' | 'south'; action?: 'evacuate' | 'priority_assist'
   impact?: { congested_before: number; congested_after: number; smoke_exposed_before: number; smoke_exposed_after: number; forecast_horizon_seconds: number }
+  score_impact?: { before: number; after: number; delta: number; note: string }
 }
 
 const props = defineProps<{
@@ -59,11 +66,13 @@ const emit = defineEmits<{
   cancelAction: []
   reopenRoad: [edgeId: string]
   selection: [ids: string[]]
+  contextSelection: [context: AssistantSceneContext | null]
+  askAssistant: [context: AssistantSceneContext]
 }>()
 
 const host = ref<HTMLDivElement | null>(null)
 const viewMode = ref<'director' | 'robot' | 'resident' | 'rescue'>('director')
-const selected = ref<{ title: string; type: string; detail: string; action?: string; residentId?: string; roadEdgeId?: string; x?: number; y?: number } | null>(null)
+const selected = ref<SelectedObject | null>(null)
 const isDraggingEvent = ref(false)
 const selectedResident = ref('')
 const renderError = ref('')
@@ -71,6 +80,14 @@ const interactionNotice = ref('')
 const toolMode = ref<'inspect' | 'block' | 'robot' | 'residents'>('inspect')
 const selectedResidents = ref<string[]>([])
 const directorCue = ref('')
+
+function assistantContext(value: SelectedObject | null): AssistantSceneContext | null {
+  if (!value) return null
+  const kind: AssistantSceneContext['kind'] = value.residentId ? 'resident' : value.roadEdgeId ? 'road' : value.action === 'robot' || /机器人|具身智能体/.test(value.title + value.type) ? 'robot' : 'object'
+  return { kind, id: value.residentId ?? value.roadEdgeId, label: value.title, type: value.type, detail: value.detail, x: value.x, y: value.y }
+}
+function askAboutSelection(): void { const context = assistantContext(selected.value); if (context) emit('askAssistant', context) }
+watch(selected, value => emit('contextSelection', assistantContext(value)), { deep: true })
 
 let scene: THREE.Scene
 let camera: THREE.PerspectiveCamera
@@ -93,8 +110,14 @@ let residentTrailLayer: THREE.Group
 let helperLinkLayer: THREE.Group
 let indoorGeometry: THREE.Group
 const marquee = ref<{left:number;top:number;width:number;height:number}|null>(null)
-const fireParticles: Array<{ mesh: THREE.Mesh; speed: number; phase: number }> = []
-const smokeParticles: Array<{ mesh: THREE.Mesh; speed: number; phase: number; originX: number; originZ: number }> = []
+const sceneMaterials = new SceneMaterials()
+let fireEffects: FireEffects
+let lastFrameTime = 0
+let visualSeconds = 0
+let frameCount = 0
+let sampleStarted = 0
+const fps = ref(0)
+const quality = ref<'low' | 'medium' | 'high'>(window.innerWidth < 760 ? 'low' : (navigator.hardwareConcurrency ?? 8) <= 4 ? 'medium' : 'high')
 const residentMeshes = new Map<string, THREE.Group>()
 const buildingMeshes = new Map<string, THREE.Object3D>()
 const residentTrails = new Map<string, THREE.Vector3[]>()
@@ -112,15 +135,11 @@ const raycaster = new THREE.Raycaster()
 const pointer = new THREE.Vector2()
 const pointerStart = new THREE.Vector2()
 const reducedMotion = window.matchMedia('(prefers-reduced-motion: reduce)').matches
-const qualityFactor = window.innerWidth < 760 || (navigator.hardwareConcurrency ?? 8) <= 4 ? .62 : 1
+let qualityFactor = quality.value === 'high' ? 1 : quality.value === 'medium' ? .72 : .45
 let pageVisible = !document.hidden
 let renderDirty = true
 let destroyed = false
 let roadNetworkSignature = ''
-const residentBodyGeometry = new THREE.CapsuleGeometry(.32, .72, 4, 8)
-const residentRingGeometry = new THREE.RingGeometry(.45, .62, 24)
-const helperBodyGeometry = new THREE.CylinderGeometry(.36, .42, 1.3, 8)
-const helperHeadGeometry = new THREE.SphereGeometry(.3, 8, 8)
 
 const clockLabel = computed(() => `${String(Math.floor(props.elapsedSeconds / 60)).padStart(2, '0')}:${String(props.elapsedSeconds % 60).padStart(2, '0')}`)
 const activeResident = computed(() => props.simulation?.residents.find((item) => item.id === selectedResident.value) ?? props.simulation?.residents.find((item) => item.status === 'moving'))
@@ -141,7 +160,7 @@ const accessibleObjects = computed(() => [
 ])
 
 function worldPoint(x: number, y: number, height = 0): THREE.Vector3 {
-  return new THREE.Vector3(x - 50, height, y - 50)
+  return new THREE.Vector3(x - 50, displayHeight(height), y - 50)
 }
 
 function material(color: number, roughness = 0.82, emissive = 0): THREE.MeshStandardMaterial {
@@ -156,7 +175,7 @@ function register(object: THREE.Object3D, data: { title: string; type: string; d
 function addBuilding(name: string, x: number, z: number, width: number, depth: number, floors: number): THREE.LOD {
   const hour = Number.parseInt(props.simulation?.world?.parameters?.start_time?.split(':')[0] ?? '20', 10)
   const seed = [...name].reduce((sum,char) => sum + char.charCodeAt(0),0)
-  const lod = createApartment(width, depth, floors, seed, hour >= 18 || hour < 6)
+  const lod = createApartment(width, depth, floors, seed, hour >= 18 || hour < 6, sceneMaterials)
   lod.position.set(x,0,z); scene.add(lod)
   register(lod, { title: name, type: `${floors} 层老旧住宅`, detail: '点击定位楼栋；使用楼内剖面查看居民与楼梯通行', x:x+50, y:z+50 })
   return lod
@@ -184,6 +203,8 @@ function addStreetLight(x: number, z: number, rotation = 0): void {
   const pole = new THREE.Mesh(new THREE.CylinderGeometry(.1, .14, 5.4, 10), material(0x273b39, .35)); pole.position.y = 2.7; group.add(pole)
   const arm = new THREE.Mesh(new THREE.BoxGeometry(1.4, .1, .1), material(0x273b39, .35)); arm.position.set(.62, 5.28, 0); group.add(arm)
   const lamp = new THREE.Mesh(new THREE.BoxGeometry(.52, .18, .34), new THREE.MeshStandardMaterial({ color: 0xffe6a6, emissive: 0xffd06a, emissiveIntensity: 1.5 })); lamp.position.set(1.25, 5.18, 0); group.add(lamp)
+  const hour=Number.parseInt(props.simulation?.world?.parameters?.start_time?.split(':')[0]??'20',10)
+  if(hour>=18||hour<6){const light=new THREE.PointLight(0xffd091,18,13,2);light.position.set(1.25,4.9,0);group.add(light)}
   group.position.set(x, 0, z); group.rotation.y = rotation; scene.add(group)
 }
 
@@ -232,6 +253,11 @@ async function loadEnvironmentAssets(): Promise<void> {
     })
     renderDirty=true
   }))
+  if(!destroyed) for(const building of props.simulation?.world?.objects.filter(o=>o.type==='building')??[]) {
+    const x=building.x-50+building.width/2+3,z=building.y-50
+    if(isClear(x,z,1.8)) { const furniture=createStreetFurniture();furniture.position.set(x,0,z);environmentAssetLayer.add(furniture) }
+  }
+  if(!destroyed)renderDirty=true
   if(!destroyed && results.some(result=>result.status==='rejected')) flashNotice('部分环境模型加载失败，演练可继续；刷新后重试。')
 }
 
@@ -241,6 +267,13 @@ function addHydrant(name: string, x: number, z: number, isEast = false): void {
   const base = new THREE.Mesh(new THREE.CylinderGeometry(.55, .7, 1.3, 16), material(unavailable ? 0x555f5c : isEast ? 0x8f3c32 : 0xb94838))
   base.position.y = .65; group.add(base)
   const cap = new THREE.Mesh(new THREE.SphereGeometry(.57, 16, 10), material(0xc75b43)); cap.position.y = 1.35; group.add(cap)
+  for(const side of [-1,1]) {
+    const outlet=new THREE.Mesh(new THREE.CylinderGeometry(.24,.24,.58,12),material(0xa34131,.45));outlet.rotation.z=Math.PI/2;outlet.position.set(side*.6,.93,0);group.add(outlet)
+    const nut=new THREE.Mesh(new THREE.CylinderGeometry(.27,.27,.13,6),material(0xaaa698,.4));nut.rotation.z=Math.PI/2;nut.position.set(side*.92,.93,0);group.add(nut)
+  }
+  const flange=new THREE.Mesh(new THREE.CylinderGeometry(.73,.73,.14,16),material(0x616963,.6));flange.position.y=.12;group.add(flange)
+  for(let i=0;i<6;i++){const bolt=new THREE.Mesh(new THREE.CylinderGeometry(.065,.065,.08,6),material(0xbab9a6,.45));bolt.position.set(Math.sin(i*Math.PI/3)*.61,.23,Math.cos(i*Math.PI/3)*.61);group.add(bolt)}
+  group.scale.setScalar(.65)
   if (unavailable) {
     const warning = new THREE.Mesh(new THREE.RingGeometry(.9, 1.15, 24), new THREE.MeshBasicMaterial({ color: 0xe6a34a, side: THREE.DoubleSide }))
     warning.rotation.x = -Math.PI / 2; warning.position.y = .08; group.add(warning)
@@ -261,44 +294,27 @@ function addExit(name: string, x: number, z: number): void {
 function createFireSystem(): void {
   const origin = props.simulation?.world?.fire_origin
   const fx = origin ? origin.x - 50 : 13, fz = origin ? origin.y - 50 : -1
-  const core = new THREE.Mesh(new THREE.CylinderGeometry(2.1, 3.1, 2.3, 20), new THREE.MeshStandardMaterial({ color: 0xff5b24, emissive: 0xff2d00, emissiveIntensity: 2, transparent: true, opacity: .92 }))
-  core.position.set(fx, 1.3, fz); scene.add(core)
+  const core = new THREE.Mesh(new THREE.BoxGeometry(3,3,3), new THREE.MeshBasicMaterial({ visible: false }))
+  core.position.set(fx, 1.5, fz); scene.add(core)
   register(core, { title: '充电棚起火点', type: '锂电池火灾', detail: '火势和烟气随服务端统一演练时钟演化' })
   fireLight = new THREE.PointLight(0xff4d1f, 7, 34, 1.4); fireLight.position.set(fx, 7, fz); scene.add(fireLight)
-  for (let index = 0; index < Math.round(28 * qualityFactor); index += 1) {
-    const mesh = new THREE.Mesh(new THREE.SphereGeometry(.45 + Math.random() * .6, 10, 8), new THREE.MeshBasicMaterial({ color: index % 3 === 0 ? 0xffc44f : 0xff5526, transparent: true, opacity: .86 }))
-    mesh.position.set(fx + (Math.random() - .5) * 3.5, 1 + Math.random() * 5, fz + (Math.random() - .5) * 3.5); scene.add(mesh)
-    fireParticles.push({ mesh, speed: .025 + Math.random() * .05, phase: Math.random() * Math.PI * 2 })
-  }
-  for (let index = 0; index < Math.round(34 * qualityFactor); index += 1) {
-    const mesh = new THREE.Mesh(new THREE.SphereGeometry(1.1 + Math.random() * 1.5, 10, 8), new THREE.MeshStandardMaterial({ color: 0x4d5552, transparent: true, opacity: .12, depthWrite: false }))
-    mesh.position.set(fx + (Math.random() - .5) * 7, 5 + Math.random() * 16, fz + (Math.random() - .5) * 7); scene.add(mesh)
-    smokeParticles.push({ mesh, speed: .009 + Math.random() * .022, phase: Math.random() * Math.PI * 2, originX: fx, originZ: fz })
-  }
+  fireEffects = new FireEffects(); fireEffects.group.position.set(fx,0,fz);scene.add(fireEffects.group)
 }
 
 function createRobot(): void {
-  robotGroup = new THREE.Group()
-  const body = new THREE.Mesh(new THREE.BoxGeometry(2.5, 1.6, 3.2), material(0xd6dad4, .35))
-  body.position.y = 1.15; body.castShadow = true; robotGroup.add(body)
-  const head = new THREE.Mesh(new THREE.BoxGeometry(1.8, 1.05, 1.35), material(0x173c3b, .3, 0x1b6964)); head.position.set(0, 2.15, -.35); robotGroup.add(head)
-  const sensor = new THREE.Mesh(new THREE.SphereGeometry(.33, 16, 10), new THREE.MeshStandardMaterial({ color: 0x80e2da, emissive: 0x28bcb0, emissiveIntensity: 1.5 })); sensor.position.set(0, 2.2, -1.08); robotGroup.add(sensor)
-  for (const x of [-1.25, 1.25]) { const wheel = new THREE.Mesh(new THREE.CylinderGeometry(.52, .52, .45, 16), material(0x151d1c)); wheel.rotation.z = Math.PI / 2; wheel.position.set(x, .65, 0); robotGroup.add(wheel) }
+  robotGroup = createPatrolRobot()
   const scan = new THREE.Mesh(new THREE.ConeGeometry(5.5, 12, 32, 1, true), new THREE.MeshBasicMaterial({ color: 0x42d4c8, transparent: true, opacity: .08, side: THREE.DoubleSide, depthWrite: false }))
-  scan.rotation.x = -Math.PI / 2; scan.position.set(0, 1, -6); robotGroup.add(scan)
+  scan.rotation.x = -Math.PI / 2; scan.position.set(0, 1, -6); scan.visible=false;robotGroup.add(scan);robotGroup.userData.scan=scan
   robotGroup.position.copy(worldPoint(18, 53)); scene.add(robotGroup)
   register(robotGroup, { title: '巡检广播机器人 R-01', type: '具身智能体', detail: '点击后可推进感知—复核—上报—执行闭环', action: 'robot', x: 18, y: 53 })
 }
 
 function createResidents(): void {
   const residents = props.simulation?.residents ?? []
-  const visibleResidents = props.compact && residents.length > 160 ? residents.filter((_, index) => index % Math.ceil(residents.length / 160) === 0) : residents
+  const visibleResidents = residents
   for (const resident of visibleResidents) {
-    const group = new THREE.Group()
-    const color = resident.vulnerable ? 0xf3be62 : 0x8ed0c2
-    const body = new THREE.Mesh(residentBodyGeometry, material(color, .6, resident.vulnerable ? 0x6c3f11 : 0)); body.position.y = .8; group.add(body); group.userData.body = body
-    const ring = new THREE.Mesh(residentRingGeometry, new THREE.MeshBasicMaterial({ color, transparent: true, opacity: .75, side: THREE.DoubleSide })); ring.rotation.x = -Math.PI / 2; ring.position.y = .03; group.add(ring)
-    group.position.copy(worldPoint(resident.x, resident.y)); group.scale.setScalar(1.25); group.userData.ring = ring; scene.add(group); residentMeshes.set(resident.id, group)
+    const group = createPerson(resident.id, resident.vulnerable)
+    group.position.copy(worldPoint(resident.x, resident.y, resident.height)); scene.add(group); residentMeshes.set(resident.id, group)
     register(group, { title: resident.label, type: resident.vulnerable ? '重点关照人员' : '参演居民智能体', detail: resident.vulnerable ? '移动速度较慢，需要优先引导至集合点' : '根据告警、广播和道路状态执行疏散', residentId: resident.id, x: resident.x, y: resident.y })
   }
 }
@@ -310,13 +326,14 @@ function buildScene(): void {
   scene = new THREE.Scene(); scene.background = new THREE.Color(background); scene.fog = new THREE.FogExp2(background, night ? .008 : .005)
   camera = new THREE.PerspectiveCamera(48, 1, .1, 400); camera.position.copy(targetCameraPosition)
   renderer = new THREE.WebGLRenderer({ antialias: qualityFactor === 1, powerPreference: 'high-performance' }); renderer.setPixelRatio(Math.min(window.devicePixelRatio, qualityFactor === 1 ? 1.5 : 1)); renderer.shadowMap.enabled = qualityFactor === 1; renderer.shadowMap.type = THREE.PCFSoftShadowMap; renderer.outputColorSpace = THREE.SRGBColorSpace
+  renderer.toneMapping = THREE.ACESFilmicToneMapping; renderer.toneMappingExposure = night ? 1.3 : 1.05
   host.value?.appendChild(renderer.domElement)
   controls = new OrbitControls(camera, renderer.domElement); controls.enableDamping = true; controls.dampingFactor = .075; controls.maxPolarAngle = Math.PI * .47; controls.minDistance = 8; controls.maxDistance = 145; controls.target.set(0, 0, 0); controls.addEventListener('change', markRenderDirty)
   controls.addEventListener('start', () => { userOrbiting = true })
   controls.addEventListener('end', () => { targetCameraPosition.copy(camera.position); targetLookAt.copy(controls.target); userOrbiting = false; renderDirty = true })
-  ambientLight = new THREE.HemisphereLight(night ? 0xdce6ef : 0xffffff, 0x8b8478, props.highContrast ? 3.2 : night ? 2 : 2.7); scene.add(ambientLight)
-  const moon = new THREE.DirectionalLight(night ? 0xc4d4e8 : 0xfff3df, 2.1); moon.position.set(-38, 62, 18); moon.castShadow = qualityFactor === 1; moon.shadow.mapSize.set(qualityFactor === 1 ? 1536 : 512, qualityFactor === 1 ? 1536 : 512); moon.shadow.camera.left = -70; moon.shadow.camera.right = 70; moon.shadow.camera.top = 70; moon.shadow.camera.bottom = -70; moon.shadow.normalBias = .08; scene.add(moon)
-  groundPlane = new THREE.Mesh(new THREE.PlaneGeometry(116, 116), material(0x526557, 1)); groundPlane.rotation.x = -Math.PI / 2; groundPlane.receiveShadow = true; scene.add(groundPlane)
+  ambientLight = new THREE.HemisphereLight(night ? 0x9ebacf : 0xffffff, 0x56624a, props.highContrast ? 3.2 : night ? .85 : 2.7); scene.add(ambientLight)
+  const moon = new THREE.DirectionalLight(night ? 0xc4d4e8 : 0xfff3df, night ? 1.5 : 2.1); moon.position.set(-38, 62, 18); moon.castShadow = qualityFactor === 1; moon.shadow.mapSize.set(2048,2048); moon.shadow.camera.left = -65; moon.shadow.camera.right = 65; moon.shadow.camera.top = 65; moon.shadow.camera.bottom = -65; moon.shadow.normalBias = .045; moon.shadow.radius = 3; scene.add(moon)
+  groundPlane = new THREE.Mesh(new THREE.PlaneGeometry(116, 116), sceneMaterials.surface('paving',0x999b88,36,36)); groundPlane.rotation.x = -Math.PI / 2; groundPlane.receiveShadow = true; scene.add(groundPlane)
   blockageLayer = new THREE.Group(); scene.add(blockageLayer)
   environmentAssetLayer = new THREE.Group(); scene.add(environmentAssetLayer)
   roadNetworkLayer = new THREE.Group(); scene.add(roadNetworkLayer)
@@ -356,9 +373,23 @@ function resize(): void {
 
 function markRenderDirty(): void { renderDirty = true }
 
+function applyQuality(): void {
+  qualityFactor=quality.value==='high'?1:quality.value==='medium'?.72:.45
+  if(!renderer||!scene)return
+  renderer.setPixelRatio(Math.min(window.devicePixelRatio,quality.value==='high'?1.5:quality.value==='medium'?1.25:1))
+  renderer.shadowMap.enabled=quality.value!=='low'
+  let lampCount=0
+  scene.traverse(object=>{
+    if(object instanceof THREE.DirectionalLight)object.castShadow=quality.value!=='low'
+    if(object instanceof THREE.PointLight && object!==fireLight)object.visible=lampCount++<(quality.value==='high'?10:quality.value==='medium'?5:2)
+    if(object instanceof THREE.LOD && object.levels[1])object.levels[1].distance=object.parent?.userData.limbs ? (quality.value==='high'?32:quality.value==='medium'?22:14) : (quality.value==='high'?150:quality.value==='medium'?100:55)
+  })
+  resize();renderDirty=true
+}
+
 function buildFrozenCommunity(): void {
   for (const edge of props.simulation?.road_network?.edges ?? []) {
-    const street=createStreet(Math.hypot(edge.end.x-edge.start.x,edge.end.y-edge.start.y),Math.max(1.8,edge.width_meters))
+    const street=createStreet(Math.hypot(edge.end.x-edge.start.x,edge.end.y-edge.start.y),Math.max(1.8,edge.width_meters),sceneMaterials)
     street.position.copy(worldPoint((edge.start.x+edge.end.x)/2,(edge.start.y+edge.end.y)/2))
     street.rotation.y=Math.atan2(edge.end.x-edge.start.x,edge.end.y-edge.start.y);scene.add(street)
     const length=Math.hypot(edge.end.x-edge.start.x,edge.end.y-edge.start.y)
@@ -366,7 +397,7 @@ function buildFrozenCommunity(): void {
   }
   for (const object of props.simulation?.world?.objects ?? []) {
     const x = object.x - 50, z = object.y - 50
-    if (object.type === 'building') { const building = addBuilding(object.name, x, z, object.width, object.depth, object.floors); building.scale.y = .6; buildingMeshes.set(object.id, building) }
+    if (object.type === 'building') { const building = addBuilding(object.name, x, z, object.width, object.depth, object.floors); buildingMeshes.set(object.id, building) }
     else if (object.type === 'fire_hydrant') addHydrant(object.name, x, z, /东/.test(object.name))
     else if (object.type === 'exit') addExit(object.name, x, z)
     else if (['charging_shed', 'micro_fire_station'].includes(object.type)) {
@@ -384,7 +415,7 @@ function buildFrozenCommunity(): void {
       ctx.fillStyle = '#17352bb0'; ctx.fillRect(0, 0, 384, 72); ctx.fillStyle = '#f4f4df'; ctx.font = '500 26px "Microsoft YaHei", sans-serif'; ctx.textAlign = 'center'; ctx.textBaseline = 'middle'; ctx.fillText(object.name, 192, 36, 370)
       const label = new THREE.Sprite(new THREE.SpriteMaterial({ map: new THREE.CanvasTexture(canvas), depthTest: true, transparent: true }))
       label.userData.buildingLabel = object.id
-      label.position.set(x, object.type === 'building' ? object.floors * 1.92 + 3 : 4, z); label.scale.set(7, 1.3, 1); scene.add(label)
+      label.position.set(x, object.type === 'building' ? object.floors * 3.2 + 2 : 4, z); label.scale.set(7, 1.3, 1); scene.add(label)
     }
   }
 }
@@ -392,8 +423,51 @@ function buildFrozenCommunity(): void {
 function buildSpatialGeometry(): void {
   const graph=props.simulation?.spatial_network
   if(!graph)return
+  const homeId=props.simulation?.residents.find(p=>p.building_id)?.building_id
+  const home=props.simulation?.world?.objects.find(o=>o.id===homeId)
+  if(home) {
+    const levels=[...new Set(graph.nodes.filter(n=>n.kind==='corridor').map(n=>n.height))]
+    for(const height of levels) {
+      // Open stairwell on the west side; partial-height partitions retain a readable cutaway.
+      const floor=new THREE.Mesh(new THREE.BoxGeometry(home.width*.63,.12,home.depth*.92),sceneMaterials.surface('paving',0xafa994,2,2))
+      floor.position.copy(worldPoint(home.x+home.width*.16,home.y,height));floor.position.y-=.07;floor.receiveShadow=true;indoorGeometry.add(floor)
+      for(const side of [-1,1]) {
+        const wall=new THREE.Mesh(new THREE.BoxGeometry(home.width*.63,.85,.1),material(0xbeb9a6))
+        wall.position.copy(floor.position);wall.position.z+=side*home.depth*.46;wall.position.y+=.49;indoorGeometry.add(wall)
+      }
+      const rooms=graph.nodes.filter(n=>n.kind==='room'&&n.height===height)
+      for(const room of rooms) {
+        const door=new THREE.Group(),frameMaterial=material(0x8b7257,.75)
+        for(const side of [-1,1]){const jamb=new THREE.Mesh(new THREE.BoxGeometry(.065,2.1,.12),frameMaterial);jamb.position.set(side*.43,1.05,0);door.add(jamb)}
+        const lintel=new THREE.Mesh(new THREE.BoxGeometry(.92,.08,.12),frameMaterial);lintel.position.y=2.12;door.add(lintel)
+        door.position.copy(worldPoint(room.x,room.y,room.height));indoorGeometry.add(door)
+      }
+    }
+  }
   for(const edge of graph.edges.filter(e=>e.id.startsWith('space:') && !e.id.includes(':resident-') || e.kind==='room')) {
-    const a=worldPoint(edge.start.x,edge.start.y,edge.start.height+.03), b=worldPoint(edge.end.x,edge.end.y,edge.end.height+.03)
+    const a=worldPoint(edge.start.x,edge.start.y,edge.start.height), b=worldPoint(edge.end.x,edge.end.y,edge.end.height)
+    a.y+=.035;b.y+=.035
+    const horizontal=Math.hypot(b.x-a.x,b.z-a.z), rise=Math.abs(b.y-a.y)
+    if(horizontal>.05) {
+      const width=Math.max(.6,edge.width_meters), yaw=Math.atan2(b.x-a.x,b.z-a.z)
+      if(edge.kind==='stairs' && rise>.05) {
+        const steps=Math.max(2,Math.ceil(rise/.18))
+        const geometry=new THREE.BoxGeometry(width,.12,horizontal/steps+.025)
+        const stair=new THREE.InstancedMesh(geometry,material(0xb5b5a6),steps)
+        const transform=new THREE.Object3D()
+        for(let i=0;i<steps;i++) { transform.position.copy(a).lerp(b,(i+.5)/steps);transform.position.y-=.06;transform.rotation.y=yaw;transform.updateMatrix();stair.setMatrixAt(i,transform.matrix) }
+        stair.receiveShadow=true;indoorGeometry.add(stair)
+      } else {
+        const deck=new THREE.Mesh(new THREE.BoxGeometry(width,.12,horizontal),material(edge.kind==='room'?0xb6aa92:0xaaa99b))
+        deck.position.copy(a).lerp(b,.5);deck.position.y-=.07;deck.rotation.y=yaw;deck.receiveShadow=true;indoorGeometry.add(deck)
+      }
+      if(edge.kind==='stairs')for(const side of [-1,1]) {
+        const offset=new THREE.Vector3(Math.cos(yaw)*width*.48,.9,-Math.sin(yaw)*width*.48).multiply(new THREE.Vector3(side,1,side))
+        const rail=new THREE.Mesh(new THREE.CylinderGeometry(.025,.025,a.distanceTo(b),8),material(0x677c73,.4))
+        rail.position.copy(a).lerp(b,.5).add(offset);rail.quaternion.setFromUnitVectors(new THREE.Vector3(0,1,0),b.clone().sub(a).normalize());indoorGeometry.add(rail)
+        for(let i=0;i<=4;i++){const post=new THREE.Mesh(new THREE.CylinderGeometry(.022,.022,.9,6),material(0x677c73,.4));post.position.copy(a).lerp(b,i/4).add(offset);post.position.y-=.45;indoorGeometry.add(post)}
+      }
+    }
     const color=edge.kind==='stairs'?0x599fea:edge.kind==='assembly'?0x80d6a6:0x67aa9c
     const rail=new THREE.Mesh(new THREE.CylinderGeometry(.055,.055,a.distanceTo(b),6),material(color))
     rail.position.copy(a).lerp(b,.5);rail.quaternion.setFromUnitVectors(new THREE.Vector3(0,1,0),b.clone().sub(a).normalize());indoorGeometry.add(rail)
@@ -407,7 +481,7 @@ function buildSpatialGeometry(): void {
   }
   for(const n of graph.nodes.filter(n=>n.kind==='corridor'||n.id==='assembly:north'||n.id==='assembly:south')) {
     const disk=new THREE.Mesh(new THREE.CircleGeometry(n.kind==='assembly'?1.7:.45,24),new THREE.MeshBasicMaterial({color:n.kind==='assembly'?0x8fe8ae:0x74a9c5,side:THREE.DoubleSide,transparent:true,opacity:.7}))
-    disk.rotation.x=-Math.PI/2;disk.position.copy(worldPoint(n.x,n.y,n.height+.04));indoorGeometry.add(disk)
+    disk.rotation.x=-Math.PI/2;disk.position.copy(worldPoint(n.x,n.y,n.height));disk.position.y+=.04;indoorGeometry.add(disk)
     if(n.kind==='assembly')register(disk,{title:n.name,type:'集合点',detail:'人员必须沿集合通道到达后才能清点。',x:n.x,y:n.y})
   }
 }
@@ -417,14 +491,17 @@ function showIndoor(): void {
   const person = props.simulation?.residents.find(p => p.floor)
   const home = props.simulation?.world?.objects.find(o => o.id === person?.building_id)
   for(const child of scene.children) if(child.userData.buildingLabel) child.visible=!indoorView.value || child.userData.buildingLabel===home?.id
-  for (const [id, object] of buildingMeshes) object.traverse(child => {
+  for (const [id, object] of buildingMeshes) {
+    object.visible=!indoorView.value || id===home?.id
+    object.traverse(child => {
     const mesh = child as THREE.Mesh
     const materials = Array.isArray(mesh.material) ? mesh.material : mesh.material ? [mesh.material] : []
     for (const mat of materials) { mat.transparent = indoorView.value && id === home?.id; mat.opacity = mat.transparent ? .13 : 1; mat.depthWrite = !mat.transparent; mat.needsUpdate = true }
-  })
+    })
+  }
   if (home) {
-    viewMode.value = 'director'; targetLookAt.set(home.x - 50, home.floors * .8, home.y - 50)
-    targetCameraPosition.copy(targetLookAt).add(new THREE.Vector3(12, 8, 16)); controls.enabled = true
+    viewMode.value = 'director'; targetLookAt.set(home.x - 50, home.floors * 1.5, home.y - 50)
+    targetCameraPosition.copy(targetLookAt).add(new THREE.Vector3(20, 10, 26)); controls.enabled = true
   }
   updateEntities()
   flashNotice(indoorView.value ? '楼内示意剖面：人物按服务端三维通道位置行走，不是真实户型或实测楼梯' : '已恢复建筑外观')
@@ -445,27 +522,38 @@ function pointRobotAtSelection(): void {
 }
 function selectResidents(ids: string[]): void { selectedResidents.value=ids; toolMode.value='residents'; if(controls)controls.enabled=false; if(ids.some(id=>props.simulation?.residents.find(p=>p.id===id)?.indoor_stage!=='outdoor')&&!indoorView.value)showIndoor(); if(controls)controls.enabled=false; updateEntities() }
 function selectCurrentResident(): void {
-  if (!selected.value?.residentId) return
-  selectedResidents.value = [selected.value.residentId]; toolMode.value = 'residents'; updateEntities()
+  const id = selected.value?.residentId ?? activeResident.value?.id
+  if (!id) return
+  setView('director')
+  selectedResidents.value = [id]; toolMode.value = 'residents'; controls.enabled = false
+  emit('selection', selectedResidents.value); updateEntities()
 }
 defineExpose({ focusPoint, focusResident, showIndoor, selectResidents })
 
 function animate(time = 0): void {
   animationFrame = requestAnimationFrame(animate)
+  const delta = Math.min(.05, Math.max(0, (time-lastFrameTime)/1000)); lastFrameTime=time
   if (!pageVisible) return
   const activelyAnimating = props.status === 'running' && !reducedMotion
   if (!activelyAnimating && !renderDirty) return
   const fireScale = .8 + (props.simulation?.fire.intensity ?? 20) / 115
-  for (const [index, particle] of fireParticles.entries()) { if (!reducedMotion) { particle.mesh.position.y += particle.speed * fireScale; particle.mesh.position.x += Math.sin(time * .002 + particle.phase) * .006 }; particle.mesh.scale.setScalar(.72 + (reducedMotion ? 0 : Math.sin(time * .006 + index) * .22)); if (particle.mesh.position.y > 8.5) particle.mesh.position.y = .8 }
-  const smokeScale = .75 + (props.simulation?.fire.smoke_radius ?? 8) / 42
+  if(activelyAnimating)visualSeconds+=delta
   const wind = props.simulation?.world?.parameters?.wind_direction ?? '微风'
-  const windX = wind === '东风' ? -.018 : wind.includes('东北') ? -.009 : wind === '微风' ? .004 : 0
-  const windZ = wind === '北风' ? .018 : wind.includes('东北') ? .009 : wind === '微风' ? .003 : 0
-  for (const particle of smokeParticles) {
-    if (!reducedMotion) { particle.mesh.position.y += particle.speed * smokeScale; particle.mesh.position.x += Math.sin(time * .0007 + particle.phase) * .012 + windX; particle.mesh.position.z += windZ }
-    if (particle.mesh.position.y > 28) { particle.mesh.position.set(particle.originX + (Math.random() - .5) * 5, 5, particle.originZ + (Math.random() - .5) * 5) }
+  fireEffects?.update(reducedMotion ? 0 : visualSeconds, props.simulation?.fire.intensity ?? 0, props.simulation?.fire.smoke_radius ?? 8, wind, camera, qualityFactor)
+  for(const mesh of [...residentMeshes.values(),...helperMeshes.values()]) {
+    const target=mesh.userData.targetPosition as THREE.Vector3|undefined
+    const before=mesh.position.clone()
+    if(target) { if(activelyAnimating)mesh.position.lerp(target,1-Math.exp(-delta*12));else mesh.position.copy(target) }
+    const moving=activelyAnimating && mesh.position.distanceToSquared(before)>.000001
+    posePerson(mesh,moving,visualSeconds,Boolean(mesh.userData.exposed),Boolean(mesh.userData.crowded))
   }
-  if (fireLight) fireLight.intensity = props.effectsEnabled === false ? 2.4 : 5.5 + (reducedMotion ? 0 : Math.sin(time * .011) * 1.3) + fireScale * 2
+  if(robotGroup?.userData.targetPosition) {
+    const target=robotGroup.userData.targetPosition as THREE.Vector3, before=robotGroup.position.clone()
+    if(activelyAnimating)robotGroup.position.lerp(target,1-Math.exp(-delta*12));else robotGroup.position.copy(target)
+    const distance=before.distanceTo(robotGroup.position)
+    for(const wheel of robotGroup.userData.wheels as THREE.Mesh[])wheel.rotation.x-=distance/.23
+  }
+  if (fireLight) fireLight.intensity = (props.simulation?.fire.intensity ?? 0) <= 0 ? 0 : props.effectsEnabled === false ? 2.4 : 5.5 + (reducedMotion ? 0 : Math.sin(time * .011) * 1.3) + fireScale * 2
   if (roadHeatMesh) (roadHeatMesh.material as THREE.MeshBasicMaterial).opacity = .32 + (reducedMotion ? 0 : Math.sin(time * .0024) * .08)
   for (const heat of stairHeatMeshes.values()) {
     const density = Number(heat.userData.density ?? 0)
@@ -485,7 +573,15 @@ function animate(time = 0): void {
     if (reducedMotion) { camera.position.copy(targetCameraPosition); controls.target.copy(targetLookAt) }
     else { camera.position.lerp(targetCameraPosition, .045); controls.target.lerp(targetLookAt, .055) }
   }
-  controls.update(); renderer.render(scene, camera)
+  controls.update()
+  for(const child of scene.children)if(child instanceof THREE.Sprite && child.userData.buildingLabel) {
+    const distance=child.position.distanceTo(camera.position)
+    const width=Math.min(7,Math.max(2,distance*.09));child.scale.set(width,width*72/384,1)
+    child.visible=viewMode.value!=='resident' && distance>12 && !indoorView.value
+  }
+  renderer.render(scene, camera)
+  frameCount++
+  if(time-sampleStarted>=1000) { fps.value=activelyAnimating?Math.round(frameCount*1000/(time-sampleStarted)):0;frameCount=0;sampleStarted=time }
   const cameraSettled = camera.position.distanceTo(targetCameraPosition) < .08 && controls.target.distanceTo(targetLookAt) < .08
   renderDirty = !activelyAnimating && !reducedMotion && !cameraSettled
 }
@@ -498,7 +594,7 @@ function updateCameraFollow(): void {
       const heading = residentHeadings.get(activeResident.value.id)?.clone() ?? new THREE.Vector3(0, 0, -1)
       if (heading.lengthSq() < .01) heading.set(0, 0, -1)
       heading.y = 0; heading.normalize()
-      targetCameraPosition.copy(mesh.position).add(new THREE.Vector3(0, activeResident.value.height !== undefined ? .72 : 1.52, 0)).addScaledVector(heading, .18)
+      targetCameraPosition.copy(mesh.position).add(new THREE.Vector3(0, 1.6, 0)).addScaledVector(heading, .18)
       targetLookAt.copy(targetCameraPosition).addScaledVector(heading, 9); targetLookAt.y += .08
     }
   }
@@ -559,48 +655,54 @@ function updateEntities(): void {
   if (!scene) return
   const hour=Number.parseInt(props.simulation?.world?.parameters?.start_time?.split(':')[0] ?? '20',10)
   const night=hour>=18 || hour<6
-  if (ambientLight) ambientLight.intensity = props.highContrast ? 3.2 : night ? 2.4 : 2.8
+  if (ambientLight) ambientLight.intensity = props.highContrast ? 3.2 : night ? 1.5 : 2.8
   if (scene.fog instanceof THREE.FogExp2) scene.fog.density = props.highContrast ? .001 : night ? .0035 : .0015
-  ;(groundPlane.material as THREE.MeshStandardMaterial).color.setHex(night ? 0x555e56 : 0xaaa995)
+  ;(groundPlane.material as THREE.MeshStandardMaterial).color.setHex(night ? 0x647066 : 0xaaa995)
   for (const helper of props.simulation?.helpers ?? []) {
     let mesh = helperMeshes.get(helper.id)
     if (!mesh) {
-      mesh = new THREE.Group()
-      const body = new THREE.Mesh(helperBodyGeometry, material(0x66adff, .7, 0x183855)); body.position.y = 1.1; mesh.add(body)
-      const head = new THREE.Mesh(helperHeadGeometry, material(0xf0d0a8)); head.position.y = 2; mesh.add(head)
+      mesh = createPerson(helper.id, false, true)
       const meetingPulse = new THREE.Mesh(new THREE.RingGeometry(.62, .82, 24), new THREE.MeshBasicMaterial({ color: 0x74b7ff, transparent: true, opacity: .75, side: THREE.DoubleSide, depthWrite: false })); meetingPulse.rotation.x = -Math.PI / 2; meetingPulse.position.y = .06; meetingPulse.visible = false; mesh.add(meetingPulse); mesh.userData.meetingPulse = meetingPulse
       scene.add(mesh); helperMeshes.set(helper.id, mesh)
     }
-    mesh.position.copy(worldPoint(helper.x, helper.y, helper.height ?? 0)); mesh.position.x += .22; mesh.scale.setScalar(props.simulation?.spatial_network ? .35 : 1); mesh.visible = helper.state !== 'completed' && ((helper.height??0)===0 || indoorView.value)
+    const next=worldPoint(helper.x, helper.y, helper.height ?? 0);next.x+=.32
+    if(!mesh.userData.targetPosition||props.status!=='running')mesh.position.copy(next)
+    const direction=next.clone().sub(mesh.position);if(direction.lengthSq()>.001)mesh.rotation.y=Math.atan2(-direction.x,-direction.z)
+    mesh.userData.targetPosition=next;mesh.visible = helper.state !== 'completed' && ((helper.height??0)===0 || indoorView.value)
   }
   for (const [id, mesh] of helperMeshes) if (!props.simulation?.helpers?.some(h => h.id === id)) mesh.visible = false
   if (props.robot && robotGroup) {
-    robotGroup.position.copy(worldPoint(props.robot.x, props.robot.y))
+    const next=worldPoint(props.robot.x, props.robot.y),direction=next.clone().sub(robotGroup.position)
+    if(direction.lengthSq()>.0025)robotGroup.rotation.y=Math.atan2(-direction.x,-direction.z)
+    if(!robotGroup.userData.targetPosition||props.status!=='running')robotGroup.position.copy(next)
+    robotGroup.userData.targetPosition=next
+    if(robotGroup.userData.scan)robotGroup.userData.scan.visible=['sensing','inspecting','scanning','verifying'].includes(props.robot.state)
     rebuildRoute()
   }
   for (const resident of props.simulation?.residents ?? []) {
     const mesh = residentMeshes.get(resident.id)
     if (mesh) {
       const previousPosition = mesh.position.clone()
-      mesh.position.copy(worldPoint(resident.x, resident.y, resident.height ?? 0)); mesh.visible = indoorView.value || !resident.indoor_stage || resident.indoor_stage === 'outdoor'
-      const bodyMaterial = (mesh.userData.body as THREE.Mesh | undefined)?.material as THREE.MeshStandardMaterial | undefined
+      const nextPosition=worldPoint(resident.x, resident.y, resident.height ?? 0)
+      if(!mesh.userData.targetPosition||props.status!=='running')mesh.position.copy(nextPosition)
+      mesh.userData.targetPosition=nextPosition; mesh.visible = indoorView.value || !resident.indoor_stage || resident.indoor_stage === 'outdoor'
       const ringMaterial = (mesh.userData.ring as THREE.Mesh | undefined)?.material as THREE.MeshBasicMaterial | undefined
       const danger = (resident.smoke_exposure ?? 0) > 5
       const crowded = (resident.congestion ?? 0) > 55
-      if (bodyMaterial) bodyMaterial.color.setHex(resident.status === 'evacuated' ? 0x55b988 : danger ? 0xf06a49 : crowded ? 0xf0b35b : resident.vulnerable ? 0xf3be62 : 0x8ed0c2)
+      mesh.userData.exposed=danger;mesh.userData.crowded=crowded
       if (ringMaterial) { ringMaterial.color.setHex(selectedResidents.value.includes(resident.id) ? 0xffffff : danger ? 0xff4d2e : crowded ? 0xffc45d : resident.vulnerable ? 0xf3be62 : 0x8ed0c2); ringMaterial.opacity = selectedResidents.value.includes(resident.id) ? 1 : .75 }
-      mesh.scale.setScalar(resident.height !== undefined ? .4 : selectedResidents.value.includes(resident.id) ? 1.72 : crowded ? 1.46 : 1.25)
+      mesh.scale.setScalar(1)
       if (indoorView.value && resident.height === undefined && resident.indoor_stage && resident.indoor_stage !== 'outdoor') {
         const home = props.simulation?.world?.objects.find(o => o.id === resident.building_id)
         if (home) {
           const index = Number(resident.id.split('-').pop()) - 1
           const onStairs = ['stairs','exit_queue'].includes(resident.indoor_stage)
-          mesh.position.set(home.x - 50 + (onStairs ? home.width * .38 : ((index % 5) - 2) * home.width / 6), Math.max(.2, ((resident.current_floor ?? resident.floor ?? 1) - .5) * 1.92), home.y - 50 + ((Math.floor(index / 5) % 2) - .5) * home.depth * .6)
-          mesh.visible = true; mesh.scale.setScalar(.4)
+          mesh.position.set(home.x - 50 + (onStairs ? home.width * .38 : ((index % 5) - 2) * home.width / 6), Math.max(.18, ((resident.current_floor ?? resident.floor ?? 1) - 1) * 3.2+.18), home.y - 50 + ((Math.floor(index / 5) % 2) - .5) * home.depth * .6)
+          mesh.userData.targetPosition=mesh.position.clone(); mesh.visible = true
         }
       }
-      const heading = mesh.position.clone().sub(previousPosition); heading.y = 0
-      if (heading.lengthSq() > .0025) residentHeadings.set(resident.id, heading.normalize())
+      const heading = nextPosition.clone().sub(previousPosition); heading.y = 0
+      if (heading.lengthSq() > .0025) { residentHeadings.set(resident.id, heading.normalize());mesh.rotation.y=Math.atan2(-heading.x,-heading.z) }
       mesh.visible = mesh.visible && !(viewMode.value === 'resident' && activeResident.value?.id === resident.id)
       updateResidentTrail(resident, mesh.position)
     }
@@ -665,8 +767,8 @@ function rebuildRoadNetwork(): void {
   const heatInstances = new THREE.InstancedMesh(heatGeometry, heatMaterial, edges.length)
   const transform = new THREE.Object3D()
   for (const edge of edges) {
-    const start = worldPoint(edge.start.x, edge.start.y, .22)
-    const end = worldPoint(edge.end.x, edge.end.y, .22)
+    const start = worldPoint(edge.start.x, edge.start.y);start.y=.22
+    const end = worldPoint(edge.end.x, edge.end.y);end.y=.22
     const length = start.distanceTo(end)
     const width = Math.max(1.8, edge.width_meters * .72)
     const risk = THREE.MathUtils.clamp(edge.risk_score / 100, 0, 1)
@@ -698,7 +800,7 @@ function rebuildResidentRoutes(): void {
   for (const residentId of new Set([...(props.routePreview??[]).map(p=>p.id), ...selectedResidents.value, ...(selected.value?.residentId ? [selected.value.residentId] : [])])) {
     const resident = props.routePreview?.find(p=>p.id===residentId) ?? props.simulation?.residents.find((item) => item.id === residentId)
     if (!resident?.route_points || resident.route_points.length < 2) continue
-    const geometry = new THREE.BufferGeometry().setFromPoints(resident.route_points.map((point) => worldPoint(point.x, point.y, (point.height??0)+.12)))
+    const geometry = new THREE.BufferGeometry().setFromPoints(resident.route_points.map((point) => {const p=worldPoint(point.x, point.y, point.height??0);p.y+=.12;return p}))
     const line = new THREE.Line(geometry, new THREE.LineDashedMaterial({ color: props.routePreview?.length ? 0xffd789 : 0x8fe8da, dashSize: .9, gapSize: .45, transparent: true, opacity: .9 }))
     line.computeLineDistances()
     residentRouteLayer.add(line)
@@ -708,7 +810,7 @@ function rebuildResidentRoutes(): void {
 function rebuildRoute(): void {
   if (!scene) return
   if (routeLine) { scene.remove(routeLine); routeLine.geometry.dispose(); (routeLine.material as THREE.Material).dispose() }
-  const eventPoints = latestRoutePoints.value.map((point) => worldPoint(point.x, point.y, .18))
+  const eventPoints = latestRoutePoints.value.map((point) => {const p=worldPoint(point.x, point.y, point.height??0);p.y+=.18;return p})
   if (eventPoints.length < 2) { routeLine = null; return }
   const geometry = new THREE.BufferGeometry().setFromPoints(eventPoints); const routeMaterial = new THREE.LineDashedMaterial({ color: props.robotRoutePreview?.length ? 0xffd789 : 0x56e2d2, dashSize: 1.4, gapSize: .85, transparent: true, opacity: .9 })
   routeLine = new THREE.Line(geometry, routeMaterial); routeLine.computeLineDistances(); scene.add(routeLine)
@@ -716,6 +818,7 @@ function rebuildRoute(): void {
 
 function setView(mode: typeof viewMode.value): void {
   if (mode === 'resident' && !activeResident.value && props.simulation?.residents[0]) selectedResident.value = props.simulation.residents[0].id
+  if(mode==='resident' && activeResident.value?.indoor_stage && activeResident.value.indoor_stage!=='outdoor' && !indoorView.value)showIndoor()
   viewMode.value = mode; controls.enabled = mode === 'director'
   if (mode === 'director') { targetCameraPosition.set(66, 76, 74); targetLookAt.set(0, 0, 0) }
   if (mode === 'rescue') { targetCameraPosition.set(-58, 32, 54); targetLookAt.set(4, 0, 0) }
@@ -844,6 +947,9 @@ function runSelectedAction(): void {
 
 function selectAccessibleObject(event: Event): void {
   const key = (event.target as HTMLSelectElement).value
+  if (!key) { selected.value = null; return }
+  setTool('inspect')
+  if (!key.startsWith('resident-')) setView('director')
   if (key.startsWith('object:')) {
     const object = props.simulation?.world?.objects.find(o => o.id === key.slice(7))
     if (object) { selected.value = { title: object.name, type: '社区对象', detail: '与场次冻结地图一致 · 可指派机器人到此接入点', x: object.entry.x, y: object.entry.y }; focusPoint(object.x, object.y) }
@@ -867,6 +973,8 @@ function onContextLost(event: Event): void { event.preventDefault(); renderError
 function onContextRestored(): void { renderError.value = ''; resize(); renderDirty = true }
 
 watch(() => [props.robot?.x, props.robot?.y, props.robot?.state, props.simulation, props.highContrast], () => { void nextTick(updateEntities) }, { deep: true })
+watch(quality,applyQuality)
+watch(() => props.elapsedSeconds,value=>{visualSeconds=value;renderDirty=true},{immediate:true})
 watch(() => props.events?.[0]?.sequence, () => {
   const event = props.events?.[0]
   if (!event || !scene) return
@@ -876,7 +984,7 @@ watch(() => props.events?.[0]?.sequence, () => {
   window.setTimeout(() => { if (directorCue.value === event.message) directorCue.value = '' }, 4200)
 })
 onMounted(() => {
-  try { buildScene() }
+  try { buildScene(); applyQuality() }
   catch { renderError.value = '当前浏览器无法初始化三维渲染，请检查硬件加速设置后重新进入演练中心。' }
 })
 onBeforeUnmount(() => {
@@ -889,11 +997,12 @@ onBeforeUnmount(() => {
     mesh.geometry?.dispose()
     const materials = Array.isArray(mesh.material) ? mesh.material : mesh.material ? [mesh.material] : []
     for (const item of materials) {
-      const textured = item as THREE.Material & { map?: THREE.Texture | null }
-      textured.map?.dispose()
+      const textured = item as THREE.MeshStandardMaterial
+      textured.map?.dispose(); textured.bumpMap?.dispose(); textured.normalMap?.dispose(); textured.roughnessMap?.dispose()
       item.dispose()
     }
   })
+  sceneMaterials.dispose()
   renderer?.renderLists.dispose(); renderer?.dispose(); renderer?.forceContextLoss(); renderer?.domElement.remove()
 })
 watch(() => [props.routePreview, props.robotRoutePreview], () => updateEntities(), { deep: true })
@@ -917,6 +1026,7 @@ watch(() => [props.routePreview, props.robotRoutePreview], () => updateEntities(
         <button type="button" title="机器人跟随" aria-label="机器人跟随" :data-active="viewMode === 'robot'" :aria-pressed="viewMode === 'robot'" @click="setView('robot')"><AppIcon name="robot" />机器人跟随</button>
         <button type="button" title="居民第一视角" aria-label="居民第一视角" :data-active="viewMode === 'resident'" :aria-pressed="viewMode === 'resident'" @click="setView('resident')"><AppIcon name="person" />居民第一视角</button>
         <button type="button" title="救援视角" aria-label="救援视角" :data-active="viewMode === 'rescue'" :aria-pressed="viewMode === 'rescue'" @click="setView('rescue')"><AppIcon name="rescue" />救援视角</button>
+        <label class="twin-quality">画质<select v-model="quality" aria-label="三维画质"><option value="high">精细</option><option value="medium">均衡</option><option value="low">流畅</option></select><small>{{status==='running' && fps ? fps+' fps' : '静止省电'}}</small></label>
       </nav>
 
       <label v-if="!compact" class="twin-object-nav">对象导航<select aria-label="选择沙盘对象" @change="selectAccessibleObject"><option value="">选择建筑、设施或人员</option><option v-for="item in accessibleObjects" :key="item.key" :value="item.key">{{ item.label }}</option></select></label>
@@ -926,6 +1036,7 @@ watch(() => [props.routePreview, props.robotRoutePreview], () => updateEntities(
         <p>{{ activeResident.last_location ?? '正在定位连续空间位置' }}</p>
         <div class="resident-pov-grid"><span>当前行为<strong>{{ activeResident.behavior ?? '等待指令' }}</strong></span><span>目标出口<strong>{{ activeResident.exit === 'north' ? '北侧集合点' : activeResident.exit === 'south' ? '南侧集合点' : '未分配' }}</strong></span><span>排队累计<strong>{{ Math.round(activeResident.queue_seconds ?? 0) }} 秒</strong></span><span>护送状态<strong>{{ activeHelper ? (activeHelper.state === 'escorting' ? '已会合同行' : '护送员接近中') : activeResident.assisted ? '护送中' : '未指派' }}</strong></span></div>
         <div class="resident-pov-exposure"><span>烟气暴露轨迹<strong>{{ povExposureLevel }}%</strong></span><i><b :style="{ width: povExposureLevel + '%' }"></b></i></div>
+        <button v-if="interactive" class="resident-pov-command" type="button" @click="selectCurrentResident"><AppIcon name="route" :size="17" />指挥此居民</button>
       </aside>
 
       <nav v-if="!compact" class="spatial-tool-rack" aria-label="空间直接操作工具">
@@ -950,8 +1061,8 @@ watch(() => [props.routePreview, props.robotRoutePreview], () => updateEntities(
         </details>
       </nav>
 
-      <Teleport to="body"><aside v-if="(operationBusy || operationPreview) && !compact" class="spatial-action-preview" aria-label="空间操作预演">
-        <header><div><span>{{ operationPreview?.kind === 'road' ? '道路影响预演' : operationPreview?.kind === 'robot' ? '机器人路径预演' : '居民疏散预演' }}</span><strong>{{ operationPreview?.title ?? (operationPreview?.kind === 'residents' ? `${operationPreview.residents?.length ?? 0} 名居民 → ${operationPreview.exit === 'north' ? '北侧' : '南侧'}集合点` : '正在计算空间影响') }}</strong></div><button type="button" aria-label="取消本次预演" @click="emit('cancelAction')"><AppIcon name="close" :size="17" /></button></header>
+      <Teleport to="body"><aside v-if="(operationBusy || operationPreview) && !compact" class="spatial-action-preview spatial-action-preview--immersive" data-ui-theme="immersive" aria-label="空间操作预演">
+        <header><div><span>{{ operationPreview?.kind === 'road' ? '道路影响预演' : operationPreview?.kind === 'robot' ? '机器人路径预演' : '居民疏散预演' }}<template v-if="operationPreview?.expected_sequence !== undefined"> · 现场版本 {{ operationPreview.expected_sequence }}</template></span><strong>{{ operationPreview?.title ?? (operationPreview?.kind === 'residents' ? `${operationPreview.residents?.length ?? 0} 名居民 → ${operationPreview.exit === 'north' ? '北侧' : '南侧'}集合点` : '正在计算空间影响') }}</strong></div><button type="button" aria-label="取消本次预演" @click="emit('cancelAction')"><AppIcon name="close" :size="17" /></button></header>
         <div v-if="operationBusy" class="spatial-action-loading"><i></i><span>正在用当前路网和实时人员状态计算…</span></div>
         <template v-else-if="operationPreview">
           <div class="spatial-action-metrics">
@@ -961,8 +1072,10 @@ watch(() => [props.routePreview, props.robotRoutePreview], () => updateEntities(
             <div v-if="operationPreview.queue_position !== undefined"><span>队列位置</span><strong>第 {{ operationPreview.queue_position }} 项</strong></div>
             <div v-if="operationPreview.width_meters !== undefined"><span>道路宽度</span><strong>{{ operationPreview.width_meters }}<small> 米</small></strong></div>
             <div v-if="operationPreview.affected_residents !== undefined"><span>需改道居民</span><strong>{{ operationPreview.affected_residents }}<small> 人</small></strong></div>
+            <div v-if="operationPreview.affected_robot_tasks !== undefined"><span>受影响任务</span><strong>{{ operationPreview.affected_robot_tasks }}<small> 项</small></strong></div>
           </div>
           <div v-if="operationPreview.impact" class="spatial-impact"><span>确认后 30 秒影响</span><div><p>拥堵人数<strong>{{ operationPreview.impact.congested_before }} → {{ operationPreview.impact.congested_after }}</strong></p><p>烟气暴露<strong>{{ operationPreview.impact.smoke_exposed_before }} → {{ operationPreview.impact.smoke_exposed_after }}</strong></p></div></div>
+          <div v-if="operationPreview.score_impact" class="spatial-score-impact"><span>预计过程评分</span><strong>{{ operationPreview.score_impact.before }} → {{ operationPreview.score_impact.after }} <b>({{ operationPreview.score_impact.delta > 0 ? '+' : '' }}{{ operationPreview.score_impact.delta }})</b></strong><small>{{ operationPreview.score_impact.note }}</small></div>
           <p class="spatial-action-note">{{ operationPreview.notice }}</p>
           <p class="spatial-evidence"><AppIcon name="award" :size="15" />确认后将同步写入事件流、过程评分和复盘证据</p>
           <div class="spatial-action-buttons"><button type="button" @click="emit('cancelAction')">重新选择</button><button type="button" :disabled="!operationPreview.can_apply || operationBusy" @click="emit('confirmAction')"><AppIcon name="check" :size="17" />{{ operationPreview.can_apply ? '确认执行' : '当前不可执行' }}</button></div>
@@ -977,6 +1090,7 @@ watch(() => [props.routePreview, props.robotRoutePreview], () => updateEntities(
         <button v-if="selected.roadEdgeId && simulation?.road_network?.edges.find(e => e.id === selected?.roadEdgeId)?.status === 'blocked' && interactive" type="button" @click="emit('reopenRoad', selected.roadEdgeId)">解除此路段封锁</button>
         <button v-if="selected.residentId && interactive" type="button" @click="selectCurrentResident">指挥此居民</button>
         <button v-else-if="selected.x !== undefined && interactive" type="button" @click="pointRobotAtSelection">派机器人到此处</button>
+        <button class="twin-inspector__assistant" type="button" @click="askAboutSelection"><AppIcon name="brain" :size="17" />问 AI 分析此对象</button>
       </aside>
 
       <div v-if="!compact" class="twin-stage__legend">
@@ -993,7 +1107,15 @@ watch(() => [props.routePreview, props.robotRoutePreview], () => updateEntities(
 
 
 <style scoped>
+@media(max-width:700px){.twin-quality{white-space:nowrap;padding:4px!important}.twin-quality small{display:none}}
+.twin-quality{display:flex;align-items:center;gap:6px;color:#c9d9d0;font-size:12px;padding:4px 8px}.twin-quality select{min-height:32px;width:auto;max-width:88px;padding:3px 6px;border:1px solid #526e63;border-radius:4px;color:#edf4ed;background:#19392f;font:inherit}.twin-quality small{min-width:52px;font-variant-numeric:tabular-nums;font-size:11px}.twin-quality select:focus-visible{outline:2px solid #f1c773;outline-offset:2px}
 .spatial-marquee{position:absolute;z-index:15;pointer-events:none;border:1px solid #b5eede;background:#a2e9d329}.indoor-toggle{position:absolute;left:16px;bottom:155px;z-index:12;padding:10px 14px;border:1px solid #628a7d;border-radius:8px;background:#16392fee;color:#e9f2e9;font-size:13px;cursor:pointer;min-height:40px}.spatial-action-preview{position:absolute;z-index:16;right:4.75rem;bottom:4.7rem;width:min(25rem,calc(100% - 19rem));border:1px solid #5c8179;border-radius:.85rem;background:#edf1e9;color:#172c28;padding:1rem;box-shadow:0 22px 52px rgba(0,0,0,.34)}.spatial-action-preview header{display:flex;align-items:start;justify-content:space-between;gap:1rem;border-bottom:1px solid #c6d1cb;padding-bottom:.7rem}.spatial-action-preview header span,.spatial-action-preview header strong{display:block}.spatial-action-preview header span{color:#58716b;font-size:.65rem}.spatial-action-preview header strong{margin-top:.2rem;font-size:.9rem;overflow-wrap:anywhere}.spatial-action-preview header button{display:grid;place-items:center;flex:0 0 auto;width:2rem;height:2rem;border:0;border-radius:.4rem;background:transparent;color:#46605a}.spatial-action-loading{display:flex;align-items:center;gap:.65rem;padding:1.3rem 0;color:#58716b;font-size:.75rem}.spatial-action-loading i{width:1rem;height:1rem;border:2px solid #a8bbb5;border-top-color:#1b6a60;border-radius:50%;animation:spatial-spin .75s linear infinite}.spatial-action-metrics{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:.4rem;margin-top:.75rem}.spatial-action-metrics>div{min-width:0;border:1px solid #d1d9d5;border-radius:.5rem;background:#f9faf6;padding:.55rem}.spatial-action-metrics span,.spatial-action-metrics strong{display:block}.spatial-action-metrics span{color:#71827e;font-size:.58rem}.spatial-action-metrics strong{margin-top:.18rem;font-size:.76rem;font-variant-numeric:tabular-nums}.spatial-action-metrics small{font-size:.58rem;font-weight:500}.spatial-impact{margin-top:.7rem;border-top:1px solid #c6d1cb;padding-top:.65rem}.spatial-impact>span{color:#9a4b36;font-size:.62rem;font-weight:700}.spatial-impact>div{display:grid;grid-template-columns:1fr 1fr;gap:.45rem;margin-top:.4rem}.spatial-impact p{display:flex;justify-content:space-between;gap:.4rem;margin:0;border-radius:.45rem;background:#e0e8e1;padding:.5rem;color:#58716b;font-size:.62rem}.spatial-impact p strong{color:#183b34;font-variant-numeric:tabular-nums}.spatial-action-note{margin:.7rem 0 0;color:#536b65;font-size:.67rem;line-height:1.55}.spatial-evidence{display:flex;align-items:center;gap:.4rem;margin:.55rem 0 0;color:#736025;font-size:.62rem}.spatial-action-buttons{display:grid;grid-template-columns:.7fr 1fr;gap:.5rem;margin-top:.8rem}.spatial-action-buttons button{display:flex;align-items:center;justify-content:center;gap:.35rem;min-height:2.5rem;border:1px solid #91a39e;border-radius:.55rem;background:transparent;color:#284b44;font-size:.7rem;font-weight:700}.spatial-action-buttons button:last-child{border-color:#1d685e;background:#1d685e;color:#fff}.spatial-action-buttons button:disabled{opacity:.45;cursor:not-allowed}@keyframes spatial-spin{to{transform:rotate(360deg)}}@media(prefers-reduced-motion:reduce){.spatial-action-loading i{animation:none}}@media(max-width:900px){.spatial-action-preview{right:4rem;bottom:3.3rem;width:min(23rem,calc(100% - 15rem))}}@media(max-width:700px){.indoor-toggle{bottom:12px;left:12px}.spatial-action-preview{position:fixed;z-index:120;right:.55rem;bottom:4.4rem;left:.55rem;width:auto;max-height:calc(100dvh - 9rem);overflow:auto;padding:.85rem}.spatial-action-metrics{grid-template-columns:repeat(2,minmax(0,1fr))}}
 .resident-pov-hud{position:absolute;z-index:11;right:1rem;bottom:1rem;width:min(27rem,calc(100% - 2rem));padding:.85rem 1rem;border:1px solid rgba(111,193,181,.42);border-radius:.7rem;background:rgba(5,25,23,.9);color:#edf8f4;box-shadow:0 18px 42px rgba(0,0,0,.32),inset 0 1px rgba(255,255,255,.06);backdrop-filter:blur(12px)}.resident-pov-hud header{display:flex;align-items:center;justify-content:space-between;gap:1rem}.resident-pov-hud header span,.resident-pov-hud header strong{display:block}.resident-pov-hud header span{color:#73cdbf;font-size:.6rem;letter-spacing:.1em}.resident-pov-hud header strong{margin-top:.18rem;font-size:.9rem}.resident-pov-hud>p{margin:.55rem 0 .7rem;color:#9eb6b0;font-size:.66rem}.resident-pov-switch{display:flex;gap:.25rem}.resident-pov-switch button{display:grid;place-items:center;width:2rem;height:2rem;border:1px solid #426c64;border-radius:.35rem;background:#103c36;color:#a8e2d7}.resident-pov-switch button:last-child svg{transform:rotate(180deg)}.resident-pov-grid{display:grid;grid-template-columns:1fr 1fr;gap:.4rem}.resident-pov-grid>span{min-width:0;padding:.46rem .55rem;border:1px solid rgba(112,153,144,.22);background:rgba(29,68,62,.45);color:#789a92;font-size:.57rem}.resident-pov-grid strong{display:block;margin-top:.18rem;overflow:hidden;color:#eaf4f0;font-size:.66rem;text-overflow:ellipsis;white-space:nowrap}.resident-pov-exposure{margin-top:.65rem}.resident-pov-exposure>span{display:flex;justify-content:space-between;color:#95aba6;font-size:.6rem}.resident-pov-exposure>span strong{color:#ff826b;font-variant-numeric:tabular-nums}.resident-pov-exposure>i{display:block;height:.28rem;margin-top:.3rem;overflow:hidden;border-radius:1rem;background:#263f3a}.resident-pov-exposure b{display:block;height:100%;border-radius:inherit;background:linear-gradient(90deg,#58c9a4,#e8b64a 55%,#ff5640)}.risk-scale{display:grid!important;grid-template-columns:1fr auto;gap:.1rem .35rem!important;min-width:8.4rem}.risk-scale>i{grid-column:1/-1;width:100%;height:.28rem;border-radius:1rem;background:linear-gradient(90deg,#39c99b,#e2b03e 55%,#ff4935)}.risk-scale small{color:#a8bbb6;font-size:.55rem}.risk-scale small:last-child{text-align:right}.stair-density{padding:.18rem .35rem;border:1px solid rgba(255,180,61,.45);border-radius:.25rem;color:#ffd07a!important;background:rgba(118,68,15,.3)}
 @media(max-width:700px){.resident-pov-hud{right:.55rem;bottom:9rem;width:calc(100% - 1.1rem);padding:.72rem}.resident-pov-grid{grid-template-columns:1fr 1fr}.resident-pov-hud>p{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}}
+.spatial-action-preview.spatial-action-preview--immersive{position:fixed;z-index:110;inset:auto 20px 154px auto;width:370px;max-width:calc(100vw - 40px);max-height:calc(100dvh - 250px);overflow:auto;overscroll-behavior:contain;box-sizing:border-box;border:1px solid #4d7461;border-radius:7px;background:#08261e;color:#e5eee7;padding:20px;box-shadow:0 16px 38px #0005}
+.spatial-action-preview--immersive header{border-color:#365948}.spatial-action-preview--immersive header strong{font-size:20px}.spatial-action-preview--immersive header span,.spatial-action-preview--immersive header button{color:#abc6b6}
+.spatial-action-preview--immersive .spatial-action-metrics>div{background:#10392b;border-color:#39654e;border-radius:5px;padding:10px}.spatial-action-preview--immersive .spatial-action-metrics span{color:#b2cabc;font-size:11px}.spatial-action-preview--immersive .spatial-action-metrics strong{font-size:18px;color:#95eac0}.spatial-action-preview--immersive .spatial-action-metrics small{font-size:11px}
+.spatial-action-preview--immersive .spatial-impact{border-color:#365948}.spatial-action-preview--immersive .spatial-impact>span{color:#eeb28a;font-size:12px}.spatial-action-preview--immersive .spatial-impact p{background:#163d2e;color:#b6cfbf;font-size:11px}.spatial-action-preview--immersive .spatial-impact p strong{color:#dceee2}
+.spatial-score-impact{display:grid;grid-template-columns:1fr auto;gap:4px 12px;margin-top:12px;border-top:1px solid #c6d1cb;padding-top:12px}.spatial-score-impact>span{color:#58716b;font-size:13px}.spatial-score-impact>strong{font-size:16px;font-variant-numeric:tabular-nums}.spatial-score-impact>strong b{color:#9a4b36}.spatial-score-impact>small{grid-column:1/-1;color:#536b65;font-size:13px;line-height:1.55}.spatial-action-preview--immersive .spatial-action-note{color:#b8cfc0;font-size:14px;line-height:1.7}.spatial-action-preview--immersive .spatial-evidence{color:#d5c593;font-size:13px}.spatial-action-preview--immersive .spatial-action-buttons button{color:#deeee4;border-color:#5b866c;border-radius:5px;min-height:48px;font-size:14px}.spatial-action-preview--immersive .spatial-action-buttons button:last-child{background:#73dbab;color:#082a1b;border-color:#73dbab}.spatial-action-preview--immersive .spatial-score-impact{border-color:#365948}.spatial-action-preview--immersive .spatial-score-impact>span,.spatial-action-preview--immersive .spatial-score-impact>small{color:#b8cfc0}.spatial-action-preview--immersive .spatial-score-impact>strong{color:#e5eee7}.spatial-action-preview--immersive .spatial-score-impact>strong b{color:#f1c39f}
+@media(max-width:760px){.spatial-action-preview.spatial-action-preview--immersive{inset:auto 8px 174px 8px;width:auto;max-width:none;max-height:calc(100dvh - 282px);padding:14px}}
 </style>

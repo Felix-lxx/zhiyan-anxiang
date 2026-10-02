@@ -7,6 +7,7 @@ from fastapi import FastAPI, WebSocket
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.api.routes import auth, communities, decisions, demo, health, map_objects, operations, road_network, roles, scenes, tasks, assistant
+from app.api.routes import account
 import app.models.tasks  # noqa: F401
 from app.core.config import get_settings
 from app.core.database import initialize_schema
@@ -42,6 +43,7 @@ app.add_middleware(
 
 app.include_router(health.router, prefix=settings.api_prefix)
 app.include_router(auth.router, prefix=settings.api_prefix)
+app.include_router(account.router, prefix=settings.api_prefix)
 app.include_router(demo.router, prefix=settings.api_prefix)
 app.include_router(communities.router, prefix=settings.api_prefix)
 app.include_router(map_objects.router, prefix=settings.api_prefix)

@@ -1,4 +1,11 @@
 /* The immersive shell owns positioning. Legacy exercise styles only own content. */
+.operations-center--immersive .exercise-timeline .execution-link { display: inline-flex; align-items: center; min-width: 44px; max-width: 240px; gap: 6px; padding-inline: 10px; }
+.execution-link span { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.execution-link svg { flex-shrink: 0; }
+@media(max-width:760px) { .operations-center--immersive .exercise-timeline .execution-link { max-width: 116px; } }
+.operations-center--immersive.atlas-director > .director-stage .resident-pov-hud { inset: auto 20px 218px auto; width: 350px; max-height: calc(100% - 300px); overflow: auto; }
+.resident-pov-command { display: flex; align-items: center; justify-content: center; gap: 8px; width: 100%; min-height: 44px; margin-top: 12px; padding: 8px 12px; border: 1px solid var(--border-default); border-radius: var(--radius-sm); background: var(--action-primary); color: var(--text-primary); cursor: pointer; font-size: 14px; }
+@media(max-width:760px) { .operations-center--immersive.atlas-director > .director-stage .resident-pov-hud { inset: 138px 8px 174px 66px; width: auto; max-height: none; } }
 .operations-center--immersive {
   --scene-left: 12px;
   --scene-bottom: calc(var(--director-timeline) + 12px);
@@ -57,10 +64,12 @@
   min-height: 0; overflow: auto; overscroll-behavior: contain; scrollbar-gutter: stable;
 }
 .operations-center--immersive > .director-stage .director-drawer,
-.operations-center--immersive > .director-stage .scene-assistant {
+.operations-center--immersive > .scene-assistant {
   top: 12px; right: var(--scene-rail-space); bottom: var(--scene-bottom);
   max-height: none;
 }
+.operations-center--immersive > .scene-assistant { position: fixed; top: calc(var(--director-topbar) + 12px); }
+.operations-center--immersive[data-mode="replay"] > .scene-assistant { top: 16px; right: 16px; bottom: 16px; }
 .operations-center--immersive > .director-stage .director-drawer { width: min(420px, calc(100% - 116px)); }
 .operations-center--immersive > .director-stage .director-drawer > header { flex: 0 0 auto; }
 .operations-center--immersive > .director-stage .experience-guide { inset: 12px auto var(--scene-bottom) 12px; overflow: auto; }
@@ -111,7 +120,7 @@
   /* The assistant is a full-viewport modal on phones; do not leave active chrome underneath. */
   .operations-center--immersive.assistant-open > .director-topbar,
   .operations-center--immersive.assistant-open > .director-stage :is(.director-rail, .exercise-timeline) { visibility: hidden; }
-  .operations-center--immersive > .director-stage .scene-assistant { position: fixed; right: 8px; left: 8px; width: auto; }
+  .operations-center--immersive > .scene-assistant { position: fixed; right: 8px; left: 8px; width: auto; }
   .operations-center--immersive > .director-stage .resident-command-inline { bottom: var(--scene-bottom); }
 }
 @media (max-height: 620px) and (min-width: 761px) {

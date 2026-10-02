@@ -12,8 +12,8 @@
   --color-brand-100: #dceee8;
   --color-brand-50: #eff7f3;
 
-  --color-paper: #f6f7f2;
-  --color-canvas: #efeee8;
+  --color-paper: #faf8f3;
+  --color-canvas: #f3f0ea;
   --color-ink: #18332d;
   --color-ink-muted: #586d66;
   --color-line: #c7d2cc;
@@ -61,6 +61,16 @@
   --layer-panel: 40;
   --layer-dialog: 100;
   --layer-toast: 110;
+  --atlas-paper: #f5f2ec;
+  --atlas-ink: #152c28;
+  --atlas-muted: #626b66;
+  --atlas-green: #163e32;
+  --atlas-orange: #c44820;
+  --atlas-line: #cfcec5;
+  --atlas-sidebar: clamp(190px, 13.75vw, 264px);
+  --atlas-header: 66px;
+  --atlas-gutter: clamp(24px, 2vw, 40px);
+  --atlas-display: 'Noto Serif SC', 'Source Han Serif SC', 'Songti SC', 'SimSun', serif;
 }
 
 [data-ui-theme="immersive"] {

@@ -5,13 +5,14 @@ import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import AppIcon from './AppIcon.vue'
 import '../assistant.css'
 export type AssistantAction = { kind: 'missions' | 'events' | 'report' | 'command' | 'rollcall' | 'branch' | 'focus'; label: string; resident_id?: string }
+export interface AssistantFocusContext { kind: 'resident' | 'road' | 'robot' | 'object' | 'command' | 'score' | 'replay'; id?: string; label: string; type?: string; detail?: string; x?: number; y?: number }
 interface Reply {
   mode: 'offline' | 'model'; model: string | null; answer: string; notice: string
-  context: { at_seconds: number; historical: boolean }
+  context: { at_seconds: number; historical: boolean; selection: AssistantFocusContext | null }
   sources: Array<{ id: string; title: string; detail: string }>; actions: AssistantAction[]
 }
 interface Message { role: 'user' | 'assistant'; content: string; reply?: Reply }
-const props = defineProps<{ apiBaseUrl: string; accessToken: string; drillId: string; drillName: string; open: boolean; atSeconds: number | null; liveSeconds: number }>()
+const props = defineProps<{ apiBaseUrl: string; accessToken: string; drillId: string; drillName: string; open: boolean; atSeconds: number | null; liveSeconds: number; focusContext?: AssistantFocusContext | null }>()
 const api = createApiClient(props.apiBaseUrl, () => props.accessToken)
 const emit = defineEmits<{ close: []; navigate: [action: AssistantAction] }>()
 const messages = ref<Message[]>([]), question = ref(''), error = ref(''), pending = ref(false)
@@ -22,12 +23,24 @@ const settingsOpen = ref(false)
 const mobile = ref(window.matchMedia('(max-width: 760px)').matches)
 const lastQuestion = ref(''), configurationLoading = ref(false)
 const lastReply = computed(() => [...messages.value].reverse().find(m => m.reply)?.reply)
-const contextChanged = computed(() => lastReply.value && (lastReply.value.context.historical !== (props.atSeconds !== null) || (props.atSeconds !== null ? lastReply.value.context.at_seconds !== props.atSeconds : props.liveSeconds - lastReply.value.context.at_seconds >= 15)))
+const focusKey = (value?: AssistantFocusContext | null) => value ? `${value.kind}:${value.id ?? value.label}` : ''
+const focusChanged = computed(() => Boolean(lastReply.value && focusKey(lastReply.value.context.selection) !== focusKey(props.focusContext)))
+const contextChanged = computed(() => lastReply.value && (lastReply.value.context.historical !== (props.atSeconds !== null) || focusChanged.value || (props.atSeconds !== null ? lastReply.value.context.at_seconds !== props.atSeconds : props.liveSeconds - lastReply.value.context.at_seconds >= 15)))
 const viewportStyle = ref<Record<string, string>>({})
 const compact = ref(false)
 const media = window.matchMedia('(max-width: 760px)')
 function updateViewport() { mobile.value = media.matches; compact.value = mobile.value && (window.visualViewport?.height ?? innerHeight) < 560; viewportStyle.value = mobile.value && window.visualViewport ? { top: `${window.visualViewport.offsetTop + 8}px`, height: `${Math.max(240, window.visualViewport.height - 16)}px`, bottom: 'auto' } : {} }
-const suggestions = ['现在下一步应该做什么？', '谁还没有到集合点？', '机器人为什么没动？', '道路拥堵应该怎么处理？', '如何从关键决定前重做？']
+const suggestions = computed(() => {
+  const focus = props.focusContext
+  const contextual = focus?.kind === 'resident' ? [`为什么${focus.label}还没有到集合点？`, `如何调整${focus.label}的疏散路线？`]
+    : focus?.kind === 'road' ? [`${focus.label}会影响哪些人员和任务？`, `这条道路封锁后应该如何改道？`]
+    : focus?.kind === 'robot' ? ['机器人为什么停在这里？', '机器人下一项任务是什么？']
+    : focus?.kind === 'command' ? ['这条指令为什么没有及时完成？', '这条指令下一步应该怎么处理？']
+    : focus?.kind === 'score' ? ['这一项为什么扣分？', '怎样从相关事件前重新训练？']
+    : focus?.kind === 'replay' ? ['这个历史时刻发生了什么？', '从这里换一种决策会有什么区别？'] : []
+  return [...contextual, '现在下一步应该做什么？', '谁还没有到集合点？', '机器人为什么没动？', '道路拥堵应该怎么处理？', '如何从关键决定前重做？'].slice(0, 5)
+})
+function refreshContext(): void { void send(focusChanged.value ? suggestions.value[0] : lastQuestion.value) }
 let controller: AbortController | null = null, statusController: AbortController | null = null, generation = 0
 function clock(value: number) { return `${String(Math.floor(value / 60)).padStart(2, '0')}:${String(value % 60).padStart(2, '0')}` }
 async function loadStatus() {
@@ -60,7 +73,7 @@ async function send(text = question.value) {
   const request = ++generation; const requestController = new AbortController(); controller = requestController
   const timeout = window.setTimeout(() => requestController.abort(), 100_000)
   try {
-    const reply = await api.post<Reply>(`/drills/${props.drillId}/assistant/chat`, { message: content, history, at_seconds: props.atSeconds, use_model: requestUsesModel }, { signal: requestController.signal })
+    const reply = await api.post<Reply>(`/drills/${props.drillId}/assistant/chat`, { message: content, history, at_seconds: props.atSeconds, use_model: requestUsesModel, selection_context: props.focusContext ?? null }, { signal: requestController.signal })
     if (request !== generation) return
     messages.value.push({ role: 'assistant', content: reply.answer, reply }); await revealReply()
   } catch (cause) {
@@ -79,17 +92,18 @@ onBeforeUnmount(() => { cancel(); statusController?.abort(); statusController = 
   <aside v-show="open" ref="panel" class="scene-assistant" :class="{ 'is-compact': compact }" :style="viewportStyle" :role="mobile ? 'dialog' : undefined" :aria-modal="mobile ? true : undefined" aria-label="场景 AI 助手" @keydown="trapFocus" @keydown.esc.stop="confirmClear ? confirmClear = false : emit('close')">
     <header class="scene-assistant__header"><div class="scene-assistant__identity"><AppIcon name="brain" :size="25" /><div><h2>安巷教练</h2><p>专属场景 AI 助手</p></div></div><div><button type="button" :disabled="!messages.length" aria-label="清空本场对话" title="清空本场对话" @click="confirmClear = !confirmClear"><AppIcon name="refresh" :size="18" /></button><button type="button" aria-label="关闭 AI 助手" @click="emit('close')"><AppIcon name="close" /></button></div></header>
     <div class="scene-assistant__context"><AppIcon name="compass" :size="17" /><div><strong>{{ drillName }}</strong><span>{{ atSeconds === null ? '每次提问读取本场最新快照' : '正在解读历史时刻 ' + clock(atSeconds) }}</span></div><span class="scene-assistant__mode">{{ useModel && provider?.configured ? '模型问答' : '离线解读' }}</span></div>
+    <div v-if="focusContext" class="scene-assistant__focus"><AppIcon name="target" :size="17" /><div><span>当前关注</span><strong>{{ focusContext.label }}</strong><small>{{ focusContext.detail || focusContext.type }}</small></div></div>
     <section class="scene-assistant__connection" aria-label="模型连接与授权">
       <div class="scene-assistant__connection-heading">
         <label v-if="provider?.configured" class="scene-assistant__consent"><input v-model="useModel" type="checkbox" :disabled="pending || configurationLoading" aria-describedby="scene-assistant-consent-note" />启用大模型问答</label>
         <span v-else>{{ configurationLoading ? '正在检查模型配置…' : statusError ? '模型配置读取失败' : '当前使用离线解读' }}</span>
         <button type="button" :aria-expanded="settingsOpen" aria-controls="scene-assistant-settings" @click="toggleHelp('settings')">模型设置<AppIcon name="chevron" :size="14" /></button>
       </div>
-      <p v-if="provider?.configured" id="scene-assistant-consent-note">{{ useModel ? '已授权发送本场摘要、问题与最近对话。' : '勾选后将本场摘要、问题与最近对话发送给模型。' }}</p>
+      <p v-if="provider?.configured" id="scene-assistant-consent-note">{{ useModel ? '已授权发送本场摘要、当前关注对象、问题与最近对话。' : '勾选后将本场摘要、当前关注对象、问题与最近对话发送给模型。' }}</p>
       <p v-if="statusError && !settingsOpen" class="scene-assistant__connection-hint">{{ statusError }}</p>
     </section>
     <div v-if="confirmClear" class="scene-assistant__confirm" role="group" aria-label="确认清空对话"><p>清空本场对话？此操作无法撤销，不影响演练数据。</p><div><button type="button" @click="confirmClear = false">保留对话</button><button type="button" @click="clear">确认清空</button></div></div>
-    <div v-if="contextChanged" class="scene-assistant__stale"><span>现场或回放时刻已变化，旧回答不会自动更新。</span><button type="button" :disabled="pending" @click="send(lastQuestion)">按新快照重答</button></div>
+    <div v-if="contextChanged" class="scene-assistant__stale"><span>{{ focusChanged ? '当前关注对象已切换，旧回答仍保留供对照。' : '现场或回放时刻已变化，旧回答不会自动更新。' }}</span><button type="button" :disabled="pending" @click="refreshContext">{{ focusChanged ? '解读当前对象' : '按新快照重答' }}</button></div>
     <div ref="log" class="scene-assistant__log" role="log" aria-label="场景对话记录" aria-live="polite" :aria-busy="pending">
       <section v-if="settingsOpen" id="scene-assistant-settings" class="scene-assistant__settings" aria-label="模型设置详情">
         <h3>模型设置</h3>

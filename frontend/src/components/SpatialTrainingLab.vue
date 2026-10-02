@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { createApiClient } from '../api/client'
+import { sendCommand } from '../api/commands'
 
 import { computed, nextTick, ref, watch } from 'vue'
 import AppIcon from './AppIcon.vue'
@@ -7,12 +8,18 @@ import AppIcon from './AppIcon.vue'
 type Point = { x: number; y: number; height?: number }
 type Person = Point & { id: string; label: string; floor?: number; current_floor?: number; status: string; indoor_stage?: string; counted?: boolean; last_location?: string; search_responsible?: string; behavior?: string; vulnerable: boolean; route_reachable?: boolean; route_points?: Point[]; remaining_seconds?: number; queue_seconds?: number }
 interface State { id: string; status: string; elapsed_seconds: number; branch?: { source_name: string } | null; simulation: { residents: Person[] }; events: Array<{ sequence: number; event_type: string; message: string; elapsed_seconds: number }> }
+interface ResidentPreview {
+  residents: Person[]; can_apply: boolean; notice: string; at_seconds: number; expected_sequence: number
+  planned_duration_seconds?: number | null
+  impact?: { congested_before: number; congested_after: number; smoke_exposed_before: number; smoke_exposed_after: number; forecast_horizon_seconds: number }
+  score_impact?: { before: number; after: number; delta: number; note: string }
+}
 const props = defineProps<{ drill: State; apiBaseUrl: string; accessToken: string; replay: boolean }>()
 const api = createApiClient(props.apiBaseUrl, () => props.accessToken)
 const emit = defineEmits<{ updated: [value: unknown]; forked: [value: unknown]; select: [ids: string[]]; preview: [people: Person[]]; focus: [id: string]; compare: [] }>()
 const tab = ref<'command' | 'rollcall' | 'branch'>('command'), selected = ref<string[]>([]), exit = ref<'north' | 'south'>('north')
 const pending = ref(false), error = ref(''), notice = ref(''), searchId = ref(''), responsible = ref('物业搜索员甲')
-const draft = ref<{ residents: Person[]; can_apply: boolean; notice: string; at_seconds: number } | null>(null)
+const draft = ref<ResidentPreview | null>(null)
 const action = ref<'evacuate' | 'priority_assist'>('evacuate')
 const confirmPanel = ref<HTMLElement|null>(null)
 const people = computed(() => props.drill.simulation.residents)
@@ -35,10 +42,18 @@ async function previewCommand(command: { residentIds: string[]; exit: 'north' | 
   catch (cause) { error.value = String(cause instanceof Error ? cause.message : cause) }
   finally { pending.value = false }
 }
-async function run(path: string, body: unknown, message: string) {
+async function run(path: string, body: unknown, message: string, expectedSequence?: number) {
   pending.value = true; error.value = ''; notice.value = ''
-  try { emit('updated', await request(path, body)); notice.value = message; draft.value = null; emit('preview', []) }
-  catch (cause) { error.value = String(cause instanceof Error ? cause.message : cause) }
+  try { emit('updated', await sendCommand(api, props.drill.id, path, body, 'POST', expectedSequence)); notice.value = message; draft.value = null; emit('preview', []) }
+  catch (cause) {
+    const message = String(cause instanceof Error ? cause.message : cause)
+    error.value = message
+    if (path === '/residents' && expectedSequence !== undefined && message.includes('重新预览')) {
+      const command = body as { resident_ids: string[]; exit: 'north' | 'south'; action: 'evacuate' | 'priority_assist' }
+      await previewCommand({ residentIds: command.resident_ids, exit: command.exit, action: command.action })
+      notice.value = '现场状态已变化，已按最新人员、道路和烟气状态重新生成预览，请再次确认。'
+    }
+  }
   finally { pending.value = false }
 }
 async function fork(at: number, sequence?: number) {
@@ -65,7 +80,19 @@ defineExpose({ previewCommand, selectIds, openTab })
       <label>逐人选择<select aria-label="逐人选择" @change="selectIds([( $event.target as HTMLSelectElement).value]); emit('focus', ($event.target as HTMLSelectElement).value)"><option value="">请选择</option><option v-for="p in people.filter(p=>p.status!=='evacuated')" :key="p.id" :value="p.id">{{ p.label }} · {{ p.last_location }}</option></select></label>
       <div class="exit-actions"><button :disabled="!selected.length || pending || replay" @click="previewCommand({residentIds:selected,exit:'north',action:'evacuate'})">预览北侧路线</button><button :disabled="!selected.length || pending || replay" @click="previewCommand({residentIds:selected,exit:'south',action:'evacuate'})">预览南侧路线</button></div>
       <button :disabled="!selected.length || pending || replay || selected.some(id=>!people.find(p=>p.id===id)?.vulnerable)" @click="previewCommand({residentIds:selected,exit,action:'priority_assist'})">为所选重点居民预览护送</button>
-      <section v-if="draft" ref="confirmPanel" class="route-confirm" aria-label="路线预览确认"><h3>{{ exit==='north'?'北':'南' }}侧集合点 · {{ draft.residents.length }} 人</h3><p>虚线为拟执行路线，尚未下令。{{ draft.can_apply ? '所选人员可达。' : '含不可达或已到达人员，请重新选择。' }}</p><ol><li v-for="p in draft.residents.slice(0,6)" :key="p.id">{{ p.label }}：{{ p.route_reachable ? `行走估计 ${p.remaining_seconds} 秒` : '不可达' }}</li></ol><small>{{ draft.notice }}</small><button class="confirm-route" :disabled="!canAct || !draft.can_apply" @click="run('/residents',{resident_ids:selected,exit,action},'指令已生效。观察选中人员的位置、队列和去向；历史轨迹不会被清零。')">确认下达{{ action==='priority_assist'?'护送':'撤离' }}指令</button></section>
+      <section v-if="draft" ref="confirmPanel" class="route-confirm" aria-label="路线预览确认">
+        <h3>{{ exit==='north'?'北':'南' }}侧集合点 · {{ draft.residents.length }} 人</h3>
+        <p>虚线为拟执行路线，尚未下令。{{ draft.can_apply ? '所选人员可达。' : '含不可达或已到达人员，请重新选择。' }}</p>
+        <dl class="route-impact">
+          <div><dt>预计最长用时</dt><dd>{{ draft.planned_duration_seconds ?? '—' }}<small v-if="draft.planned_duration_seconds"> 秒</small></dd></div>
+          <div v-if="draft.impact"><dt>拥堵人数</dt><dd>{{ draft.impact.congested_before }} → {{ draft.impact.congested_after }}</dd></div>
+          <div v-if="draft.impact"><dt>烟气暴露</dt><dd>{{ draft.impact.smoke_exposed_before }} → {{ draft.impact.smoke_exposed_after }}</dd></div>
+          <div v-if="draft.score_impact"><dt>预计得分变化</dt><dd>{{ draft.score_impact.delta > 0 ? '+' : '' }}{{ draft.score_impact.delta }}</dd></div>
+        </dl>
+        <ol><li v-for="p in draft.residents.slice(0,6)" :key="p.id">{{ p.label }}：{{ p.route_reachable ? `行走估计 ${p.remaining_seconds} 秒` : '不可达' }}</li></ol>
+        <p class="route-confirm__note">{{ draft.score_impact?.note ?? draft.notice }}</p>
+        <button class="confirm-route" :disabled="!canAct || !draft.can_apply" @click="run('/residents',{resident_ids:selected,exit,action},'指令已生效。观察选中人员的位置、队列和去向；历史轨迹不会被清零。',draft.expected_sequence)">确认下达{{ action==='priority_assist'?'护送':'撤离' }}指令</button>
+      </section>
       <details><summary>逐人跟随与队列</summary><ul class="resident-checklist"><li v-for="p in people" :key="p.id"><button @click="emit('focus',p.id)">{{ p.label }}</button><span>{{ p.last_location }}<small>{{ p.behavior }} · 累计排队 {{ Math.round(p.queue_seconds??0) }} 秒</small></span></li></ul></details>
     </template>
     <template v-else-if="tab==='rollcall'">
@@ -85,7 +112,7 @@ defineExpose({ previewCommand, selectIds, openTab })
 </template>
 
 <style scoped>
-.spatial-lab{padding:20px 0;border-top:1px solid #d7dfd9;color:#183b33}.spatial-lab nav{display:grid;grid-template-columns:repeat(3,1fr);gap:4px;background:#e3eae4;border-radius:10px;padding:4px;margin-bottom:20px}.spatial-lab nav button{display:flex;align-items:center;justify-content:center;gap:6px;margin:0;border:0;background:none;padding:10px 6px}.spatial-lab nav button[aria-pressed=true]{background:#fff;box-shadow:0 1px 4px #183b3320}.spatial-lab h2{font-size:19px;line-height:1.4}.spatial-lab h3{font-size:15px;margin:18px 0 8px}.spatial-lab p,.spatial-lab label{font-size:13px;line-height:1.65}.spatial-lab label{display:grid;gap:5px;margin:12px 0}.spatial-lab select,.spatial-lab input{width:100%;min-width:0;max-width:100%;padding:10px;font-size:13px;border:1px solid #bccdc5;border-radius:7px;background:#fff}.spatial-lab button{min-height:40px;max-width:100%;white-space:normal;line-height:1.4;border-radius:7px;cursor:pointer}.floor-select{display:flex;flex-wrap:wrap;gap:6px}.floor-select button{min-width:42px;width:auto;margin:0}.selection-count{display:flex;align-items:center;justify-content:space-between;gap:8px;margin-top:12px}.selection-count button{width:auto;font-size:12px;border:0}.exit-actions{display:grid;grid-template-columns:1fr 1fr;gap:8px}.route-confirm{border-left:3px solid #287762;background:#e6f0e8;padding:0 12px 12px;margin:12px 0}.route-confirm .confirm-route{background:#195647;color:white;border-color:#195647;margin-top:12px}.route-confirm ol{padding-left:20px;font-size:13px}.route-confirm small{font-size:12px}.resident-checklist{padding:0;list-style:none;max-height:260px;overflow:auto}.resident-checklist li{display:flex;align-items:center;gap:8px;border-bottom:1px solid #dae2dc;padding:9px 0;font-size:12px}.resident-checklist button{flex-shrink:0;width:auto;margin:0;font-size:12px;padding:6px}.resident-checklist span{min-width:0;overflow-wrap:anywhere}.resident-checklist small{display:block;color:#587467}.rollcall-summary{display:flex;flex-wrap:wrap;gap:12px;font-size:12px}.rollcall-summary b{display:block;font-size:22px}.branch-decisions{padding-left:18px;font-size:13px}.branch-decisions li{margin-top:16px}.spatial-lab .lab-error{background:#f9e4dd;padding:10px;color:#912c1e}.spatial-lab .lab-notice{background:#dfede2;padding:10px}.spatial-lab footer{margin-top:18px;font-size:11px;color:#61796d;line-height:1.6}.spatial-lab details{margin-top:16px}.spatial-lab summary{cursor:pointer;font-size:13px}
+.spatial-lab{padding:20px 0;border-top:1px solid #d7dfd9;color:#183b33}.spatial-lab nav{display:grid;grid-template-columns:repeat(3,1fr);gap:4px;background:#e3eae4;border-radius:10px;padding:4px;margin-bottom:20px}.spatial-lab nav button{display:flex;align-items:center;justify-content:center;gap:6px;margin:0;border:0;background:none;padding:10px 6px}.spatial-lab nav button[aria-pressed=true]{background:#fff;box-shadow:0 1px 4px #183b3320}.spatial-lab h2{font-size:19px;line-height:1.4}.spatial-lab h3{font-size:16px;margin:18px 0 8px}.spatial-lab p,.spatial-lab label{font-size:14px;line-height:1.65}.spatial-lab label{display:grid;gap:5px;margin:12px 0}.spatial-lab select,.spatial-lab input{width:100%;min-width:0;max-width:100%;padding:10px;font-size:14px;border:1px solid #bccdc5;border-radius:7px;background:#fff}.spatial-lab button{min-height:44px;max-width:100%;white-space:normal;line-height:1.4;border-radius:7px;cursor:pointer}.floor-select{display:flex;flex-wrap:wrap;gap:6px}.floor-select button{min-width:44px;width:auto;margin:0}.selection-count{display:flex;align-items:center;justify-content:space-between;gap:8px;margin-top:12px}.selection-count button{width:auto;font-size:14px;border:0}.exit-actions{display:grid;grid-template-columns:1fr 1fr;gap:8px}.route-confirm{border:1px solid #bdd0c4;border-radius:8px;background:#e6f0e8;padding:16px;margin:14px 0}.route-impact{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px;margin:12px 0}.route-impact>div{background:#f6f9f5;border-radius:6px;padding:10px}.route-impact dt{color:#587467;font-size:13px}.route-impact dd{margin:3px 0 0;font-size:17px;font-weight:700;font-variant-numeric:tabular-nums}.route-confirm .confirm-route{background:#195647;color:white;border-color:#195647;margin-top:12px}.route-confirm ol{padding-left:20px;font-size:14px}.route-confirm__note{color:#4d6b5f}.route-confirm small{font-size:13px}.resident-checklist{padding:0;list-style:none;max-height:260px;overflow:auto}.resident-checklist li{display:flex;align-items:center;gap:8px;border-bottom:1px solid #dae2dc;padding:9px 0;font-size:14px}.resident-checklist button{flex-shrink:0;width:auto;margin:0;font-size:14px;padding:6px}.resident-checklist span{min-width:0;overflow-wrap:anywhere}.resident-checklist small{display:block;color:#587467;font-size:13px}.rollcall-summary{display:flex;flex-wrap:wrap;gap:12px;font-size:14px}.rollcall-summary b{display:block;font-size:22px}.branch-decisions{padding-left:18px;font-size:14px}.branch-decisions li{margin-top:16px}.spatial-lab .lab-error{background:#f9e4dd;padding:10px;color:#912c1e}.spatial-lab .lab-notice{background:#dfede2;padding:10px}.spatial-lab footer{margin-top:18px;font-size:13px;color:#61796d;line-height:1.6}.spatial-lab details{margin-top:16px}.spatial-lab summary{cursor:pointer;font-size:14px}
 </style>
 
 <style scoped>

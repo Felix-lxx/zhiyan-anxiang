@@ -30,6 +30,23 @@ def test_context_is_real_and_chat_does_not_write(exercise):
     assert 'token_hash' not in json.dumps(response) and 'participant_token' not in json.dumps(response)
 
 
+def test_selected_scene_object_becomes_grounded_assistant_context(exercise):
+    client, headers, _, root, *_ = exercise
+    focus = {"kind": "road", "id": "edge-north", "label": "北门主通道", "type": "真实道路路段", "detail": "当前受限"}
+    response = client.post(root + '/assistant/chat', headers=headers, json={
+        'message': '北门主通道会影响哪些人员和任务？', 'selection_context': focus,
+    })
+    assert response.status_code == 200
+    data = response.json()
+    assert data['context']['selection'] == focus
+    assert '当前关注：北门主通道' in data['answer']
+    assert any(source['id'] == 'S6' and '北门主通道' in source['detail'] for source in data['sources'])
+    assert any(action['kind'] == 'command' for action in data['actions'])
+    assert client.post(root + '/assistant/chat', headers=headers, json={
+        'message': '这个对象怎么处理？', 'selection_context': {**focus, 'kind': 'unsupported'},
+    }).status_code == 422
+
+
 def test_access_and_input_limits(exercise):
     client, headers, _, root, *_ = exercise
     assert client.post(root+'/assistant/chat', json={'message':'现场'}).status_code == 401

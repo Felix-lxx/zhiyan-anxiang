@@ -2,6 +2,9 @@
 const props = withDefaults(defineProps<{ name: string; size?: number; strokeWidth?: number }>(), { size: 20, strokeWidth: 1.8 })
 
 const paths: Record<string, string[]> = {
+  history: ['M3 4v5h5','M3 9a9 9 0 1 1 1 9M12 7v5l3 2'],
+  download: ['M12 3v12m-5-5 5 5 5-5M4 16v5h16v-5'],
+  alert: ['m12 3 10 18H2L12 3Z','M12 9v5m0 3h.01'],
   send: ['m3 3 18 9-18 9 4-9-4-9Zm4 9h14'],
   refresh: ['M20 7v5h-5M4 17v-5h5', 'M5 7a8 8 0 0 1 13-2l2 3M4 16l2 3a8 8 0 0 0 13-2'],
   arrowRight: ['M4 12h16m-6-6 6 6-6 6'],

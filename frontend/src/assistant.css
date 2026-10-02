@@ -1,7 +1,7 @@
-.scene-assistant { position:absolute; z-index:42; top:16px; bottom:84px; right:88px; width:min(480px, calc(100% - 112px)); display:flex; flex-direction:column; background:#102b27; color:#e9f1e8; border:1px solid #3a5a4e; border-radius:14px; overflow:hidden; font-size:13px; font-weight:400; line-height:1.7; scrollbar-color:#557463 #17362e; }
+.scene-assistant { position:absolute; z-index:120; top:16px; bottom:84px; right:88px; width:min(500px, calc(100% - 112px)); display:flex; flex-direction:column; background:#102b27; color:#e9f1e8; border:1px solid #3a5a4e; border-radius:14px; overflow:hidden; font-size:14px; font-weight:400; line-height:1.7; scrollbar-color:#557463 #17362e; box-shadow:-18px 22px 64px rgba(0,0,0,.38); }
 .scene-assistant * { min-width:0; }
 .scene-assistant h2,.scene-assistant h3,.scene-assistant p { margin:0; }
-.scene-assistant button { display:inline-flex; align-items:center; justify-content:center; gap:7px; border:1px solid #4b6b5c; border-radius:7px; color:#e5eee0; background:#214238; padding:8px 10px; font-size:12px; }
+.scene-assistant button { display:inline-flex; align-items:center; justify-content:center; gap:7px; min-height:40px; border:1px solid #4b6b5c; border-radius:7px; color:#e5eee0; background:#214238; padding:8px 11px; font-size:13px; }
 .scene-assistant button:hover:not(:disabled) { background:#315647; }
 .scene-assistant button:focus-visible,.scene-assistant summary:focus-visible,.scene-assistant input:focus-visible,.scene-assistant textarea:focus-visible { outline:3px solid #afd5a4; outline-offset:2px; }
 .scene-assistant button:disabled { opacity:.5; }
@@ -16,8 +16,13 @@
 .scene-assistant__context { display:flex; flex-shrink:0; align-items:center; gap:10px; padding:8px 20px; background:#193830; border-block:1px solid #335347; }
 .scene-assistant__context>div { flex:1; }
 .scene-assistant__context strong { display:block; font-size:12px; overflow:hidden; white-space:nowrap; text-overflow:ellipsis; }
-.scene-assistant__context div>span { display:block; font-size:10px; color:#c1d2c3; }
-.scene-assistant__mode { padding:2px 7px; font-size:10px; background:#344b33; color:#e2ebc5; border-radius:5px; flex-shrink:0; }
+.scene-assistant__context div>span { display:block; font-size:12px; color:#c1d2c3; }
+.scene-assistant__mode { padding:3px 8px; font-size:12px; background:#344b33; color:#e2ebc5; border-radius:5px; flex-shrink:0; }
+.scene-assistant__focus { display:flex; align-items:flex-start; gap:10px; padding:11px 20px; flex-shrink:0; background:#0d3028; border-bottom:1px solid #335347; }
+.scene-assistant__focus>svg { margin-top:3px; color:#8fe1bd; }
+.scene-assistant__focus>div { display:grid; gap:2px; }
+.scene-assistant__focus span,.scene-assistant__focus small { color:#bcd2c4; font-size:12px; line-height:1.5; }
+.scene-assistant__focus strong { color:#f1f7ef; font-size:14px; }
 .scene-assistant__log { flex:1 1 0; min-height:0; overflow-y:auto; overscroll-behavior:contain; padding:20px; scrollbar-gutter:stable; }
 .scene-assistant__welcome { padding:10px 0; }
 .scene-assistant__welcome>svg { color:#c0d8a4; margin-bottom:14px; }
@@ -53,10 +58,10 @@
 .scene-assistant .scene-assistant__citation { display:inline; min-height:0; border:0; border-radius:3px; padding:0 2px; background:transparent; color:#cce9a9; text-decoration:underline; text-underline-offset:3px; font-size:inherit; }
 .scene-assistant__sources [data-source]:focus { outline:2px solid #a9cd92; outline-offset:3px; }
 .scene-assistant__error button { margin-top:7px; }
-.scene-assistant__text { font-size:14px; font-weight:400; }
-.scene-assistant__sources { font-size:12px; }
-.scene-assistant__speaker span,.scene-assistant__context div>span { font-size:11px; }
-.scene-assistant__send span,.scene-assistant__disclaimer { font-size:11px; }
+.scene-assistant__text { font-size:15px; font-weight:400; }
+.scene-assistant__sources { font-size:13px; }
+.scene-assistant__speaker span,.scene-assistant__context div>span { font-size:12px; }
+.scene-assistant__send span,.scene-assistant__disclaimer { font-size:12px; }
 .scene-assistant__settings { margin-bottom:20px; padding-bottom:16px; border-bottom:1px solid #476653; font-size:13px; color:#c0d2c2; }
 .scene-assistant__settings h3 { font-size:16px; }
 .scene-assistant__connection { flex:0 0 auto; padding:8px 20px; border-bottom:1px solid #476653; font-size:12px; color:#d0decf; }

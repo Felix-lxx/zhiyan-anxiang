@@ -31,7 +31,7 @@ def provider_status(settings: Settings) -> dict:
             "notice": "模型仅在勾选授权并发送问题后调用。" if configured else "尚未配置大模型；当前可使用离线场景解读。"}
 
 
-def build_context(data: dict, scene_name: str, historical: bool, question: str = "") -> dict:
+def build_context(data: dict, scene_name: str, historical: bool, question: str = "", selection: dict | None = None) -> dict:
     sim = data["simulation"]
     people = sim.get("residents", [])
     spatial_supported = data.get("engine_version", sim.get("world", {}).get("schema_version", 1)) >= 3
@@ -49,6 +49,9 @@ def build_context(data: dict, scene_name: str, historical: bool, question: str =
     robot = data.get("robot") or {}
     robot_summary = {k: robot.get(k) for k in ("state", "battery", "reason", "current_task")}
     robot_summary["queue"] = dict(Counter(t.get("status", "unknown") for t in robot.get("task_queue", [])))
+    latest_command = next(iter(data.get("commands", [])), None)
+    command_summary = ({k: latest_command.get(k) for k in ("id", "kind", "label", "status", "reason", "progress", "accepted_at")}
+                       if latest_command else None)
     events = [{"sequence": e["sequence"], "at_seconds": e["elapsed_seconds"], "type": e["event_type"]} for e in data.get("events", [])[:8]]
     sources = [
         {"id": "S1", "title": "居民与集合状态", "detail": f"居民 {counts['total']} 人；到集合点 {counts['arrived']} 人；已清点 {counts['counted']} 人；失联 {counts['missing']} 人。"},
@@ -59,13 +62,19 @@ def build_context(data: dict, scene_name: str, historical: bool, question: str =
     score = None if historical else data.get("score") or data.get("score_preview")
     if score:
         sources.append({"id": "S5", "title": "规则评分", "detail": f"{'最终' if data.get('score') else '过程'}得分 {score['total_score']}；此分数由规则计算，助手无法修改。"})
+    if selection:
+        focus_detail = "；" + str(selection.get("detail")) if selection.get("detail") else ""
+        sources.append({"id": "S6", "title": "当前关注对象", "detail": f"{selection.get('label')}（{selection.get('type') or selection.get('kind')}）{focus_detail}"})
+    if command_summary:
+        sources.append({"id": "S7", "title": "最近指令回执", "detail": f"{command_summary.get('label')}；状态 {command_summary.get('status')}；{command_summary.get('reason')}"})
     if not spatial_supported:
         sources[0]["detail"] = f"历史模型：居民 {counts['total']} 人；记录撤离 {counts['arrived']} 人；未提供集合点核验数据，不能将撤离计数当作真实清点。"
     return {"drill_id": data["id"], "scene_name": scene_name[:160], "drill_name": data["name"][:160],
             "status": data["status"], "at_seconds": data["elapsed_seconds"], "historical": historical,
             "counts": counts, "residents": residents, "resident_details_limited": len(people) > len(residents),
             "roads": roads[:40], "tasks": tasks, "robot": robot_summary, "events": events,
-            "score": score, "sources": sources, "spatial_supported": spatial_supported, "requested_residents": sorted(requested)}
+            "score": score, "sources": sources, "spatial_supported": spatial_supported, "requested_residents": sorted(requested),
+            "selection": selection, "latest_command": command_summary}
 
 
 def offline_reply(question: str, context: dict) -> tuple[str, list[dict]]:
@@ -73,10 +82,14 @@ def offline_reply(question: str, context: dict) -> tuple[str, list[dict]]:
     unarrived = c["total"] - c["arrived"]
     people = context["residents"]
     sources = context["sources"]
-    route = any(word in question for word in ("道路", "出口", "路线", "封路", "拥堵", "改道"))
-    population = bool(context.get("requested_residents")) or any(word in question for word in ("居民", "人员", "清点", "谁", "失联", "护送"))
-    robot = any(word in question for word in ("机器人", "任务", "广播"))
-    review = any(word in question for word in ("评分", "分数", "复盘", "重做", "比较", "分支"))
+    selection = context.get("selection") or {}
+    refers_to_focus = any(word in question for word in ("这个", "当前对象", "它", "他", "她", "此处", "刚才"))
+    mentions_focus = bool(selection.get("label") and str(selection["label"]) in question)
+    uses_focus = refers_to_focus or mentions_focus
+    route = any(word in question for word in ("道路", "出口", "路线", "封路", "拥堵", "改道")) or (uses_focus and selection.get("kind") == "road")
+    population = bool(context.get("requested_residents")) or any(word in question for word in ("居民", "人员", "清点", "谁", "失联", "护送")) or (uses_focus and selection.get("kind") == "resident")
+    robot = any(word in question for word in ("机器人", "任务", "广播")) or (uses_focus and selection.get("kind") in {"robot", "command"})
+    review = any(word in question for word in ("评分", "分数", "复盘", "重做", "比较", "分支")) or (uses_focus and selection.get("kind") in {"score", "replay"})
     # Resolve short follow-ups within the current scene without pretending this is an LLM.
     if route:
         blocked = [r for r in context["roads"] if r["status"] == "blocked"]
@@ -116,6 +129,9 @@ def offline_reply(question: str, context: dict) -> tuple[str, list[dict]]:
             actions = [({"kind": "command", "label": "查看历史模型升级说明"} if a["kind"] in {"command", "rollcall", "branch"} else a) for a in actions]
     if context["historical"]:
         answer = "这是历史回放时刻的解读，不是当前现场状态。\n\n" + answer
+        actions = [{"kind": "branch", "label": "从此时刻创建训练分支"}]
+    if selection:
+        answer = f"当前关注：{selection.get('label')}。[S6]\n\n" + answer
     return answer, actions
 
 

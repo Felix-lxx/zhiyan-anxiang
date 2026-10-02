@@ -1,10 +1,13 @@
 <script setup lang="ts">
 import { computed, onMounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
-import AppIcon from './components/AppIcon.vue'
+import AtlasLogin from './components/AtlasLogin.vue'
 import './entry.css'
 import { ApiError, createApiClient, setUnauthorizedHandler } from './api/client'
 import type { Community, CurrentUser, HealthResponse, LoginResponse } from './domain/models'
+import type { AccountProfile } from './domain/account'
+import { applyAccountProfile } from './api/account'
+import './styles/readability.css'
 
 type HealthState = 'checking' | 'healthy' | 'degraded' | 'unreachable'
 type AppView = 'login' | 'projects' | 'map' | 'scenes' | 'operations' | 'participant'
@@ -14,7 +17,6 @@ const route = useRoute()
 const router = useRouter()
 const username = ref('admin')
 const password = ref('')
-const showPassword = ref(false)
 const isSubmitting = ref(false)
 const loginError = ref('')
 const healthState = ref<HealthState>('checking')
@@ -79,6 +81,7 @@ async function submitLogin(): Promise<void> {
     activeUsername.value = payload.username
     activeRole.value = payload.role
     localStorage.setItem('zhiyan_access_token', payload.access_token)
+    await loadAccountProfile()
     const redirect = typeof route.query.redirect === 'string' && route.query.redirect.startsWith('/') ? route.query.redirect : '/projects'
     await router.replace(redirect)
   } catch (error) {
@@ -88,6 +91,16 @@ async function submitLogin(): Promise<void> {
   }
 }
 
+async function joinByCode(code: string): Promise<void> {
+  loginError.value = ''; isSubmitting.value = true
+  try {
+    if (!/^[a-f0-9]{6}$/i.test(code)) throw new Error('请输入导演提供的 6 位演练加入码。')
+    const invite = await api.get<{ drill_id: string; code: string }>(`/participant/resolve?code=${encodeURIComponent(code)}`, { auth: false })
+    await router.push({ name: 'participant-invite', params: { drillId: invite.drill_id }, query: { code: invite.code } })
+  } catch (cause) { loginError.value = cause instanceof Error ? cause.message : '加入失败，请重试。' }
+  finally { isSubmitting.value = false }
+}
+
 async function restoreSession(): Promise<void> {
   if (!accessToken.value) { sessionReady.value = true; return }
 
@@ -95,6 +108,7 @@ async function restoreSession(): Promise<void> {
     const payload = await api.get<CurrentUser>('/auth/me')
     activeUsername.value = payload.username
     activeRole.value = payload.role
+    await loadAccountProfile()
     if (route.name === 'login') {
       const redirect = typeof route.query.redirect === 'string' && route.query.redirect.startsWith('/') ? route.query.redirect : '/projects'
       await router.replace(redirect)
@@ -104,13 +118,17 @@ async function restoreSession(): Promise<void> {
   } finally { sessionReady.value = true }
 }
 
+async function loadAccountProfile() {
+  try { applyAccountProfile(await api.get<AccountProfile>('/account/profile')) }
+  catch { applyAccountProfile(null) } // Account service failure must not hide the main workspace.
+}
 function clearSession(): void {
+  applyAccountProfile(null)
   localStorage.removeItem('zhiyan_access_token')
   accessToken.value = null
   activeUsername.value = ''
   activeRole.value = ''
   password.value = ''
-  showPassword.value = false
   selectedCommunity.value = null
 }
 function logout(): void { clearSession(); void router.replace('/login') }
@@ -179,49 +197,7 @@ onMounted(() => {
     <component :is="Component" :key="String(route.name) + String(route.params.communityId ?? route.params.drillId ?? '')" :api-base-url="apiBaseUrl" :access-token="accessToken" :community="selectedCommunity" :username="activeUsername" :role="activeRole" :drill-id="participantDrillId || undefined" :invite-code="participantInviteCode || undefined" @logout="logout" @open-map="openMap" @open-operations="openOperations" @open-drill="openDrill" @open-scenes="openScenes" @participant="openParticipant" @back="routeBack" />
   </RouterView>
 
-  <main id="main-content" v-else class="entry-login">
-    <section class="entry-auth" aria-labelledby="login-title">
-      <div class="entry-brand"><span class="entry-brand__symbol"><AppIcon name="compass" :size="26" /></span><div>智演安巷<span>社区消防演练平台</span></div></div>
-      <div class="entry-auth__body">
-        <div class="entry-auth__heading">
-          <h1 id="login-title">登录工作空间</h1>
-          <p>继续你的社区项目与消防演练。</p>
-        </div>
-        <form class="login-form entry-form" @submit.prevent="submitLogin">
-          <div class="entry-field">
-            <label for="username">账号</label>
-            <div class="entry-input"><AppIcon name="person" /><input id="username" v-model="username" autocomplete="username" maxlength="64" required placeholder="输入工作台账号" :disabled="isSubmitting" /></div>
-          </div>
-          <div class="entry-field">
-            <label for="password">密码</label>
-            <div class="entry-input"><AppIcon name="lock" /><input id="password" v-model="password" autocomplete="current-password" :type="showPassword ? 'text' : 'password'" minlength="1" maxlength="128" required placeholder="输入登录密码" :disabled="isSubmitting" /><button type="button" class="entry-reveal" :aria-label="showPassword ? '隐藏密码' : '显示密码'" :aria-pressed="showPassword" @click="showPassword = !showPassword"><AppIcon :name="showPassword ? 'eyeOff' : 'eye'" /></button></div>
-          </div>
-          <p v-if="loginError" class="message message--error" role="alert">{{ loginError }}</p>
-          <button class="entry-button entry-button--primary entry-submit" type="submit" :disabled="isSubmitting || healthState === 'unreachable'">
-            <span>{{ isSubmitting ? '正在验证账号…' : '登录演练工作台' }}</span><AppIcon name="arrowRight" />
-          </button>
-          <p class="entry-auth-note"><AppIcon name="lock" :size="16" /><span>使用本地配置的账号。需要访问权限？请联系项目管理员。</span></p>
-        </form>
-        <div class="entry-health" :data-state="healthState" aria-live="polite">
-          <span class="status-dot" aria-hidden="true"></span>
-          <div><strong>{{ statusLabel }}</strong><p>{{ healthDetail }}</p></div>
-          <button class="entry-link" type="button" :disabled="healthState === 'checking'" @click="checkHealth">重新检查</button>
-        </div>
-      </div>
-      <footer class="entry-auth__footer"><AppIcon name="inspect" :size="16" /><span>训练模拟，不替代现场消防专业判断。</span></footer>
-    </section>
-    <section class="entry-story" aria-labelledby="product-title">
-      <figure class="entry-scene">
-        <img src="/assets/plates/community-photo.png" alt="老旧住宅外立面的窗户、防盗网与空调外机，上海社区建筑参考影像" width="668" height="1130" fetchpriority="high" />
-        <figcaption><span>上海 · 社区建筑参考影像，非项目实测社区</span><a href="https://unsplash.com/photos/fkNWzC4ybJ8" target="_blank" rel="noopener noreferrer">摄影 Zeg Young / Unsplash</a></figcaption>
-      </figure>
-      <div class="entry-story__copy">
-        <h2 id="product-title">把演练带回社区。</h2>
-        <p>从熟悉的楼栋与街巷出发，在三维现场练习撤离、调度与协作，让每一次决策都能回看。</p>
-        <div class="entry-story__subjects"><span>社区建模</span><span>协同演练</span><span>决策复盘</span></div>
-      </div>
-    </section>
-  </main>
+  <AtlasLogin v-else v-model:username="username" v-model:password="password" :busy="isSubmitting" :error="loginError" :status="statusLabel" :detail="healthDetail" :healthy="healthState === 'healthy'" :checking="healthState === 'checking'" :unavailable="healthState === 'unreachable'" @login="submitLogin" @join="joinByCode" @check="checkHealth" />
 </template>
 
 <style scoped>

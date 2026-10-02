@@ -1315,6 +1315,8 @@ textarea {
 .twin-inspector>strong { display:block; padding-right:2rem; font-size:1.05rem; }
 .twin-inspector p { margin:.65rem 0; color:#4c5d59; font-size:.8rem; line-height:1.55; }
 .twin-inspector>button:not(.twin-inspector__close) { width:100%; min-height:2.5rem; border:0; background:#15534f; color:white; cursor:pointer; }
+.twin-inspector>button:not(.twin-inspector__close)+button:not(.twin-inspector__close) { margin-top:.5rem; }
+.twin-inspector>button.twin-inspector__assistant { display:flex; align-items:center; justify-content:center; gap:.45rem; border:1px solid #77bca9; background:#0c302a; color:#dff7ee; }
 .twin-inspector__close { position:absolute; top:.7rem; right:.7rem; min-height:2rem; border:0; background:transparent; color:#58706a; font-size:.7rem; cursor:pointer; }
 .twin-stage__legend { position:absolute; z-index:4; bottom:1rem; left:1rem; display:flex; flex-wrap:wrap; gap:.8rem 1.1rem; max-width:calc(100% - 2rem); padding:.62rem .85rem; background:rgba(7,24,23,.82); color:#a8bbb6; font-size:.68rem; backdrop-filter:blur(9px); }
 .twin-stage__legend span { display:inline-flex; align-items:center; gap:.36rem; }

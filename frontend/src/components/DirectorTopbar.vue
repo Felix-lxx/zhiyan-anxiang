@@ -28,7 +28,7 @@ const emit = defineEmits<{
   <header class="director-topbar">
     <div class="director-brand">
       <UiIconButton label="返回项目" icon="back" @click="emit('back')" />
-      <div><strong>{{ props.name }}</strong><span>{{ props.subtitle }}</span></div>
+      <div><strong>三维导演台</strong><span :title="props.subtitle">{{ props.name }}</span></div>
     </div>
     <div class="director-status" aria-label="演练状态">
       <UiStatus class="sync-indicator" :tone="props.socketState === 'live' ? 'success' : 'warning'" live>{{ props.socketState === 'live' ? '实时同步' : '连接恢复中' }}</UiStatus>

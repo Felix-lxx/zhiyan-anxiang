@@ -1,5 +1,7 @@
 import type { ExerciseTask } from './task'
 
+export interface DrillIndex { id:string; name:string; status:string; created_at:string; elapsed_seconds:number; resident_count:number|null; score:Score|null }
+
 export interface DrillEvent { id: string; sequence: number; event_type: string; actor: string; message: string; elapsed_seconds: number; payload?: { x?: number; y?: number; target?: string; road_edge_id?: string; blocked_edge_id?: string; blocked_edge_name?: string; route_points?: Array<{ x: number; y: number }>; route_edge_ids?: string[]; severity?: string; impact?: { congested_before: number; congested_after: number; smoke_exposed_before: number; smoke_exposed_after: number; selected_count: number } } }
 
 export type DrillTask = ExerciseTask
@@ -18,7 +20,9 @@ export interface Score { total_score: number; details: Array<{ name: string; sco
 
 export interface Participant { role: string; name: string; ready: boolean; connected?: boolean; status?: string; last_action?: string | null; last_message?: string | null; last_seen_seconds?: number | null; action_count?: number }
 
-export interface Drill { branch?: { source_name: string } | null; id: string; name: string; status: string; time_scale: number; elapsed_seconds: number; participants: Participant[]; events: DrillEvent[]; tasks: DrillTask[]; robot: Robot | null; score: Score | null; score_preview: Score; simulation: Simulation; engine_version?: number; director_enabled?: boolean }
+export interface CommandReceipt { id: string; kind: string; label: string; actor: string; accepted_at: number; status: 'completed' | 'executing' | 'queued' | 'blocked' | 'paused' | 'superseded' | 'cancelled' | 'unfinished'; progress: number; reason: string; remaining_seconds: number | null; resident_ids: string[]; event_ids: string[]; score_before: number; score_after_acceptance: number; completed_count: number; selected_count: number }
+
+export interface Drill { state_version?: string; latest_event_sequence?: number; commands?: CommandReceipt[]; branch?: { source_name: string } | null; id: string; name: string; status: string; time_scale: number; elapsed_seconds: number; participants: Participant[]; events: DrillEvent[]; tasks: DrillTask[]; robot: Robot | null; score: Score | null; score_preview: Score; simulation: Simulation; engine_version?: number; director_enabled?: boolean }
 
 export interface BranchPlan { strategy: string; name: string; evacuation_seconds: number | null; vulnerable_rescue_seconds: number | null; smoke_exposed: number; congested: number; unreachable: number; average_resident_route_units: number; projected_score: number }
 
@@ -31,11 +35,13 @@ export type SpatialIntent =
 
 export interface SpatialPreview {
   kind: 'road' | 'robot' | 'residents'; can_apply: boolean; title?: string; notice: string
+  expected_sequence: number
   context?: { x: number; y: number; target: string; road_edge_id?: string }
   route_points?: Array<{ x: number; y: number; height?: number }>; route_edge_ids?: string[]
   route_distance?: number; planned_duration_seconds?: number | null; queue_position?: number; risk_score?: number
   width_meters?: number; affected_residents?: number; affected_robot_tasks?: number
   exit?: 'north' | 'south'; action?: 'evacuate' | 'priority_assist'; residents?: Resident[]
   impact?: { congested_before: number; congested_after: number; smoke_exposed_before: number; smoke_exposed_after: number; forecast_horizon_seconds: number }
+  score_impact?: { before: number; after: number; delta: number; note: string }
   intent: SpatialIntent
 }

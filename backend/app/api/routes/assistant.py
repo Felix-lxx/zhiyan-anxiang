@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from threading import BoundedSemaphore, Lock
-from typing import Literal
+from typing import Any, Literal
 from uuid import uuid4
 import logging
 
@@ -29,12 +29,30 @@ class Turn(BaseModel):
     content: str = Field(min_length=1, max_length=8000)
 
 
+class SelectionContext(BaseModel):
+    """Small, user-visible focus context from the director UI.
+
+    It is supporting evidence only.  The authoritative drill snapshot is still
+    loaded on the server and the model is never allowed to execute from it.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+    kind: Literal["resident", "road", "robot", "object", "command", "score", "replay"]
+    id: str | None = Field(default=None, max_length=160)
+    label: str = Field(min_length=1, max_length=160)
+    type: str | None = Field(default=None, max_length=120)
+    detail: str | None = Field(default=None, max_length=600)
+    x: float | None = Field(default=None, ge=0, le=100)
+    y: float | None = Field(default=None, ge=0, le=100)
+
+
 class ChatRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
     message: str = Field(min_length=1, max_length=2000)
     history: list[Turn] = Field(default_factory=list, max_length=12)
     at_seconds: int | None = Field(default=None, ge=0)
     use_model: bool = False
+    selection_context: SelectionContext | None = None
 
     @field_validator("history")
     @classmethod
@@ -67,7 +85,8 @@ def chat(drill_id: str, payload: ChatRequest, identity: AuthenticatedIdentity = 
         data = {**state, "id": drill.id, "name": drill.name, "status": "replay", "elapsed_seconds": state["at_seconds"]}
     else:
         data = operations.snapshot(session, drill)
-    context = build_context(data, scene.name, historical, payload.message)
+    selection_context: dict[str, Any] | None = payload.selection_context.model_dump(exclude_none=True) if payload.selection_context else None
+    context = build_context(data, scene.name, historical, payload.message, selection_context)
     question = payload.message
     if len(question) < 10 and any(w in question for w in ("为什么", "怎么办", "然后呢", "继续")):
         previous = next((t.content for t in reversed(payload.history) if t.role == "user"), "")
@@ -101,6 +120,6 @@ def chat(drill_id: str, payload: ChatRequest, identity: AuthenticatedIdentity = 
         notice = "尚未完成模型配置，已使用离线解读。"
     return {"id": str(uuid4()), "mode": mode, "model": settings.assistant_model if mode == "model" else None,
             "answer": answer, "notice": notice, "disclaimer": DISCLAIMER,
-            "context": {k: context[k] for k in ("drill_id", "scene_name", "drill_name", "at_seconds", "historical", "counts")},
+            "context": {k: context[k] for k in ("drill_id", "scene_name", "drill_name", "at_seconds", "historical", "counts", "selection")},
             "sources": context["sources"], "actions": actions,
             "suggestions": ["现在下一步应该做什么？", "谁还没有到集合点？", "机器人为什么没动？", "道路拥堵应该怎么处理？", "如何从关键决定前重做？"]}

@@ -1,4 +1,4 @@
-from typing import Any
+from typing import Any, Literal
 
 from pydantic import BaseModel, Field
 
@@ -37,7 +37,7 @@ class ResidentCommand(BaseModel):
 
 class ParticipantAction(BaseModel):
     role: str = Field(min_length=2, max_length=64)
-    action: str = Field(pattern=r"^(acknowledge|arrived|resource_ready|resident_counted)$")
+    action: str = Field(pattern=r"^(acknowledge|arrived|resource_ready|resident_counted|report)$")
     message: str = Field(min_length=2, max_length=240)
     task_id: str | None = Field(default=None, max_length=36)
     resident_ids: list[str] = Field(default_factory=list, max_length=1000)
@@ -74,3 +74,11 @@ class EditableBranchCreate(BaseModel):
 class SearchAssignment(BaseModel):
     resident_id: str = Field(min_length=1, max_length=64)
     responsible: str = Field(min_length=2, max_length=40)
+
+
+class LiveCommand(BaseModel):
+    command_id: str = Field(min_length=8, max_length=80, pattern=r"^[a-zA-Z0-9_-]+$")
+    kind: Literal["state", "event.inject", "road.reopen", "residents.assign", "robot.command", "search.assign", "participant.feedback", "task.action", "director.configure"]
+    arguments: dict[str, Any] = Field(default_factory=dict)
+    target_id: str | None = Field(default=None, max_length=64)
+    expected_sequence: int | None = Field(default=None, ge=0)

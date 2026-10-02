@@ -1,270 +1,97 @@
 <script setup lang="ts">
-import { computed, nextTick, onMounted, ref } from 'vue'
+import { computed, defineAsyncComponent, onMounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import AppIcon from './AppIcon.vue'
+import CommunityLibrary from './CommunityLibrary.vue'
+import CommunityPlan from './CommunityPlan.vue'
+import AccountCenter from './AccountCenter.vue'
+import { accountProfile } from '../api/account'
 import { createApiClient } from '../api/client'
-import type { Community } from '../domain/models'
-
-const props = defineProps<{
-  apiBaseUrl: string
-  accessToken: string
-  username: string
-  role: string
-}>()
-
-const emit = defineEmits<{ logout: []; openMap: [community: Community]; openOperations: [community: Community] }>()
-const api = createApiClient(props.apiBaseUrl, () => props.accessToken, () => emit('logout'))
-const route = useRoute()
-const router = useRouter()
-type HomeSection = 'projects' | 'training' | 'guide' | 'account'
-const sectionNames: Record<HomeSection, string> = { projects: '社区项目', training: '示例训练', guide: '使用说明', account: '个人中心' }
-
-const communities = ref<Community[]>([])
-const isLoading = ref(true)
-const isCreating = ref(false)
-const isCreatingDemo = ref(false)
-const isLaunchingThreeDemo = ref(false)
-const isCreateFormOpen = ref(false)
-const listError = ref('')
-const createError = ref('')
-const demoError = ref('')
-const search = ref('')
-const statusFilter = ref('all')
-const statusNames: Record<Community['status'], string> = { draft: '草稿', published: '已发布', archived: '已归档' }
-const filteredCommunities = computed(() => communities.value.filter(item =>
-  (statusFilter.value === 'all' || item.status === statusFilter.value) &&
-  [item.name, item.address ?? '', item.description ?? ''].join(' ').toLocaleLowerCase().includes(search.value.trim().toLocaleLowerCase())
-).sort((a, b) => Date.parse(b.updated_at) - Date.parse(a.updated_at)))
-function latestVersion(community: Community): string {
-  return [...community.versions].sort((a, b) => b.version_number - a.version_number)[0]?.name ?? '待生成版本'
+import type { Community, Scene } from '../domain/models'
+import type { DrillIndex, Simulation } from '../domain/drill'
+import '../atlas-home.css'
+const DigitalTwinArena = defineAsyncComponent(() => import('./DigitalTwinArena.vue'))
+const props = defineProps<{ apiBaseUrl:string; accessToken:string; username:string; role:string }>()
+const emit = defineEmits<{ logout:[]; openMap:[community:Community]; openOperations:[community:Community] }>()
+const api=createApiClient(props.apiBaseUrl,()=>props.accessToken), route=useRoute(), router=useRouter()
+type HistoryRow=DrillIndex & {sceneId:string}
+const communities=ref<Community[]>([]), scenes=ref<Scene[]>([]), history=ref<HistoryRow[]>([])
+const communityId=ref(''), sceneId=ref(''), busy=ref(false), loading=ref(true), error=ref(''), guidance=ref(true)
+const section=computed(()=>String(route.query.section || 'home'))
+const historySearch=ref(''), historyStatus=ref('all')
+const filteredHistory=computed(()=>history.value.filter(item=>(historyStatus.value==='all'||item.status===historyStatus.value)&&item.name.toLocaleLowerCase().includes(historySearch.value.trim().toLocaleLowerCase())))
+const visibleHistory=computed(()=>section.value==='history'?filteredHistory.value:history.value.slice(0,3))
+const accountName=computed(()=>accountProfile.value?.display_name||props.username)
+const community=computed(()=>communities.value.find(c=>c.id===communityId.value))
+const scene=computed(()=>scenes.value.find(s=>s.id===sceneId.value))
+const scenePreview=ref<Simulation|null>(null)
+const previewMode=ref<'cover'|'spatial'|'plan'>('cover'), previewError=ref('')
+const parameters=computed(()=>scene.value?.versions[scene.value.versions.length-1]?.parameters)
+let generation=0
+function navigate(value:string){void router.push({name:'projects',query:value==='home'?{}:{section:value}})}
+async function load(){
+ loading.value=true;error.value=''
+ try{communities.value=await api.get<Community[]>('/communities');const preferred=communityId.value||accountProfile.value?.default_community_id;communityId.value=communities.value.find(c=>c.id===preferred)?.id||communities.value[0]?.id||'';if(communityId.value)await loadScenes();else{scenes.value=[];history.value=[];sceneId.value=''}}
+ catch(e){error.value=e instanceof Error?e.message:'读取失败，请重试。'}finally{loading.value=false}
 }
-function resetFilters(): void { search.value = ''; statusFilter.value = 'all' }
-const activeSection = computed<HomeSection>(() => {
-  const section = typeof route.query.section === 'string' ? route.query.section : 'projects'
-  return ['projects', 'training', 'guide', 'account'].includes(section) ? section as HomeSection : 'projects'
-})
-const activeSectionName = computed(() => sectionNames[activeSection.value])
-async function openSection(section: HomeSection): Promise<void> {
-  if (isCreating.value) return
-  isCreateFormOpen.value = false
-  createError.value = ''
-  form.value = { name: '', address: '', description: '' }
-  await router.push(section === 'projects' ? { name: 'projects' } : { name: 'projects', query: { section } })
-  await nextTick()
-  document.getElementById(`${section}-view-title`)?.focus({ preventScroll: true })
-  window.scrollTo({ top: 0, behavior: 'auto' })
+async function loadScenes(){
+ const id=++generation;scenes.value=[];history.value=[];sceneId.value='';error.value=''
+ try{
+ const result=await api.get<Scene[]>('/communities/'+communityId.value+'/scenes');if(id!==generation)return
+ scenes.value=result;sceneId.value=result.find(s=>s.status==='published')?.id||result[0]?.id||''
+ const lists=await Promise.all(result.map(async s=>(await api.get<HistoryRow[]>('/scenes/'+s.id+'/drills?summary=true')).map(d=>({...d,sceneId:s.id}))))
+ if(id===generation)history.value=lists.flat().sort((a,b)=>Date.parse(b.created_at||'')-Date.parse(a.created_at||''))
+ }catch(e){if(id===generation)error.value=e instanceof Error?e.message:'读取场景失败。'}
 }
-const form = ref({ name: '', address: '', description: '' })
-
-const projectCountLabel = computed(() => `${communities.value.length} 个社区项目`)
-const roleLabel = computed(() => props.role === 'admin' ? '系统管理员' : props.role || '工作空间成员')
-
-function formatDate(value: string): string {
-  return new Intl.DateTimeFormat('zh-CN', {
-    year: 'numeric',
-    month: 'short',
-    day: 'numeric',
-  }).format(new Date(value))
+async function prepare(){
+ if(community.value){await router.push({name:'scenes',params:{communityId:community.value.id},query:{scene:sceneId.value||undefined}});return}
+ busy.value=true;error.value=''
+ try{const c=await api.post<Community>('/communities/demo');await router.push({name:'scenes',params:{communityId:c.id}})}
+ catch(e){error.value=e instanceof Error?e.message:'创建失败。'}finally{busy.value=false}
 }
-
-async function loadCommunities(): Promise<void> {
-  isLoading.value = true
-  listError.value = ''
-
-  try {
-    communities.value = await api.get<Community[]>('/communities')
-  } catch (error) {
-    listError.value = error instanceof Error ? error.message : '无法读取社区项目，请稍后重试。'
-  } finally {
-    isLoading.value = false
-  }
+async function enter(){
+ if(scene.value?.status==='published'&&community.value){await router.push({name:'operations',params:{communityId:community.value.id},query:{scene:scene.value.id,autostart:'1'}});return}
+ if(community.value&&scene.value){await prepare();return}
+ busy.value=true;error.value=''
+ try{const result=await api.post<{community:Community}>('/communities/demo-ready');emit('openOperations',result.community)}
+ catch(e){error.value=e instanceof Error?e.message:'准备演练失败。'}finally{busy.value=false}
 }
-
-function openCreateForm(): void {
-  createError.value = ''
-  isCreateFormOpen.value = true
-  void nextTick(() => { document.getElementById('community-name')?.focus() })
-}
-
-function closeCreateForm(): void {
-  if (isCreating.value) return
-  form.value = { name: '', address: '', description: '' }
-  createError.value = ''
-  isCreateFormOpen.value = false
-  void nextTick(() => { document.getElementById('new-community-trigger')?.focus({ preventScroll: true }) })
-}
-
-async function createCommunity(): Promise<void> {
-  createError.value = ''
-  isCreating.value = true
-
-  try {
-    const payload = await api.post<Community>('/communities', {
-      name: form.value.name.trim(),
-      address: form.value.address.trim() || null,
-      description: form.value.description.trim() || null,
-    })
-    communities.value = [payload, ...communities.value]
-    isCreating.value = false
-    resetFilters()
-    closeCreateForm()
-  } catch (error) {
-    createError.value = error instanceof Error ? error.message : '创建社区项目失败，请稍后重试。'
-  } finally {
-    isCreating.value = false
-  }
-}
-
-async function createDemoCommunity(): Promise<void> {
-  demoError.value = ''
-  isCreatingDemo.value = true
-  try {
-    const payload = await api.post<Community>('/communities/demo')
-    const existingIndex = communities.value.findIndex((community) => community.id === payload.id)
-    if (existingIndex === -1) communities.value = [payload, ...communities.value]
-    else communities.value.splice(existingIndex, 1, payload)
-    emit('openMap', payload)
-  } catch (error) {
-    demoError.value = error instanceof Error ? error.message : '主案例社区生成失败，请稍后重试。'
-  } finally {
-    isCreatingDemo.value = false
-  }
-}
-
-async function launchThreeDemo(): Promise<void> {
-  demoError.value = ''
-  isLaunchingThreeDemo.value = true
-  try {
-    const payload = await api.post<{ community: Community }>('/communities/demo-ready')
-    const existingIndex = communities.value.findIndex((community) => community.id === payload.community?.id)
-    if (existingIndex === -1) communities.value = [payload.community, ...communities.value]
-    else communities.value.splice(existingIndex, 1, payload.community)
-    emit('openOperations', payload.community)
-  } catch (error) {
-    demoError.value = error instanceof Error ? error.message : '三维演练初始化失败，请稍后重试。'
-  } finally {
-    isLaunchingThreeDemo.value = false
-  }
-}
-
-onMounted(() => {
-  void loadCommunities()
-})
+function replay(d:HistoryRow){if(community.value)void router.push({name:'operations',params:{communityId:community.value.id},query:{scene:d.sceneId,drill:d.id,mode:'replay'}})}
+function continueRun(d:HistoryRow){if(community.value)void router.push({name:'operations',params:{communityId:community.value.id},query:{scene:d.sceneId,drill:d.id}})}
+function date(v?:string){return v?new Date(v).toLocaleString('zh-CN',{hour12:false}):'尚未开始'}
+function resultLabel(d:DrillIndex){return d.score?.recommendations[0]||({running:'演练进行中',paused:'演练已暂停',ready:'等待启动'}[d.status]??'等待复盘')}
+watch(sceneId,async(id,_,onCleanup)=>{scenePreview.value=null;previewMode.value='cover';previewError.value='';if(!id)return;let cancelled=false;onCleanup(()=>{cancelled=true});try{const result=await api.get<{simulation:Simulation}>('/scenes/'+id+'/preview?minute=0');if(!cancelled)scenePreview.value=result.simulation}catch(cause){if(!cancelled)previewError.value=cause instanceof Error?cause.message:'场景预览读取失败，请在场景准备中检查配置。'}})
+watch(section,(v,previous)=>{if(previous==='account'&&accountProfile.value?.default_community_id)communityId.value=accountProfile.value.default_community_id;if(v==='home'||v==='history')void load()})
+onMounted(load)
 </script>
-
 <template>
-  <main id="main-content" class="project-home">
-    <header class="home-header">
-      <button class="entry-brand home-brand-button" type="button" aria-label="打开社区项目首页" @click="openSection('projects')"><span class="entry-brand__symbol"><AppIcon name="compass" :size="26" /></span><span>智演安巷<small>社区消防演练平台</small></span></button>
-      <nav class="home-nav" aria-label="工作空间导航">
-        <button type="button" :aria-current="activeSection === 'projects' ? 'page' : undefined" @click="openSection('projects')"><AppIcon name="building" :size="19" />社区项目<span v-if="!isLoading && !listError">{{ communities.length }}</span></button>
-        <button type="button" :aria-current="activeSection === 'training' ? 'page' : undefined" @click="openSection('training')"><AppIcon name="play" :size="19" />示例训练</button>
-        <button type="button" :aria-current="activeSection === 'guide' ? 'page' : undefined" @click="openSection('guide')"><AppIcon name="help" :size="19" />使用说明</button>
-      </nav>
-      <div class="home-account-section">
-        <button class="home-account" type="button" aria-label="打开个人中心" :aria-current="activeSection === 'account' ? 'page' : undefined" @click="openSection('account')">
-          <span class="home-avatar" aria-hidden="true"><AppIcon name="person" :size="18" /></span>
-          <span>{{ username }}<small>{{ roleLabel }}</small></span>
-          <AppIcon name="chevron" :size="17" />
-        </button>
-      </div>
-    </header>
-    <div id="home-top" class="home-workspace">
-      <div class="home-topbar">
-        <span>工作空间 <AppIcon name="chevron" :size="14" /> {{ activeSectionName }}</span>
-        <button v-if="activeSection === 'projects'" id="new-community-trigger" class="entry-button entry-button--primary" type="button" :aria-expanded="isCreateFormOpen" aria-controls="create-community-panel" @click="openCreateForm"><AppIcon name="plus" :size="18" />新建社区项目</button>
-      </div>
-      <div class="home-content">
-      <section v-if="activeSection === 'projects'" class="home-view" aria-labelledby="projects-view-title">
-      <div class="home-view-heading"><h1 id="projects-view-title" tabindex="-1">社区项目</h1><p>配置社区，组织演练，回看每一次现场决策。</p></div>
-      <section v-if="isCreateFormOpen" id="create-community-panel" class="home-create" aria-labelledby="create-title">
-        <div class="home-section-heading"><div><h2 id="create-title">创建社区项目</h2><p>先记录社区信息，再配置楼栋、道路与演练场景。</p></div><button class="entry-icon-button" type="button" aria-label="取消创建" :disabled="isCreating" @click="closeCreateForm"><AppIcon name="close" /></button></div>
-        <form class="home-create-form" @submit.prevent="createCommunity">
-          <div class="entry-field"><label for="community-name">社区名称</label><input id="community-name" v-model="form.name" maxlength="120" minlength="2" required placeholder="例如：安巷社区" :disabled="isCreating" /></div>
-          <div class="entry-field"><label for="community-address">地址 <span>选填</span></label><input id="community-address" v-model="form.address" maxlength="255" placeholder="例如：示例路 18 号" :disabled="isCreating" /></div>
-          <div class="entry-field home-create-form__wide"><label for="community-description">项目说明 <span>选填</span></label><textarea id="community-description" v-model="form.description" maxlength="2000" rows="3" placeholder="记录社区特点、演练范围或已知消防隐患。" :disabled="isCreating"></textarea></div>
-          <p v-if="createError" class="message message--error home-create-form__wide" role="alert">{{ createError }}</p>
-          <div class="home-create-form__actions"><button class="entry-button entry-button--outline" type="button" :disabled="isCreating" @click="closeCreateForm">暂不创建</button><button class="entry-button entry-button--primary" type="submit" :disabled="isCreating">{{ isCreating ? '正在创建…' : '创建社区项目' }}</button></div>
-        </form>
-      </section>
-      <section id="project-library" class="home-library" aria-labelledby="projects-title">
-        <div class="home-section-heading"><h2 id="projects-title">我的社区 <span v-if="!isLoading && !listError" class="home-count">{{ communities.length }}</span></h2><span class="home-sort-note">按最近更新排序</span></div>
-        <div class="home-library__tools">
-          <div class="home-search"><AppIcon name="search" :size="18" /><input v-model="search" type="search" aria-label="搜索社区项目" placeholder="搜索社区名称、地址或说明" /><button v-if="search" class="entry-icon-button" type="button" aria-label="清空搜索" @click="search = ''"><AppIcon name="close" :size="16" /></button></div>
-          <label class="home-filter"><span>项目状态</span><select v-model="statusFilter"><option value="all">全部状态</option><option value="draft">草稿</option><option value="published">已发布</option><option value="archived">已归档</option></select></label>
-        </div>
-        <div v-if="isLoading" class="home-empty" role="status"><AppIcon name="clock" :size="28" /><h3>正在读取社区项目…</h3><p>即将为你呈现已有社区与演练入口。</p></div>
-        <div v-else-if="listError" class="home-empty" role="alert"><h3>暂时无法读取项目</h3><p>{{ listError }}</p><button class="entry-button entry-button--outline" type="button" @click="loadCommunities">重新加载</button></div>
-        <div v-else-if="communities.length === 0" class="home-empty"><AppIcon name="building" :size="32" /><h3>从你的第一个社区开始</h3><p>新建社区配置真实底图，或从示例训练直接体验演练。</p><button class="entry-button entry-button--outline" type="button" @click="openCreateForm">创建第一个社区项目</button></div>
-        <div v-else-if="filteredCommunities.length === 0" class="home-empty" role="status"><AppIcon name="search" :size="28" /><h3>没有找到符合条件的社区</h3><p>换个关键词，或清除状态筛选试试。</p><button class="entry-button entry-button--outline" type="button" @click="resetFilters">清除筛选</button></div>
-        <div v-else class="home-project-list">
-          <article v-for="community in filteredCommunities" :key="community.id" class="home-project-row">
-            <div class="home-project-mark" aria-hidden="true"><AppIcon name="building" :size="27" /></div>
-            <div class="home-project-info"><div><h3>{{ community.name }}</h3><span class="home-status" :data-status="community.status">{{ statusNames[community.status] }}</span></div><p>{{ community.address || '尚未填写社区地址' }}</p><span class="home-project-version">{{ latestVersion(community) }}</span></div>
-            <div class="home-project-date"><span>最近更新</span><time :datetime="community.updated_at">{{ formatDate(community.updated_at) }}</time></div>
-            <div class="home-project-actions"><button class="entry-link" type="button" @click="emit('openMap', community)">编辑地图</button><button class="entry-button entry-button--outline" type="button" @click="emit('openOperations', community)">演练中心<AppIcon name="arrowRight" :size="17" /></button></div>
-          </article>
-          <p class="home-list-summary" role="status">显示 {{ filteredCommunities.length }} / {{ projectCountLabel }}</p>
-        </div>
-      </section>
-      </section>
-
-      <section v-else-if="activeSection === 'training'" class="home-view" aria-labelledby="training-view-title">
-        <div class="home-view-heading"><h1 id="training-view-title" tabindex="-1">示例训练</h1><p>无需配置数据，直接进入一场可以重复推演的社区火灾训练。</p></div>
-        <div class="home-training-page">
-        <section class="home-feature" aria-labelledby="demo-community-title">
-          <div class="home-case-heading"><AppIcon name="play" :size="18" /><h2>夜间充电棚火灾</h2></div>
-          <figure class="home-feature__scene">
-            <img src="/assets/community-stage-current.png" alt="平台实际渲染的社区模型：住宅立面、充电棚、消防车辆和疏散道路" width="1440" height="892" fetchpriority="high" />
-            <figcaption>平台实景截取 · 非实时画面</figcaption>
-          </figure>
-          <div class="home-feature__copy">
-            <h3 id="demo-community-title">安巷社区 · 充电棚火灾</h3>
-            <p>夜间充电棚起火。进入三维社区，指挥居民撤离并调度机器人，观察不同路线带来的结果。</p>
-            <dl class="home-case-facts"><div><dt>场景</dt><dd>老旧住宅 / 夜间火灾</dd></div><div><dt>任务</dt><dd>路线分配 · 疏散 · 复盘</dd></div></dl>
-            <div class="home-feature__actions">
-              <button class="entry-button entry-button--primary" type="button" :disabled="isLaunchingThreeDemo || isCreatingDemo" @click="launchThreeDemo"><AppIcon name="play" :size="18" />{{ isLaunchingThreeDemo ? '正在准备三维现场…' : '立即进入三维演练' }}<AppIcon name="arrowRight" :size="18" /></button>
-              <button class="entry-link" type="button" :disabled="isCreatingDemo || isLaunchingThreeDemo" @click="createDemoCommunity">{{ isCreatingDemo ? '正在生成案例…' : '编辑案例底图' }}</button>
-            </div>
-            <p class="home-feature__note">自动准备案例与演练场次，可重复进入。</p>
-            <p v-if="demoError" class="message message--error" role="alert">{{ demoError }}</p>
-          </div>
-        </section>
-        <aside class="home-training-checklist" aria-labelledby="training-checklist-title">
-          <h2 id="training-checklist-title">这次训练要完成什么</h2>
-          <ol>
-            <li><span>1</span><div><strong>判断火势与通道</strong><p>查看起火点、烟气和道路风险，再决定从哪里撤离。</p></div></li>
-            <li><span>2</span><div><strong>指挥居民与机器人</strong><p>选择人员、分配出口并下发机器人任务。</p></div></li>
-            <li><span>3</span><div><strong>比较另一种决策</strong><p>从关键时刻创建分支，观察拥堵、暴露与清点结果。</p></div></li>
-          </ol>
-          <button class="entry-link" type="button" @click="openSection('guide')">查看完整使用说明<AppIcon name="arrowRight" :size="16" /></button>
-        </aside>
-        </div>
-      </section>
-
-      <section v-else-if="activeSection === 'guide'" class="home-view" aria-labelledby="guide-view-title">
-        <div class="home-view-heading"><h1 id="guide-view-title" tabindex="-1">使用说明</h1><p>从社区建模到演练复盘，按一条完整路径使用系统。</p></div>
-        <div class="home-guide-page">
-          <ol class="home-guide-steps">
-            <li><span>1</span><div><h2>准备社区</h2><p>在社区项目中创建或选择社区，编辑楼栋、道路、消防设施和集合点。保存后，地图与三维预览使用同一份数据。</p><button class="entry-link" type="button" @click="openSection('projects')">打开社区项目<AppIcon name="arrowRight" :size="16" /></button></div></li>
-            <li><span>2</span><div><h2>进入演练</h2><p>从项目的「演练中心」进入已有场景，也可以使用示例训练自动准备充电棚火灾案例。</p><button class="entry-link" type="button" @click="openSection('training')">打开示例训练<AppIcon name="arrowRight" :size="16" /></button></div></li>
-            <li><span>3</span><div><h2>在三维现场下达指令</h2><p>点击居民、道路或机器人，先查看路线、风险和预计影响，再确认封路、疏散或任务指派。</p></div></li>
-            <li><span>4</span><div><h2>观察结果并复盘</h2><p>关注排队、拥堵、烟气暴露和机器人执行状态。演练结束后查看证据记录，并从关键决策点创建另一分支比较结果。</p></div></li>
-          </ol>
-          <aside class="home-guide-note"><AppIcon name="inspect" :size="20" /><div><h2>比赛演示建议</h2><p>先演示一次错误路线，再从同一快照改选出口。评委可以直接看到人员改道、风险变化与评分证据。</p></div></aside>
-        </div>
-      </section>
-
-      <section v-else class="home-view" aria-labelledby="account-view-title">
-        <div class="home-view-heading"><h1 id="account-view-title" tabindex="-1">个人中心</h1><p>查看当前工作空间身份与可用权限。</p></div>
-        <div class="home-profile-page">
-          <section aria-labelledby="identity-title"><h2 id="identity-title">账户信息</h2><dl><div><dt>账号</dt><dd>{{ username }}</dd></div><div><dt>身份</dt><dd>{{ roleLabel }}</dd></div><div><dt>登录方式</dt><dd>本地工作空间账号</dd></div></dl></section>
-          <section aria-labelledby="permission-title"><h2 id="permission-title">当前权限</h2><p>{{ role === 'admin' ? '你可以创建社区、编辑地图与场景、组织三维演练并查看复盘证据。' : '你可以进入已授权的社区项目和演练场景，具体操作由角色权限决定。' }}</p><p class="home-profile-hint">账号与角色由本地系统配置。如需修改权限，请联系系统管理员。</p></section>
-          <div class="home-profile-actions"><button class="entry-button entry-button--outline" type="button" aria-label="退出登录" @click="emit('logout')"><AppIcon name="logout" :size="17" />退出工作空间</button></div>
-        </div>
-      </section>
-      <footer class="home-footer"><AppIcon name="inspect" :size="16" /><p>训练模拟，不替代现场消防专业判断。</p></footer>
-      </div>
-    </div>
-  </main>
+<main id="main-content" class="atlas-home">
+ <aside class="atlas-sidebar">
+  <button class="atlas-sidebar__brand" @click="navigate('home')"><AppIcon name="building" :size="44"/><strong>智演安巷</strong><small>老旧小区消防应急演练平台</small></button>
+  <nav aria-label="工作空间导航"><button :aria-current="section==='home'?'page':undefined" @click="navigate('home')"><AppIcon name="compass"/>演练首页</button><button @click="prepare"><AppIcon name="tasks"/>场景准备</button><button :aria-current="section==='history'?'page':undefined" @click="navigate('history')"><AppIcon name="clock"/>复盘记录</button><button :aria-current="section==='guide'?'page':undefined" @click="navigate('guide')"><AppIcon name="help"/>使用说明</button></nav>
+  <div class="atlas-sidebar__foot"><p>演练于平时<br/>平安在万家</p><button :aria-current="section==='communities'?'page':undefined" @click="navigate('communities')"><AppIcon name="building" :size="18"/>社区管理</button><button :aria-current="section==='account'?'page':undefined" @click="navigate('account')"><AppIcon name="person" :size="18"/>个人中心</button></div>
+ </aside>
+ <div class="atlas-home__body">
+  <header class="atlas-home__bar"><div><strong>{{community?.name.split(' · ')[0]||'安巷社区'}}</strong><span>老旧社区消防应急演练平台</span></div><div><span class="atlas-online"><i :data-error="Boolean(error)"></i>{{error?'连接待恢复':loading?'正在连接':'系统在线'}}</span><button aria-label="打开个人中心" @click="navigate('account')"><AppIcon name="person"/><span class="atlas-account-name">{{accountName}}</span><AppIcon name="chevron" :size="16"/></button></div></header>
+  <section v-if="section==='home'||section==='history'||section==='training'" class="atlas-home__content">
+   <header class="atlas-home__title"><h1>{{section==='history'?'复盘记录':'演练工作台'}}</h1><p>以真实场景锻炼应急能力，让社区更安全</p><label v-if="communities.length>1" class="atlas-community-switch"><span>社区</span><select v-model="communityId" @change="loadScenes"><option v-for="c in communities" :key="c.id" :value="c.id">{{c.name}}</option></select></label></header>
+   <p v-if="error" class="atlas-home__error" role="alert">{{error}}<button @click="load">重新加载</button></p>
+   <div v-if="section!=='history'" class="atlas-case">
+    <figure class="atlas-case__visual"><CommunityPlan v-if="previewMode==='plan'&&scenePreview" :simulation="scenePreview"/><DigitalTwinArena v-else-if="previewMode==='spatial'&&scenePreview" :key="sceneId" :simulation="scenePreview" :robot="null" status="paused" :elapsed-seconds="0" compact :interactive="false" :camera-enabled="false"/><img v-else src="/assets/atlas-community-night.png" alt="夜间充电棚火灾场景效果图" fetchpriority="high"/><span class="atlas-case__location"><AppIcon name="target" :size="16"/>{{community?.name.split(' · ')[0]||'安巷社区'}} · {{previewMode==='cover'?'场景效果图':previewMode==='spatial'?'实际配置 · 拖动旋转、滚轮缩放':'实际配置 · 平面路网'}}</span><div v-if="previewError" class="atlas-case__preview-error" role="status">{{previewError}}<button @click="prepare">检查场景配置</button></div><div class="atlas-case__views"><button :aria-pressed="previewMode==='cover'" @click="previewMode='cover'">效果图</button><button :aria-pressed="previewMode==='spatial'" :disabled="!scenePreview" @click="previewMode='spatial'">三维预览</button><button :aria-pressed="previewMode==='plan'" :disabled="!scenePreview" @click="previewMode='plan'">平面图</button></div></figure>
+    <article class="atlas-case__details"><div class="atlas-case__select"><span>预设场景</span><select v-if="scenes.length" v-model="sceneId" aria-label="更换场景"><option v-for="s in scenes" :key="s.id" :value="s.id">{{s.name}}</option></select><button v-else @click="prepare">准备场景<AppIcon name="arrowRight" :size="16"/></button></div><h2>{{scene?.name||'夜间充电棚火灾'}}</h2><p>居民区电动自行车充电棚突发火灾。查看火情与通道，组织人员疏散，调度机器人并记录每一次处置。</p>
+     <dl><div><AppIcon name="users"/><dt>涉及人数</dt><dd>{{scenePreview?.summary.total??parameters?.resident_count??'—'}} <small>人</small></dd><span>含重点关注居民</span></div><div><AppIcon name="logout"/><dt>可用疏散出口</dt><dd>{{scenePreview?.road_network?.nodes.filter(n=>n.is_exit).length??'—'}} <small>个</small></dd><span>由社区路网确定</span></div><div><AppIcon name="robot"/><dt>机器人状态</dt><dd>{{scene?'1 台':'待部署'}}</dd><span>{{scene?'巡检广播机器人 · 场景预设':'开始后载入场景'}}</span></div></dl>
+     <div class="atlas-case__ready"><AppIcon :name="scene?.status==='published'?'check':'clock'" :size="25"/><strong>{{loading?'读取场景':scene?.status==='published'?'准备就绪':'等待准备'}}</strong><span>{{scene?.status==='published'?'场景已冻结，可以开始演练':'完成场景配置后开始演练'}}</span></div><button class="atlas-case__enter" :disabled="busy||loading" @click="enter"><AppIcon name="play"/>{{busy?'正在准备…':scene&&scene.status!=='published'?'继续场景准备':'进入演练'}}<AppIcon name="arrowRight"/></button>
+    </article>
+   </div>
+   <section class="atlas-history">
+    <header><h2>{{section==='history'?'演练记录':'最近演练'}}</h2><button v-if="section!=='history'" @click="navigate('history')">查看全部记录<AppIcon name="arrowRight" :size="18"/></button><button v-else :disabled="loading" @click="load">刷新记录<AppIcon name="refresh" :size="18"/></button></header>
+    <div v-if="section==='history'" class="atlas-history__filters"><label>搜索演练<input v-model="historySearch" type="search" placeholder="输入演练名称" /></label><label>演练状态<select v-model="historyStatus"><option value="all">全部状态</option><option value="ready">待开始</option><option value="running">进行中</option><option value="paused">已暂停</option><option value="ended">已结束</option></select></label><span role="status">{{ filteredHistory.length }} / {{ history.length }} 条</span><button v-if="historySearch || historyStatus!=='all'" @click="historySearch='';historyStatus='all'">清除筛选</button></div>
+    <div class="atlas-history__scroll" role="region" aria-label="演练记录列表，窄屏可横向滚动" tabindex="0"><table><thead><tr><th>序号</th><th>演练场景</th><th>演练时间</th><th>参与人数</th><th>得分</th><th>关键结论</th><th>操作</th></tr></thead><tbody><tr v-for="(d,i) in visibleHistory" :key="d.id"><td>{{String(i+1).padStart(2,'0')}}</td><td>{{d.name}}</td><td>{{date(d.created_at)}}</td><td>{{d.resident_count??'—'}} 人</td><td class="atlas-history__score">{{d.score?.total_score??'—'}}<small v-if="d.score"> 分</small></td><td>{{resultLabel(d)}}</td><td><div class="atlas-history__actions"><button v-if="d.status!=='ended'" class="atlas-history__action" type="button" @click="continueRun(d)"><span>{{d.status==='ready'?'开始演练':'继续演练'}}</span><AppIcon name="play" :size="16"/></button><button class="atlas-history__action" type="button" @click="replay(d)"><span>查看复盘</span><AppIcon name="arrowRight" :size="16"/></button></div></td></tr><tr v-if="!visibleHistory.length"><td colspan="7">{{loading?'正在读取演练记录…':history.length?'没有匹配的记录，请调整搜索词或状态。':'尚无演练记录。完成首次演练后，将在这里保留过程与证据。'}}</td></tr></tbody></table></div>
+   </section>
+   <div v-if="guidance&&section!=='history'" class="atlas-home__guide"><AppIcon name="help"/><p><strong>首次使用提示：</strong>建议先在「场景准备」中熟悉社区地图、人员配置和设备，再开始正式演练。</p><button @click="prepare">前往场景准备<AppIcon name="arrowRight" :size="16"/></button><button aria-label="关闭首次使用提示" @click="guidance=false"><AppIcon name="close" :size="16"/></button></div>
+  </section>
+  <AccountCenter v-else-if="section==='account'" :api-base-url="apiBaseUrl" :access-token="accessToken" @logout="emit('logout')"/>
+  <CommunityLibrary v-else :key="section" class="atlas-library" v-bind="props" @logout="emit('logout')" @open-map="c=>emit('openMap',c)" @open-operations="c=>emit('openOperations',c)"/>
+ </div>
+</main>
 </template>

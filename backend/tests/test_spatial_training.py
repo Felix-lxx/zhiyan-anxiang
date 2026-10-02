@@ -92,6 +92,8 @@ def test_shared_preview_parameters_and_no_mutation(exercise):
     assert route_preview.json()["residents"][0]["route_points"][0]["height"] > 0
     assert route_preview.json()["kind"] == "residents"
     assert route_preview.json()["impact"]["forecast_horizon_seconds"] == 30
+    assert route_preview.json()["expected_sequence"] == tick(0)["latest_event_sequence"]
+    assert "delta" in route_preview.json()["score_impact"]
     assert not any(e["event_type"] == "resident.command" for e in tick(0)["events"])
 
 
@@ -104,10 +106,14 @@ def test_spatial_action_previews_are_non_mutating(exercise):
     assert road_preview.status_code == 200, road_preview.text
     assert road_preview.json()["kind"] == "road"
     assert road_preview.json()["impact"]["forecast_horizon_seconds"] == 30
+    assert road_preview.json()["expected_sequence"] == before["latest_event_sequence"]
+    assert "delta" in road_preview.json()["score_impact"]
     robot_preview = client.post(root+'/robot/preview', headers=headers, json={"command":"move","x":58,"y":54,"target":"3号楼入口"})
     assert robot_preview.status_code == 200, robot_preview.text
     assert robot_preview.json()["kind"] == "robot"
     assert robot_preview.json()["route_points"]
+    assert robot_preview.json()["expected_sequence"] == before["latest_event_sequence"]
+    assert robot_preview.json()["score_impact"]["delta"] == 0
     after = tick(0)
     assert len(after["events"]) == len(before["events"])
     assert not any(event["event_type"] == "inject.channel_blocked" and event["payload"].get("blocked_edge_id") == road["id"] for event in after["events"])
