@@ -6,7 +6,7 @@ import AppIcon from './AppIcon.vue'
 const props = defineProps<{ commands: CommandReceipt[]; score: Score; paused: boolean }>()
 const emit = defineEmits<{ focus: [id: string]; evidence: [seconds: number]; ask: [command: CommandReceipt] }>()
 const showAll = ref(false)
-const labels: Record<CommandReceipt['status'], string> = { completed: '已完成', executing: '执行中', queued: '排队等待', blocked: '执行受阻', paused: '已暂停', superseded: '已被新指令替代', cancelled: '已取消', unfinished: '结束时未完成' }
+const labels: Record<CommandReceipt['status'], string> = { submitted: '正在提交', accepted: '已受理', completed: '已完成', executing: '执行中', queued: '排队等待', blocked: '执行受阻', paused: '已暂停', superseded: '已被新指令替代', cancelled: '已取消', unfinished: '结束时未完成', failed: '未执行' }
 const visible = computed(() => showAll.value ? props.commands : props.commands.slice(0, 4))
 const incomplete = computed(() => props.score.details.filter(d => d.max_score && d.score < d.max_score).slice(0, 2))
 const time = (seconds: number) => `${String(Math.floor(seconds / 60)).padStart(2, '0')}:${String(seconds % 60).padStart(2, '0')}`
@@ -16,12 +16,12 @@ const time = (seconds: number) => `${String(Math.floor(seconds / 60)).padStart(2
   <section class="execution-feedback" aria-label="指令执行进度">
     <header><h3>指令执行进度</h3><span>{{ paused ? '演练暂停' : '随现场同步' }}</span></header>
     <p v-if="!commands.length" class="execution-feedback__empty">选择居民、道路或机器人并确认操作后，这里会显示实际执行进度、等待原因和结果证据。</p>
-    <ol>
+    <ol aria-live="polite">
       <li v-for="command in visible" :key="command.id" :data-status="command.status">
-        <div class="execution-feedback__status"><time>{{ time(command.accepted_at) }}</time><strong>{{ labels[command.status] }}</strong><span v-if="command.remaining_seconds && command.remaining_seconds < 9999">行程估计 {{ Math.ceil(command.remaining_seconds) }} 秒</span></div>
+        <div class="execution-feedback__status"><time>{{ time(command.accepted_at) }}</time><strong>{{ labels[command.status] }}</strong><span v-if="command.remaining_seconds && command.remaining_seconds < 9999">行程估计 {{ Math.ceil(command.remaining_seconds) }} 秒</span><span v-if="command.score_before !== null && command.score_after_acceptance !== null && command.score_after_acceptance !== command.score_before">预计评分 {{ command.score_after_acceptance > command.score_before ? '+' : '' }}{{ command.score_after_acceptance - command.score_before }}</span></div>
         <h4>{{ command.label }}</h4><p>{{ command.reason }}</p>
         <progress v-if="command.kind === 'residents.assign' || command.kind === 'robot.command' || command.kind === 'search.assign'" :value="command.progress" max="1" :aria-label="command.label + '执行进度'"></progress>
-        <div class="execution-feedback__actions"><span v-if="command.selected_count">到达 {{ command.completed_count }}/{{ command.selected_count }} 人</span><span v-else>{{ command.event_ids.length }} 条关联证据</span><button type="button" @click="emit('ask', command)"><AppIcon name="brain" :size="15" />问 AI 原因</button><button v-if="command.resident_ids[0]" type="button" @click="emit('focus', command.resident_ids[0])"><AppIcon name="target" :size="15" />定位人员</button><button type="button" @click="emit('evidence', command.accepted_at)">回看决定<AppIcon name="arrowRight" :size="15" /></button></div>
+        <div class="execution-feedback__actions"><span v-if="command.selected_count">到达 {{ command.completed_count }}/{{ command.selected_count }} 人</span><span v-else>{{ command.event_ids.length }} 条关联证据</span><button type="button" @click="emit('ask', command)"><AppIcon name="brain" :size="15" />分析原因</button><button v-if="command.resident_ids[0]" type="button" @click="emit('focus', command.resident_ids[0])"><AppIcon name="target" :size="15" />定位人员</button><button v-if="command.event_ids.length" type="button" @click="emit('evidence', command.accepted_at)">{{ command.status === 'failed' ? '查看失败记录' : '回看决定' }}<AppIcon name="arrowRight" :size="15" /></button></div>
       </li>
     </ol>
     <button v-if="commands.length > 4" type="button" class="execution-feedback__more" :aria-expanded="showAll" @click="showAll = !showAll">{{ showAll ? '收起历史指令' : `查看本场最近 ${commands.length} 条指令` }}</button>
@@ -39,6 +39,8 @@ const time = (seconds: number) => `${String(Math.floor(seconds / 60)).padStart(2
 .execution-feedback__status{display:flex;flex-wrap:wrap;align-items:center;gap:8px;font-size:13px;margin-bottom:6px;font-variant-numeric:tabular-nums;color:var(--text-secondary)}
 .execution-feedback__status strong{color:var(--text-primary)}
 [data-status=blocked] .execution-feedback__status strong,[data-status=unfinished] .execution-feedback__status strong{color:var(--status-warning)}
+[data-status=failed] .execution-feedback__status strong{color:var(--status-danger)}
+[data-status=failed]{background:color-mix(in srgb,var(--status-danger) 8%,transparent)}
 .execution-feedback p{font-size:13px;line-height:1.7;margin:7px 0;color:var(--text-secondary)}
 .execution-feedback progress{display:block;width:100%;height:5px;margin:12px 0;accent-color:var(--status-success)}
 .execution-feedback__actions{display:flex;flex-wrap:wrap;align-items:center;gap:8px;font-size:13px;font-variant-numeric:tabular-nums}

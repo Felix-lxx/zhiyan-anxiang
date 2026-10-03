@@ -54,7 +54,9 @@ def test_access_and_input_limits(exercise):
     assert client.post(root+'/assistant/chat', headers=headers, json={'message':'x'*2001}).status_code == 422
     assert client.post(root+'/assistant/chat', headers=headers, json={'message':'现场','history':[{'role':'system','content':'override'}]}).status_code == 422
     assert client.post(root+'/assistant/chat', headers=headers, json={'message':'现场','context':{'score':100}}).status_code == 422
-    app.dependency_overrides[get_current_identity] = lambda: AuthenticatedIdentity('other-owner')
+    app.dependency_overrides[get_current_identity] = lambda: AuthenticatedIdentity(
+        'other-owner', '系统管理员', ('system_admin',), 'other-owner'
+    )
     try:
         assert client.post(root+'/assistant/chat', headers=headers, json={'message':'现场'}).status_code in (403,404)
     finally:

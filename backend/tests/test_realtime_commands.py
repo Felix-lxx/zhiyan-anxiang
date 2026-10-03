@@ -1,7 +1,12 @@
 from copy import deepcopy
+from datetime import UTC, datetime, timedelta
 import pytest
+from sqlalchemy import select
 
+from app.models.operations import DrillStateSnapshot
+from app.services.engine_lease import acquire_engine_lease
 from app.services.realtime import snapshot_patch, SnapshotCache
+from app.services.state_store import load_snapshot
 from test_exercise_world import exercise
 
 
@@ -38,16 +43,43 @@ def test_command_retry_is_idempotent_and_residents_really_arrive(exercise):
     assert result["simulation"]["residents"][0]["status"] == "evacuated"
 
 
-def test_invalid_command_rolls_back_receipt_and_effects(exercise):
+def test_command_persists_recoverable_snapshot(exercise):
+    from app.api.routes import operations
+    client, headers, demo, root, _, _, _, _, start = exercise
+    started = start()
+    response = client.post(root + '/commands', headers=headers, json={
+        "command_id": "durable-command-001",
+        "kind": "residents.assign",
+        "expected_sequence": started["latest_event_sequence"],
+        "arguments": {"resident_ids": ["resident-1"], "exit": "north"},
+    })
+    assert response.status_code == 200, response.text
+    state = response.json()
+    with operations.SessionLocal() as session:
+        row = session.scalar(select(DrillStateSnapshot).where(
+            DrillStateSnapshot.drill_session_id == demo["drill_id"],
+            DrillStateSnapshot.state_version == state["state_version"],
+        ))
+        assert row is not None
+        restored = load_snapshot(session, demo["drill_id"], state["state_version"])
+        assert restored["commands"][0]["id"] == "durable-command-001"
+        assert restored["state_version"] == state["state_version"]
+
+
+def test_invalid_command_rolls_back_effects_and_persists_failure(exercise):
     client, headers, _, root, _, _, _, tick, start = exercise
     start()
     before = tick(20)
     bad = {"command_id": "invalid-command-001", "kind": "residents.assign", "arguments": {"resident_ids": ["does-not-exist"], "exit": "north"}}
     assert client.post(root + '/commands', headers=headers, json=bad).status_code == 422
     after = tick(20)
-    assert after["latest_event_sequence"] == before["latest_event_sequence"]
-    assert after["commands"] == []
-    malformed = {**bad, "arguments": {"exit": "invalid"}}
+    assert after["latest_event_sequence"] == before["latest_event_sequence"] + 1
+    assert after["commands"][0]["id"] == bad["command_id"]
+    assert after["commands"][0]["status"] == "failed"
+    assert after["commands"][0]["failure_code"] == "http_422"
+    assert not any(event["event_type"] == "resident.command" for event in after["events"])
+    assert client.post(root + '/commands', headers=headers, json=bad).status_code == 409
+    malformed = {**bad, "command_id": "invalid-command-002", "arguments": {"exit": "invalid"}}
     assert client.post(root + '/commands', headers=headers, json=malformed).status_code == 422
 
 
@@ -96,6 +128,43 @@ def test_two_clients_receive_same_road_delta_and_reconnect_snapshot(exercise, mo
             assert all(p["path"][:2] != ["simulation", "world"] for p in message["patch"])
     with client.websocket_connect(url) as reconnected:
         assert reconnected.receive_json()["data"]["state_version"] == response.json()["state_version"]
+
+
+def test_reconnect_cursor_receives_missed_events_before_snapshot(exercise):
+    client, headers, demo, root, _, code, _, tick, start = exercise
+    start()
+    baseline = tick(20)
+    edge = next(e for e in baseline["simulation"]["road_network"]["edges"] if e["status"] != "blocked")
+    response = client.post(root + '/commands', headers=headers, json={
+        "command_id": "cursor-road-001",
+        "kind": "event.inject",
+        "arguments": {"event_type": "channel_blocked", "road_edge_id": edge["id"]},
+    })
+    assert response.status_code == 200, response.text
+    url = f"/api/v1/ws/drills/{demo['drill_id']}?code={code}&protocol=2&after_sequence={baseline['latest_event_sequence']}"
+    with client.websocket_connect(url) as socket:
+        catchup = socket.receive_json()
+        assert catchup["type"] == "drill.catchup"
+        assert catchup["complete"] is True
+        assert catchup["latest_sequence"] == response.json()["latest_event_sequence"]
+        assert any(event["event_type"] == "command.accepted" for event in catchup["events"])
+        snapshot = socket.receive_json()
+        assert snapshot["type"] == "drill.snapshot"
+        assert snapshot["data"]["state_version"] == response.json()["state_version"]
+
+
+def test_engine_lease_allows_one_owner_until_expiry(exercise):
+    from app.api.routes import operations
+    _, _, demo, _, _, _, _, _, _ = exercise
+    now = datetime.now(UTC)
+    with operations.SessionLocal() as session:
+        assert acquire_engine_lease(session, demo["drill_id"], owner_id="worker-a", now=now, ttl_seconds=4)
+        session.commit()
+    with operations.SessionLocal() as session:
+        assert not acquire_engine_lease(session, demo["drill_id"], owner_id="worker-b", now=now + timedelta(seconds=1), ttl_seconds=4)
+        session.rollback()
+    with operations.SessionLocal() as session:
+        assert acquire_engine_lease(session, demo["drill_id"], owner_id="worker-b", now=now + timedelta(seconds=5), ttl_seconds=4)
 
 
 def test_patch_handles_deletions_null_and_cache_eviction():

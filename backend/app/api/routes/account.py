@@ -37,7 +37,7 @@ def serialize_profile(identity, user, stored):
         "reduced_motion": preferences.get("reduced_motion", False),
         "revision": stored.revision if stored else 0,
         "updated_at": stored.updated_at if stored else None,
-        "authentication_mode": "development",
+        "authentication_mode": "account_session" if identity.session_id else "development_legacy",
     }
 
 
@@ -56,7 +56,9 @@ def update_profile(payload: ProfileUpdate, identity: AuthenticatedIdentity = Dep
         if community is None:
             raise HTTPException(422, "默认社区不存在或不属于当前账号，请重新选择。")
     try:
-        user = ensure_development_user(session, identity.username)
+        user = session.scalar(select(User).where(User.username == identity.username))
+        if user is None:
+            user = ensure_development_user(session, identity.username)
         stored = session.get(AccountPreferences, user.id)
         preferences = payload.model_dump(include={"default_community_id", "text_size", "reduced_motion"})
         if stored:

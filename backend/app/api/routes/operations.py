@@ -15,12 +15,11 @@ from fastapi import APIRouter, Depends, HTTPException, WebSocket, WebSocketDisco
 from sqlalchemy import delete, func, select
 from sqlalchemy.orm import Session
 
-from app.api.routes.auth import AuthenticatedIdentity, get_current_identity
+from app.api.routes.auth import AuthenticatedIdentity, authenticate_access_token, get_current_identity
 from app.api.routes.scenes import owned_community
 from app.core.database import SessionLocal, get_db
-from app.core.security import decode_access_token
 from app.models.domain import RoadEdge, RoadEdgeStatus, RoadNode, Scene, SceneStatus, SceneVersion
-from app.models.operations import DrillEvent, DrillScore, DrillSession, RobotAgent
+from app.models.operations import DrillCommand, DrillEngineLease, DrillEvent, DrillScore, DrillSession, DrillStateSnapshot, RobotAgent
 from app.models.tasks import DecisionTask
 from app.schemas.operations import BranchCompareRequest, DrillAction, DrillCreate, EventInject, ParticipantAction, ResidentCommand, RobotCommand, ParticipantJoin, TaskAction, DirectorConfig
 from app.services.drill_simulation import plan_route, simulate_residents
@@ -28,7 +27,9 @@ from app.services.exercise_world import capture_world, frozen_world, projected_t
 from app.schemas.operations import EditableBranchCreate, SearchAssignment
 from app.schemas.operations import LiveCommand
 from app.services.command_feedback import commit_changes, command_feedback
+from app.services.command_ledger import apply_feedback, ledger_feedback, safe_arguments, same_command, synchronize_records
 from app.services.realtime import live_snapshots, snapshot_patch, state_version
+from app.services.state_store import load_snapshot, persist_snapshot
 
 
 router = APIRouter(tags=["drill operations"])
@@ -114,6 +115,16 @@ def advance_engine(session: Session, drill: DrillSession) -> None:
         community = session.get(Community, scene.community_id)
         username = session.get(User, community.owner_id).username
         advance_director(drill.id, SimpleNamespace(username=username), session)
+    ledger_events = list(session.scalars(select(DrillEvent).where(DrillEvent.drill_session_id == drill.id).order_by(DrillEvent.sequence)))
+    ledger_simulation = simulation_state(drill, ledger_events, effective_elapsed(drill), session=session)
+    ledger_robot = robot_runtime(agent, ledger_events, effective_elapsed(drill))
+    synchronize_records(
+        session,
+        drill,
+        command_feedback(ledger_events, ledger_simulation, ledger_robot, effective_elapsed(drill), drill.status),
+        effective_elapsed(drill),
+    )
+    persist_snapshot(session, drill, snapshot(session, drill), force=drill.status != "running")
     commit_changes(session)
 
 
@@ -581,6 +592,7 @@ def snapshot(session: Session, drill: DrillSession) -> dict:
     world = simulation.get("world")
     task_states = projected_tasks(world, all_events, elapsed, simulation, live_robot) if world else None
     score_preview = calculate_score_data(session, drill, all_events, simulation)
+    derived_commands = command_feedback(all_events, simulation, live_robot, elapsed, drill.status)
     return {
         "id": drill.id, "name": drill.name, "status": drill.status, "time_scale": drill.time_scale,
         "elapsed_seconds": elapsed, "participants": participant_state,
@@ -595,7 +607,7 @@ def snapshot(session: Session, drill: DrillSession) -> dict:
         "simulation": simulation,
         "latest_event_sequence": all_events[-1].sequence if all_events else 0,
         "state_version": state_version(all_events[-1].sequence if all_events else 0, elapsed),
-        "commands": command_feedback(all_events, simulation, live_robot, elapsed, drill.status),
+        "commands": ledger_feedback(session, drill, derived_commands),
     }
 
 
@@ -1413,6 +1425,9 @@ def reset_demo_drills(community_id: str, identity: AuthenticatedIdentity = Depen
     drill_ids = list(session.scalars(select(DrillSession.id).where(DrillSession.scene_id.in_(scene_ids)))) if scene_ids else []
     if drill_ids:
         session.execute(delete(DrillScore).where(DrillScore.drill_session_id.in_(drill_ids)))
+        session.execute(delete(DrillCommand).where(DrillCommand.drill_session_id.in_(drill_ids)))
+        session.execute(delete(DrillStateSnapshot).where(DrillStateSnapshot.drill_session_id.in_(drill_ids)))
+        session.execute(delete(DrillEngineLease).where(DrillEngineLease.drill_session_id.in_(drill_ids)))
         session.execute(delete(DrillEvent).where(DrillEvent.drill_session_id.in_(drill_ids)))
         session.execute(delete(RobotAgent).where(RobotAgent.drill_session_id.in_(drill_ids)))
         session.execute(delete(DrillSession).where(DrillSession.id.in_(drill_ids)))
@@ -1420,17 +1435,81 @@ def reset_demo_drills(community_id: str, identity: AuthenticatedIdentity = Depen
     return {"reset": True, "removed_drills": len(drill_ids), "preserved_scenes": len(scene_ids)}
 
 
+def _persist_failed_command(
+    session: Session,
+    drill: DrillSession,
+    payload: LiveCommand,
+    actor: str,
+    failure_code: str,
+    reason: str,
+) -> None:
+    """Persist expected validation failures separately from the rolled-back domain transaction."""
+    current = session.get(DrillSession, drill.id)
+    if current is None:
+        return
+    existing = session.scalar(select(DrillCommand).where(
+        DrillCommand.drill_session_id == current.id,
+        DrillCommand.command_id == payload.command_id,
+    ))
+    if existing:
+        return
+    clean_reason = " ".join(str(reason).split())[:500]
+    failed_event = append_event(
+        session,
+        current,
+        "command.failed",
+        actor,
+        f"指令未执行：{clean_reason}",
+        {
+            "command_id": payload.command_id,
+            "kind": payload.kind,
+            "target_id": payload.target_id,
+            "failure_code": failure_code,
+        },
+    )
+    session.add(DrillCommand(
+        drill_session_id=current.id,
+        command_id=payload.command_id,
+        actor=actor,
+        kind=payload.kind,
+        target_id=payload.target_id,
+        command_args=safe_arguments(payload.arguments),
+        expected_sequence=payload.expected_sequence,
+        status="failed",
+        label="指令未执行",
+        reason=clean_reason,
+        progress=0,
+        submitted_at_seconds=effective_elapsed(current),
+        completed_at_seconds=effective_elapsed(current),
+        event_ids=[failed_event.id],
+        failure_code=failure_code,
+    ))
+    session.flush()
+    persist_snapshot(session, current, snapshot(session, current), force=True)
+    session.commit()
+
+
 @router.post("/drills/{drill_id}/commands")
 @serialized_command
 def execute_live_command(drill_id: str, payload: LiveCommand, identity: AuthenticatedIdentity = Depends(get_current_identity), session: Session = Depends(get_db)):
-    """Reuse domain validation; receipt and effects are one transaction, retry-safe."""
+    """Execute once, persist the lifecycle, and keep domain effects transactionally atomic."""
     from pydantic import ValidationError
 
     drill = require_drill(session, drill_id, identity.username)
     session.execute(select(DrillSession.id).where(DrillSession.id == drill_id).with_for_update())
+    command_record = session.scalar(select(DrillCommand).where(
+        DrillCommand.drill_session_id == drill_id,
+        DrillCommand.command_id == payload.command_id,
+    ))
+    if command_record:
+        if command_record.actor != identity.username or not same_command(command_record, payload.kind, payload.arguments, payload.target_id):
+            raise HTTPException(409, "该指令编号已用于另一项操作，请重新提交。")
+        if command_record.status == "failed":
+            raise HTTPException(409, f"该指令此前未执行：{command_record.reason} 请重新预览并下达新指令。")
+        return snapshot(session, drill)
     receipts = session.scalars(select(DrillEvent).where(DrillEvent.drill_session_id == drill_id, DrillEvent.event_type == "command.accepted"))
     prior = next((e for e in receipts if e.payload.get("command_id") == payload.command_id), None)
-    fingerprint = {"kind": payload.kind, "arguments": {k: v for k, v in payload.arguments.items() if k != "participant_token"}, "target_id": payload.target_id}
+    fingerprint = {"kind": payload.kind, "arguments": safe_arguments(payload.arguments), "target_id": payload.target_id}
     if prior:
         if prior.actor != identity.username or any(prior.payload.get(k) != v for k, v in fingerprint.items()):
             raise HTTPException(409, "该指令编号已用于另一项操作，请重新提交。")
@@ -1446,7 +1525,24 @@ def execute_live_command(drill_id: str, payload: LiveCommand, identity: Authenti
     }
     if payload.kind in {"road.reopen", "task.action"} and not payload.target_id:
         raise HTTPException(422, "请选择本场道路或处置任务。")
+    labels = {"state": "演练状态已更新", "event.inject": "现场扰动已生效", "road.reopen": "道路通行已恢复", "residents.assign": "居民撤离指令", "robot.command": "机器人指令", "search.assign": "搜索责任已指派", "participant.feedback": "参演反馈已记录", "task.action": "处置任务已更新", "director.configure": "事件导演设置已更新"}
+    command_record = DrillCommand(
+        drill_session_id=drill.id,
+        command_id=payload.command_id,
+        actor=identity.username,
+        kind=payload.kind,
+        target_id=payload.target_id,
+        command_args=fingerprint["arguments"],
+        expected_sequence=payload.expected_sequence,
+        status="submitted",
+        label=labels[payload.kind],
+        reason="指令已提交，正在校验现场状态。",
+        submitted_at_seconds=before["elapsed_seconds"],
+    )
+    session.add(command_record)
+    session.flush()
     session.info["drill_command_transaction"] = True
+    final_state = None
     try:
         if payload.kind == "road.reopen":
             result = reopen_road(drill_id, payload.target_id, identity, session)
@@ -1458,30 +1554,55 @@ def execute_live_command(drill_id: str, payload: LiveCommand, identity: Authenti
             else:
                 result = handler(drill_id, arguments, identity, session)
         effects = list(session.scalars(select(DrillEvent).where(DrillEvent.drill_session_id == drill_id, DrillEvent.sequence > before["latest_event_sequence"]).order_by(DrillEvent.sequence)))
-        labels = {"state": "演练状态已更新", "event.inject": "现场扰动已生效", "road.reopen": "道路通行已恢复", "residents.assign": "居民撤离指令", "robot.command": "机器人指令", "search.assign": "搜索责任已指派", "participant.feedback": "参演反馈已记录", "task.action": "处置任务已更新", "director.configure": "事件导演设置已更新"}
-        append_event(session, drill, "command.accepted", identity.username, effects[0].message if effects else labels[payload.kind], {
+        receipt = append_event(session, drill, "command.accepted", identity.username, effects[0].message if effects else labels[payload.kind], {
             **fingerprint, "command_id": payload.command_id, "event_ids": [e.id for e in effects],
             "score_before": before["score_preview"]["total_score"],
             "score_after_acceptance": result["score_preview"]["total_score"],
         })
+        all_events = list(session.scalars(select(DrillEvent).where(DrillEvent.drill_session_id == drill_id).order_by(DrillEvent.sequence)))
+        current_elapsed = effective_elapsed(drill)
+        current_simulation = simulation_state(drill, all_events, current_elapsed, session=session)
+        current_robot = robot_runtime(session.scalar(select(RobotAgent).where(RobotAgent.drill_session_id == drill.id)), all_events, current_elapsed)
+        derived = command_feedback(all_events, current_simulation, current_robot, current_elapsed, drill.status)
+        synchronize_records(session, drill, derived, current_elapsed)
+        current_feedback = next((item for item in derived if item["id"] == payload.command_id), None)
+        if current_feedback:
+            apply_feedback(command_record, current_feedback, current_elapsed)
+        else:
+            command_record.status = "accepted"
+            command_record.reason = "指令已受理，等待演练引擎执行。"
+            command_record.accepted_at_seconds = receipt.elapsed_seconds
+            command_record.event_ids = [e.id for e in effects]
+            command_record.score_before = before["score_preview"]["total_score"]
+            command_record.score_after_acceptance = result["score_preview"]["total_score"]
+        final_state = snapshot(session, drill)
+        persist_snapshot(session, drill, final_state, force=True)
         session.commit()
     except ValidationError as exc:
         session.rollback()
+        _persist_failed_command(session, drill, payload, identity.username, "validation_error", "指令参数不正确，请核对对象和目标后重试。")
         raise HTTPException(422, "指令参数不正确，请核对对象和目标后重试。") from exc
+    except HTTPException as exc:
+        session.rollback()
+        if exc.status_code < 500:
+            detail = exc.detail if isinstance(exc.detail, str) else "指令未通过现场校验。"
+            _persist_failed_command(session, drill, payload, identity.username, f"http_{exc.status_code}", detail)
+        raise
     except Exception:
         session.rollback()
         raise
     finally:
         session.info.pop("drill_command_transaction", None)
-    return snapshot(session, drill)
+    return final_state or snapshot(session, drill)
 
 
 @router.websocket("/ws/drills/{drill_id}")
-async def drill_socket(websocket: WebSocket, drill_id: str, token: str | None = None, code: str | None = None, protocol: int = 1):
+async def drill_socket(websocket: WebSocket, drill_id: str, token: str | None = None, code: str | None = None, protocol: int = 1, after_sequence: int | None = None):
     username: str | None = None
     if token:
         try:
-            username = decode_access_token(token)
+            with SessionLocal() as auth_session:
+                username = authenticate_access_token(token, auth_session).username
         except Exception:
             await websocket.close(code=4401); return
     elif not code or code.upper() != participant_code(drill_id):
@@ -1490,6 +1611,40 @@ async def drill_socket(websocket: WebSocket, drill_id: str, token: str | None = 
     import asyncio
     previous = None
     heartbeat_at = 0.
+
+    @serialized_command
+    def read_catchup():
+        if protocol != 2 or after_sequence is None or after_sequence < 0:
+            return None
+        with SessionLocal() as session:
+            drill = require_drill(session, drill_id, username) if username else require_participant_drill(session, drill_id, code or "")
+            latest = session.scalar(select(func.max(DrillEvent.sequence)).where(DrillEvent.drill_session_id == drill.id)) or 0
+            if after_sequence >= latest:
+                return None
+            found = list(session.scalars(
+                select(DrillEvent)
+                .where(DrillEvent.drill_session_id == drill.id, DrillEvent.sequence > after_sequence)
+                .order_by(DrillEvent.sequence)
+                .limit(501)
+            ))
+            complete = len(found) <= 500
+            events = found[:500]
+            return {
+                "type": "drill.catchup",
+                "drill_id": drill.id,
+                "after_sequence": after_sequence,
+                "latest_sequence": latest,
+                "complete": complete,
+                "events": [{
+                    "id": event.id,
+                    "sequence": event.sequence,
+                    "event_type": event.event_type,
+                    "actor": event.actor,
+                    "message": event.message,
+                    "elapsed_seconds": event.elapsed_seconds,
+                    "payload": {key: value for key, value in event.payload.items() if key not in {"world", "token_hash", "participant_token"}},
+                } for event in events],
+            }
 
     @serialized_command
     def read_live():
@@ -1503,9 +1658,12 @@ async def drill_socket(websocket: WebSocket, drill_id: str, token: str | None = 
             # Only the scheduler advances v2 live sessions. Observers never tick it.
             sequence = session.scalar(select(func.max(DrillEvent.sequence)).where(DrillEvent.drill_session_id == drill_id)) or 0
             version = state_version(sequence, effective_elapsed(drill))
-            return live_snapshots.get(drill_id, version, lambda: snapshot(session, drill))
+            return live_snapshots.get(drill_id, version, lambda: load_snapshot(session, drill_id, version) or snapshot(session, drill))
 
     try:
+        catchup = await asyncio.to_thread(read_catchup)
+        if catchup:
+            await websocket.send_json(catchup)
         while True:
             data = await asyncio.to_thread(read_live)
             now = asyncio.get_running_loop().time()

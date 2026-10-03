@@ -3,7 +3,7 @@ import { computed, onMounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import AtlasLogin from './components/AtlasLogin.vue'
 import './entry.css'
-import { ApiError, createApiClient, setUnauthorizedHandler } from './api/client'
+import { ApiError, createApiClient, setTokenRefreshHandler, setUnauthorizedHandler } from './api/client'
 import type { Community, CurrentUser, HealthResponse, LoginResponse } from './domain/models'
 import type { AccountProfile } from './domain/account'
 import { applyAccountProfile } from './api/account'
@@ -36,6 +36,17 @@ const activeView = computed<AppView>(() => {
 const participantDrillId = computed(() => route.name === 'participant-invite' ? String(route.params.drillId ?? '') : '')
 const participantInviteCode = computed(() => route.name === 'participant-invite' ? String(route.query.code ?? '') : '')
 const api = createApiClient(apiBaseUrl, () => accessToken.value)
+async function refreshSessionToken(): Promise<string | null> {
+  try {
+    const payload = await api.post<LoginResponse>('/auth/refresh', undefined, { auth: false })
+    accessToken.value = payload.access_token
+    activeUsername.value = payload.username
+    activeRole.value = payload.role
+    localStorage.setItem('zhiyan_access_token', payload.access_token)
+    return payload.access_token
+  } catch { return null }
+}
+setTokenRefreshHandler(refreshSessionToken)
 setUnauthorizedHandler(() => {
   const redirect = route.fullPath
   clearSession()
@@ -102,7 +113,7 @@ async function joinByCode(code: string): Promise<void> {
 }
 
 async function restoreSession(): Promise<void> {
-  if (!accessToken.value) { sessionReady.value = true; return }
+  if (!accessToken.value && !await refreshSessionToken()) { sessionReady.value = true; return }
 
   try {
     const payload = await api.get<CurrentUser>('/auth/me')
@@ -131,7 +142,10 @@ function clearSession(): void {
   password.value = ''
   selectedCommunity.value = null
 }
-function logout(): void { clearSession(); void router.replace('/login') }
+async function logout(): Promise<void> {
+  try { if (accessToken.value) await api.post('/auth/logout') }
+  finally { clearSession(); await router.replace('/login') }
+}
 
 function openMap(community: Community): void {
   selectedCommunity.value = community

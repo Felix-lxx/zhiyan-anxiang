@@ -130,6 +130,7 @@ function connectSocket(drillId: string): void {
     url: api.websocketUrl(`/api/v1/ws/drills/${drillId}?token=${encodeURIComponent(props.accessToken)}`), drillId,
     onState: value => { if (desiredDrillId === drillId) applyCurrent(value) },
     onStatus: state => { socketState.value = state }, onError: message => { error.value = message },
+    onRecovered: (count, complete) => { if (desiredDrillId === drillId && count) latestCue.value = complete ? `连接已恢复，补齐 ${count} 条现场事件` : '连接已恢复；历史事件较多，已通过完整快照校准现场' },
   })
 }
 async function requestDrill(path: string, method: 'POST' | 'PATCH', body?: unknown, successMessage?: string, expectedSequence?: number): Promise<boolean> {

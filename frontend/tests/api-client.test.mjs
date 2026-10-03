@@ -5,7 +5,7 @@ import ts from 'typescript'
 
 const source = fs.readFileSync(new URL('../src/api/client.ts', import.meta.url), 'utf8')
 const compiled = ts.transpileModule(source, { compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.ESNext } }).outputText
-const { createApiClient, ApiError, setUnauthorizedHandler } = await import('data:text/javascript;base64,' + Buffer.from(compiled).toString('base64'))
+const { createApiClient, ApiError, setTokenRefreshHandler, setUnauthorizedHandler } = await import('data:text/javascript;base64,' + Buffer.from(compiled).toString('base64'))
 
 test('JSON mutation uses current token and preserves payload', async t => {
   let token='first'
@@ -48,4 +48,20 @@ test('validation detail, 204 and cancelled request have distinct outcomes',async
   const controller=new AbortController();controller.abort()
   globalThis.fetch=async(_url,options)=>{options.signal.throwIfAborted()}
   await assert.rejects(api.get('/preview',{signal:controller.signal}),{name:'AbortError'})
+})
+
+test('expired access token refreshes once and retries with the new token',async t=>{
+  let calls=0, token='expired'
+  setTokenRefreshHandler(async()=>{token='renewed';return token})
+  t.mock.method(globalThis,'fetch',async(_url,options)=>{
+    calls++
+    assert.equal(options.credentials,'include')
+    if(calls===1){assert.equal(options.headers.get('Authorization'),'Bearer expired');return new Response('{"detail":"expired"}',{status:401})}
+    assert.equal(options.headers.get('Authorization'),'Bearer renewed')
+    return new Response('{"ok":true}')
+  })
+  const api=createApiClient('https://example.test/api/v1',()=>token)
+  assert.deepEqual(await api.get('/auth/me'),{ok:true})
+  assert.equal(calls,2)
+  setTokenRefreshHandler(async()=>null)
 })

@@ -1,7 +1,7 @@
 import logging
 from collections.abc import Generator
 
-from sqlalchemy import create_engine, text
+from sqlalchemy import create_engine, event, text
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import DeclarativeBase, Session, sessionmaker
 
@@ -9,7 +9,22 @@ from app.core.config import get_settings
 
 
 settings = get_settings()
-engine = create_engine(settings.database_url, pool_pre_ping=True)
+_sqlite = settings.database_url.startswith("sqlite")
+engine = create_engine(
+    settings.database_url,
+    pool_pre_ping=True,
+    connect_args={"timeout": 30} if _sqlite else {},
+)
+
+
+if _sqlite:
+    @event.listens_for(engine, "connect")
+    def configure_sqlite_connection(dbapi_connection, _connection_record) -> None:
+        cursor = dbapi_connection.cursor()
+        cursor.execute("PRAGMA foreign_keys=ON")
+        cursor.execute("PRAGMA busy_timeout=30000")
+        cursor.execute("PRAGMA journal_mode=WAL")
+        cursor.close()
 SessionLocal = sessionmaker(bind=engine, autoflush=False, autocommit=False, expire_on_commit=False)
 logger = logging.getLogger(__name__)
 
@@ -29,16 +44,19 @@ def get_db() -> Generator[Session, None, None]:
 
 
 def initialize_schema() -> bool:
-    """开发环境初始化表结构；数据库不可用时保留服务降级能力。"""
+    """Create new tables, then apply idempotent upgrades for existing deployments."""
 
     # 延迟导入可确保所有模型已注册到 Base.metadata。
     import app.models.domain  # noqa: F401
     import app.models.operations  # noqa: F401
     import app.models.tasks  # noqa: F401
     import app.models.account  # noqa: F401
+    import app.models.auth  # noqa: F401
 
     try:
         Base.metadata.create_all(bind=engine)
+        from app.core.migrations import run_schema_migrations
+        run_schema_migrations(engine)
         return True
     except SQLAlchemyError:
         logger.warning("数据库暂不可用，跳过开发环境表结构初始化。")

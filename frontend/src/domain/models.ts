@@ -30,13 +30,18 @@ export interface HealthResponse {
 export interface LoginResponse {
   access_token: string
   token_type: string
+  expires_in: number
   username: string
   role: string
+  role_code: string
 }
 
 export interface CurrentUser {
   username: string
   role: string
+  role_code?: string
+  roles?: string[]
+  authentication_mode?: string
 }
 
 export interface SceneVersion {

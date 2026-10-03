@@ -8,9 +8,18 @@ export interface AccountProfile {
   reduced_motion: boolean
   revision: number
   updated_at: string | null
-  authentication_mode: 'development'
+  authentication_mode: 'account_session' | 'development_legacy'
 }
 export interface AccountActivity {
   community_count: number; drill_count: number; completed_count: number; unfinished_count: number
   recent: { id: string; scene_id: string; community_id: string; community_name: string; name: string; status: string; created_at: string; score: number | null }[]
+}
+
+export interface AuthSessionInfo {
+  id: string
+  current: boolean
+  status: 'active' | 'revoked' | 'expired'
+  created_at: string
+  last_used_at: string
+  expires_at: string
 }

@@ -3,7 +3,7 @@ import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
 import { onBeforeRouteLeave, onBeforeRouteUpdate, useRouter } from 'vue-router'
 import { ApiError, createApiClient } from '../api/client'
 import { applyAccountProfile } from '../api/account'
-import type { AccountActivity, AccountProfile } from '../domain/account'
+import type { AccountActivity, AccountProfile, AuthSessionInfo } from '../domain/account'
 import type { Community } from '../domain/models'
 import AppIcon from './AppIcon.vue'
 
@@ -13,6 +13,7 @@ const router = useRouter(), api = createApiClient(props.apiBaseUrl, () => props.
 const profile = ref<AccountProfile | null>(null), draft = ref<AccountProfile | null>(null)
 const communities = ref<Community[]>([]), activity = ref<AccountActivity | null>(null)
 const loading = ref(true), saving = ref(false), error = ref(''), notice = ref(''), activityError = ref(''), conflict = ref(false)
+const sessions = ref<AuthSessionInfo[]>([]), sessionsLoading = ref(false), sessionsError = ref(''), revokingSessionId = ref('')
 const dirty = computed(() => Boolean(profile.value && draft.value && JSON.stringify(profile.value) !== JSON.stringify(draft.value)))
 const statusNames: Record<string, string> = { ready: '待开始', running: '进行中', paused: '已暂停', ended: '已结束', draft: '待准备' }
 function date(value: string | null) { return value ? new Date(value).toLocaleString('zh-CN', { hour12: false }) : '尚未保存个人设置' }
@@ -20,6 +21,22 @@ async function loadActivity() {
   activityError.value = ''
   try { activity.value = await api.get<AccountActivity>('/account/activity') }
   catch (cause) { activityError.value = cause instanceof Error ? cause.message : '记录读取失败，请重试。' }
+}
+async function loadSessions() {
+  sessionsLoading.value = true; sessionsError.value = ''
+  try { sessions.value = await api.get<AuthSessionInfo[]>('/auth/sessions') }
+  catch (cause) { sessionsError.value = cause instanceof Error ? cause.message : '登录会话读取失败，请重试。' }
+  finally { sessionsLoading.value = false }
+}
+async function revokeSession(sessionId: string) {
+  if (revokingSessionId.value || !window.confirm('结束这个登录会话后，对应设备需要重新登录。是否继续？')) return
+  revokingSessionId.value = sessionId; sessionsError.value = ''
+  try {
+    await api.delete(`/auth/sessions/${sessionId}`)
+    await loadSessions()
+    notice.value = '指定登录会话已结束。'
+  } catch (cause) { sessionsError.value = cause instanceof Error ? cause.message : '会话结束失败，请重试。' }
+  finally { revokingSessionId.value = '' }
 }
 async function load() {
   if (dirty.value && !window.confirm('重新载入会放弃未保存的修改，是否继续？')) return
@@ -49,7 +66,7 @@ function openRun(run: AccountActivity['recent'][number]) {
 }
 onBeforeRouteLeave(allowLeave)
 onBeforeRouteUpdate((to, from) => to.query.section === from.query.section || allowLeave())
-onMounted(() => { window.addEventListener('beforeunload', beforeUnload); void load(); void loadActivity() })
+onMounted(() => { window.addEventListener('beforeunload', beforeUnload); void load(); void loadActivity(); void loadSessions() })
 onBeforeUnmount(() => window.removeEventListener('beforeunload', beforeUnload))
 </script>
 
@@ -60,7 +77,8 @@ onBeforeUnmount(() => window.removeEventListener('beforeunload', beforeUnload))
     <div v-if="error" class="account-message" role="alert"><p>{{ error }}</p><button v-if="conflict || !profile" type="button" @click="load">重新载入最新资料</button></div>
     <p v-if="notice" class="account-notice" role="status">{{ notice }}</p>
     <div v-if="draft && profile" class="account-layout">
-      <form class="account-form" @submit.prevent="save">
+      <div class="account-primary">
+        <form class="account-form" @submit.prevent="save">
         <section class="account-section" aria-labelledby="identity-title"><header><AppIcon name="person" /><h2 id="identity-title">工作资料</h2></header>
           <dl class="account-identity"><div><dt>登录账号</dt><dd>{{ profile.username }}</dd></div><div><dt>当前身份</dt><dd>{{ profile.role }}</dd></div></dl>
           <div class="account-fields"><label for="profile-name">显示名称<input id="profile-name" v-model="draft.display_name" :disabled="saving" required maxlength="64" autocomplete="nickname" placeholder="请输入工作中使用的名称" /></label><label for="profile-organization">所属单位 <span>选填</span><input id="profile-organization" v-model="draft.organization" :disabled="saving" maxlength="100" autocomplete="organization" placeholder="例如：安巷社区物业服务中心" /></label></div>
@@ -71,17 +89,51 @@ onBeforeUnmount(() => window.removeEventListener('beforeunload', beforeUnload))
           <label class="account-toggle"><input v-model="draft.reduced_motion" :disabled="saving" type="checkbox" /><span>减少界面动画<small>减少菜单与面板的过渡动画，不暂停三维仿真。</small></span></label>
         </section>
         <footer class="account-save"><span>{{ dirty ? '有未保存的修改' : `上次保存：${date(profile.updated_at)}` }}</span><button type="button" class="secondary-button" :disabled="!dirty || saving" @click="draft = { ...profile }; error = ''; notice = ''; conflict = false">撤销修改</button><button class="primary-button" type="submit" :disabled="!dirty || saving || conflict">{{ saving ? '正在保存…' : '保存设置' }}</button></footer>
-      </form>
+        </form>
+      <section class="account-section account-security" aria-labelledby="security-title">
+        <header>
+          <AppIcon name="lock" />
+          <div><h2 id="security-title">登录与权限</h2><p>查看当前账号的登录范围与活动会话。</p></div>
+          <button type="button" aria-label="刷新登录会话" :disabled="sessionsLoading" @click="loadSessions"><AppIcon name="refresh" :size="18" /></button>
+        </header>
+        <div class="account-security-grid">
+          <div class="account-security-overview">
+            <div class="account-role-summary">
+              <div><span>当前身份</span><strong>{{ profile.role }}</strong></div>
+              <div><span>认证方式</span><strong>{{ profile.authentication_mode === 'account_session' ? '正式账号会话' : '开发兼容凭证' }}</strong></div>
+            </div>
+            <p class="account-security-note">{{ profile.authentication_mode === 'account_session' ? '访问凭证到期后会自动安全续期；结束其他会话可立即撤销对应设备的访问权限。' : '当前凭证仅用于本地开发，正式部署后需要重新登录。' }}</p>
+            <p class="account-security-note">手机参演人员通过演练加入码进入，不共享管理端权限。</p>
+          </div>
+          <div class="account-security-sessions">
+            <div class="account-session-heading"><h3>登录会话</h3><span>{{ sessions.filter(item => item.status === 'active').length }} 个活动会话</span></div>
+            <p v-if="sessionsError" class="session-error" role="alert">{{ sessionsError }} <button type="button" @click="loadSessions">重试</button></p>
+            <p v-else-if="sessionsLoading" role="status">正在读取登录会话…</p>
+            <ul v-else class="account-session-list">
+              <li v-for="item in sessions" :key="item.id">
+                <div>
+                  <strong>{{ item.current ? '当前浏览器' : '其他登录会话' }}</strong>
+                  <span>最近活动：{{ date(item.last_used_at) }}</span>
+                </div>
+                <span class="session-status" :class="`is-${item.status}`">{{ item.current ? '当前' : item.status === 'active' ? '活动' : item.status === 'expired' ? '已过期' : '已结束' }}</span>
+                <button v-if="!item.current && item.status === 'active'" type="button" :disabled="Boolean(revokingSessionId)" @click="revokeSession(item.id)">{{ revokingSessionId === item.id ? '正在结束…' : '结束会话' }}</button>
+              </li>
+              <li v-if="!sessions.length" class="session-empty">暂未读取到正式登录会话。</li>
+            </ul>
+            <button type="button" class="secondary-button account-logout" :disabled="saving" @click="logout"><AppIcon name="logout" :size="18" />退出并结束当前会话</button>
+          </div>
+        </div>
+        </section>
+      </div>
       <div class="account-side">
         <section class="account-section account-activity" aria-labelledby="activity-title"><header><AppIcon name="history" /><h2 id="activity-title">我的演练</h2><button type="button" aria-label="刷新个人演练记录" @click="loadActivity"><AppIcon name="refresh" :size="18" /></button></header>
           <p v-if="activityError" role="alert">{{ activityError }}<button type="button" @click="loadActivity">重试</button></p>
           <template v-if="activity"><p class="account-summary">{{ activity.community_count }} 个社区 · {{ activity.drill_count }} 场演练<br />已结束 {{ activity.completed_count }} 场，未完成 {{ activity.unfinished_count }} 场</p>
-            <ol><li v-for="run in activity.recent" :key="run.id"><div><strong>{{ run.name }}</strong><span>{{ run.community_name }} · {{ statusNames[run.status] ?? run.status }}</span><time>{{ date(run.created_at) }}</time></div><button type="button" @click="openRun(run)">{{ run.status === 'ended' ? '查看复盘' : '进入演练' }}<AppIcon name="arrowRight" :size="16" /></button></li></ol>
+            <ol><li v-for="run in activity.recent.slice(0, 4)" :key="run.id"><div><strong>{{ run.name }}</strong><span>{{ run.community_name }} · {{ statusNames[run.status] ?? run.status }}</span><time>{{ date(run.created_at) }}</time></div><button type="button" @click="openRun(run)">{{ run.status === 'ended' ? '查看复盘' : '进入演练' }}<AppIcon name="arrowRight" :size="16" /></button></li></ol>
             <p v-if="!activity.recent.length">还没有演练记录。先在「场景准备」配置社区，再开始第一场训练。</p>
           </template><p v-else-if="!activityError" role="status">正在读取演练记录…</p>
           <button type="button" class="account-history-link" @click="router.push({ name: 'projects', query: { section: 'history' } })">筛选全部复盘记录<AppIcon name="arrowRight" :size="18" /></button>
         </section>
-        <section class="account-section account-security" aria-labelledby="security-title"><header><AppIcon name="lock" /><h2 id="security-title">登录与权限</h2></header><p>当前使用开发环境账号。显示名称与阅读设置不会改变登录名、密码或社区访问权限。</p><p>当前版本暂不支持在线修改密码或角色；登录凭据由系统配置管理。</p><button type="button" class="secondary-button" :disabled="saving" @click="logout"><AppIcon name="logout" :size="18" />退出当前登录</button></section>
       </div>
     </div>
   </section>
@@ -91,9 +143,8 @@ onBeforeUnmount(() => window.removeEventListener('beforeunload', beforeUnload))
 .account-center{padding:var(--space-8) var(--atlas-gutter);font-size:var(--ui-body-size);line-height:1.65;min-width:0}
 .account-heading{display:flex;align-items:center;justify-content:space-between;gap:var(--space-6);padding-bottom:var(--space-6);border-bottom:1px solid var(--border-default)}
 .account-heading h1{font:700 32px/1.4 var(--atlas-display);margin:0}.account-heading p{margin:8px 0 0;color:var(--text-secondary)}
-.account-layout{display:grid;grid-template-columns:minmax(0,1.15fr) minmax(0,1fr);gap:var(--space-10);align-items:start}
-.account-layout>*{min-width:0}.account-section{padding:var(--space-6) 0;border-bottom:1px solid var(--border-default)}
-.account-section>header{display:flex;align-items:center;gap:12px;margin-bottom:20px}.account-section h2{font-size:21px;margin:0}.account-section>header>button{margin-left:auto}
+.account-layout{display:grid;grid-template-columns:minmax(0,1.15fr) minmax(0,1fr);grid-template-areas:"form activity" "security security";column-gap:var(--space-10);row-gap:0;align-items:start}.account-primary{display:contents}.account-form{grid-area:form}.account-side{grid-area:activity}.account-security{grid-area:security}.account-form,.account-side,.account-security{min-width:0}.account-section{padding:var(--space-6) 0;border-bottom:1px solid var(--border-default)}
+.account-section>header{display:flex;align-items:center;gap:12px;margin-bottom:20px}.account-section h2{font-size:21px;margin:0}.account-section>header>button{margin-left:auto}.account-section>header>div{min-width:0}.account-section>header>div>p{margin:3px 0 0;color:var(--text-secondary)}
 .account-identity{display:flex;flex-wrap:wrap;gap:16px 32px;margin:0 0 24px}.account-identity>div{display:flex;gap:12px}.account-identity dt{color:var(--text-secondary)}.account-identity dd{margin:0;font-weight:600;overflow-wrap:anywhere}
 .account-fields{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:20px}.account-form label{display:block;font-weight:600}.account-form label>span:not(.account-toggle span){font-weight:400;color:var(--text-secondary)}
 .account-form :is(input:not([type=radio]):not([type=checkbox]),select){width:100%;min-width:0;min-height:48px;font:inherit;margin-top:8px;padding:10px 12px;background:var(--surface-raised);color:var(--text-primary);border:1px solid var(--border-default);border-radius:var(--radius-sm)}
@@ -106,9 +157,9 @@ onBeforeUnmount(() => window.removeEventListener('beforeunload', beforeUnload))
 .account-section>header>button,.account-activity li button,.account-history-link{background:transparent;color:var(--action-primary);border:0;padding:8px 0}.account-section>header>button{min-width:44px}
 .account-summary{margin:0 0 12px;color:var(--text-secondary)}.account-activity ol{list-style:none;margin:0;padding:0}.account-activity li{display:flex;align-items:center;gap:16px;padding:16px 0;border-top:1px solid var(--border-default)}
 .account-activity li>div{flex:1;min-width:0}.account-activity li strong,.account-activity li span,.account-activity li time{display:block;overflow-wrap:anywhere}.account-activity li span,.account-activity time{color:var(--text-secondary);font-size:var(--ui-meta-size)}.account-activity li button{flex-shrink:0}
-.account-history-link{margin-top:16px;text-decoration:underline;text-underline-offset:4px}.account-security p{color:var(--text-secondary);margin:12px 0}.account-security button{margin-top:12px}
+.account-history-link{margin-top:16px;text-decoration:underline;text-underline-offset:4px}.account-security-grid{display:grid;grid-template-columns:minmax(0,.9fr) minmax(0,1.1fr);gap:var(--space-10);align-items:start}.account-security-note{color:var(--text-secondary);margin:12px 0}.account-role-summary{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:1px;background:var(--border-default);border:1px solid var(--border-default);border-radius:var(--radius-sm);overflow:hidden}.account-role-summary>div{display:grid;gap:3px;padding:14px 16px;background:var(--surface-raised)}.account-role-summary span{color:var(--text-secondary);font-size:var(--ui-meta-size)}.account-role-summary strong{overflow-wrap:anywhere}.account-session-heading{display:flex;align-items:baseline;justify-content:space-between;gap:16px;margin:0}.account-session-heading h3{font-size:17px;margin:0}.account-session-heading span{color:var(--text-secondary);font-size:var(--ui-meta-size)}.account-session-list{list-style:none;margin:8px 0 0;padding:0;border-top:1px solid var(--border-default)}.account-session-list li{display:grid;grid-template-columns:minmax(0,1fr) auto auto;align-items:center;gap:14px;padding:14px 0;border-bottom:1px solid var(--border-default)}.account-session-list li>div{min-width:0}.account-session-list li strong,.account-session-list li>div span{display:block;overflow-wrap:anywhere}.account-session-list li>div span{color:var(--text-secondary);font-size:var(--ui-meta-size);margin-top:2px}.session-status{min-width:54px;text-align:center;padding:4px 8px;border-radius:999px;background:var(--surface-panel);color:var(--text-secondary);font-size:var(--ui-meta-size)}.session-status.is-active{background:var(--color-success-soft);color:var(--status-success)}.account-session-list li>button,.session-error button{min-height:40px;padding:6px 10px;background:transparent;color:var(--action-primary);border:0;text-decoration:underline;text-underline-offset:3px}.account-session-list .session-empty{display:block;color:var(--text-secondary)}.session-error{color:var(--status-danger);margin:12px 0}.account-logout{margin-top:20px}
 .account-message,.account-notice{padding:16px 20px;margin:20px 0;background:var(--color-danger-soft);color:var(--status-danger);border-radius:var(--radius-sm)}.account-message p{margin:0}.account-notice{background:var(--color-success-soft);color:var(--status-success)}
-@media(max-width:1150px){.account-layout{gap:24px;grid-template-columns:minmax(0,1.1fr) minmax(0,1fr)}.account-fields{grid-template-columns:1fr}}
-@media(max-width:820px){.account-layout{grid-template-columns:1fr}.account-center{padding:24px 16px}.account-heading{align-items:flex-start;flex-wrap:wrap}.account-activity li{flex-wrap:wrap}.account-fields{grid-template-columns:repeat(2,minmax(0,1fr))}}
-@media(max-width:540px){.account-fields{grid-template-columns:1fr}.account-identity{display:grid;gap:12px}.account-save{grid-template-columns:repeat(2,minmax(0,1fr))}.account-save button{width:100%}.account-heading h1{font-size:28px}}
+@media(max-width:1150px){.account-layout{column-gap:24px;grid-template-columns:minmax(0,1.1fr) minmax(0,1fr)}.account-security-grid{gap:24px}.account-fields{grid-template-columns:1fr}}
+@media(max-width:820px){.account-layout{grid-template-columns:1fr;grid-template-areas:"form" "security" "activity"}.account-security-grid{grid-template-columns:1fr}.account-center{padding:24px 16px}.account-heading{align-items:flex-start;flex-wrap:wrap}.account-activity li{flex-wrap:wrap}.account-fields{grid-template-columns:repeat(2,minmax(0,1fr))}}
+@media(max-width:540px){.account-fields,.account-role-summary{grid-template-columns:1fr}.account-identity{display:grid;gap:12px}.account-save{grid-template-columns:repeat(2,minmax(0,1fr))}.account-save button{width:100%}.account-heading h1{font-size:28px}.account-session-list li{grid-template-columns:minmax(0,1fr) auto}.account-session-list li>button{grid-column:1/-1;justify-self:start;padding-left:0}}
 </style>

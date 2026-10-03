@@ -31,12 +31,16 @@ def ensure_role_catalog(session: Session) -> list[Role]:
 
 def ensure_development_user(session: Session, username: str) -> User:
     user = session.scalar(select(User).where(User.username == username))
-    if user is not None:
-        return user
-
     roles = ensure_role_catalog(session)
     admin_role = next(role for role in roles if role.code == RoleCode.SYSTEM_ADMIN)
-    user = User(username=username, display_name="开发环境管理员")
+    if user is not None:
+        existing = session.scalar(select(UserRole).where(UserRole.user_id == user.id, UserRole.role_id == admin_role.id))
+        if existing is None:
+            session.add(UserRole(user_id=user.id, role_id=admin_role.id))
+            session.flush()
+        return user
+
+    user = User(username=username, display_name=username)
     session.add(user)
     session.flush()
     session.add(UserRole(user_id=user.id, role_id=admin_role.id))

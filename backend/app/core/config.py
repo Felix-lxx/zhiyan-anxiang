@@ -22,6 +22,7 @@ class Settings(BaseSettings):
     jwt_secret: str = "replace-this-before-any-non-development-run"
     jwt_algorithm: str = "HS256"
     access_token_expire_minutes: int = 60
+    refresh_token_expire_days: int = Field(default=7, ge=1, le=30)
     bootstrap_admin_username: str = "admin"
     bootstrap_admin_password: str = "Zhiyan@2026"
     # 本地开发既支持 localhost，也支持浏览器直接打开的 127.0.0.1。

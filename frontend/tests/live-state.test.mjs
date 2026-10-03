@@ -36,6 +36,13 @@ test('missing baseline and sequence gaps require a fresh snapshot', () => {
   assert.equal(applyLiveMessage(null, { type: 'drill.snapshot', data: fresh }), fresh)
 })
 
+test('catchup evidence never mutates the authoritative snapshot directly', () => {
+  const current = { id: 'drill', state_version: '12:30', latest_event_sequence: 12 }
+  const result = applyLiveMessage(current, { type: 'drill.catchup', drill_id: 'drill', after_sequence: 12, latest_sequence: 15, complete: true, events: [{ sequence: 13 }, { sequence: 14 }, { sequence: 15 }] })
+  assert.equal(result, current)
+  assert.equal(result.latest_event_sequence, 12)
+})
+
 test('unsafe patch paths cannot mutate prototypes', () => {
   assert.throws(() => applyLiveMessage({ id: 'drill', state_version: '1:0' }, { type: 'drill.delta', drill_id: 'drill', base_version: '1:0', state_version: '2:0', patch: [{ path: ['__proto__', 'polluted'], value: true }] }))
   assert.equal({}.polluted, undefined)

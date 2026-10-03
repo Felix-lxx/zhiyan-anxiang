@@ -1,10 +1,11 @@
-export interface VersionedState { id: string; state_version?: string }
+export interface VersionedState { id: string; state_version?: string; latest_event_sequence?: number }
 export type ConnectionState = 'connecting' | 'live' | 'stale'
 export interface StatePatch { path: string[]; value?: unknown; remove?: boolean }
 export type LiveMessage<T> =
   | { type: 'drill.snapshot'; data: T }
   | { type: 'drill.delta'; drill_id: string; base_version: string; state_version: string; patch: StatePatch[] }
   | { type: 'drill.heartbeat'; drill_id: string; state_version: string }
+  | { type: 'drill.catchup'; drill_id: string; after_sequence: number; latest_sequence: number; complete: boolean; events: Array<{ sequence: number }> }
 
 export function isNewerState(candidate: VersionedState, current: VersionedState | null): boolean {
   if (!current || candidate.id !== current.id) return true
@@ -16,6 +17,7 @@ export function isNewerState(candidate: VersionedState, current: VersionedState 
 }
 
 export function applyLiveMessage<T extends VersionedState>(previous: T | null, message: LiveMessage<T>): T | null {
+  if (message.type === 'drill.catchup') return previous
   if (message.type === 'drill.snapshot') return message.data
   if (!previous || message.drill_id !== previous.id) throw new Error('现场连接已切换，正在重新同步。')
   if (message.type === 'drill.heartbeat') {
@@ -45,23 +47,31 @@ export function applyLiveMessage<T extends VersionedState>(previous: T | null, m
 export function connectLive<T extends VersionedState>(options: {
   url: string; drillId: string; onState: (state: T) => void
   onStatus: (state: ConnectionState) => void; onError?: (message: string) => void
+  onRecovered?: (count: number, complete: boolean) => void
 }): () => void {
   let socket: WebSocket | null = null, stopped = false, attempt = 0
   let timer: ReturnType<typeof setTimeout> | undefined
-  let stream: T | null = null, lastMessageAt = Date.now()
+  let stream: T | null = null, lastMessageAt = Date.now(), lastSequence: number | null = null
   function open() {
     if (stopped) return
     options.onStatus(attempt ? 'stale' : 'connecting')
     stream = null
-    const current = new WebSocket(options.url + '&protocol=2')
+    const cursor = lastSequence === null ? '' : `&after_sequence=${lastSequence}`
+    const current = new WebSocket(options.url + '&protocol=2' + cursor)
     socket = current; lastMessageAt = Date.now()
     current.onmessage = event => {
       if (stopped || socket !== current) return
       try {
         const message = JSON.parse(event.data) as LiveMessage<T>
-        if (!['drill.snapshot', 'drill.delta', 'drill.heartbeat'].includes(message.type)) return
+        if (!['drill.snapshot', 'drill.delta', 'drill.heartbeat', 'drill.catchup'].includes(message.type)) return
+        if (message.type === 'drill.catchup') {
+          lastMessageAt = Date.now()
+          options.onRecovered?.(message.events.length, message.complete)
+          return
+        }
         stream = applyLiveMessage(stream, message)
         if (stream?.id !== options.drillId) throw new Error('场次不一致')
+        if (typeof stream.latest_event_sequence === 'number') lastSequence = stream.latest_event_sequence
         lastMessageAt = Date.now(); attempt = 0; options.onStatus('live')
         if (message.type !== 'drill.heartbeat') options.onState(stream)
       } catch { options.onStatus('stale'); current.close(4000, 'resync') }

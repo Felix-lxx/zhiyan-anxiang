@@ -1,4 +1,4 @@
-"""Single-process local exercise scheduler. Does not depend on an open browser."""
+"""Database-leased exercise scheduler. Does not depend on an open browser."""
 import asyncio
 import logging
 
@@ -9,9 +9,26 @@ async def serve():
     def tick():
         from sqlalchemy import select
         from app.models.operations import DrillSession
-        with operations.SessionLocal() as session:
-            for drill in session.scalars(select(DrillSession).where(DrillSession.status == "running")):
-                operations.advance_engine(session, drill)
+        from app.services.engine_lease import acquire_engine_lease
+        # Discovery is read-only. Each lease and simulation step owns a short,
+        # independent transaction so one drill cannot hold SQLite's writer lock
+        # while the scheduler iterates over every other running drill.
+        with operations.SessionLocal() as discovery:
+            drill_ids = list(discovery.scalars(select(DrillSession.id).where(DrillSession.status == "running")))
+        for drill_id in drill_ids:
+            with operations.SessionLocal() as lease_session:
+                acquired = acquire_engine_lease(lease_session, drill_id)
+                if acquired:
+                    lease_session.commit()
+                else:
+                    lease_session.rollback()
+            if not acquired:
+                continue
+            with operations.SessionLocal() as work_session:
+                drill = work_session.get(DrillSession, drill_id)
+                if drill is None or drill.status != "running":
+                    continue
+                operations.advance_engine(work_session, drill)
     while True:
         try:
             await asyncio.to_thread(tick)
