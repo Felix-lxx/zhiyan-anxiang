@@ -131,6 +131,36 @@
 .scene-control-popover--embedded select { min-height: 44px; border-radius: 8px; font-size: 14px; }
 .participant-invite--embedded div button,
 .scene-control-popover--embedded > button { min-height: 44px; border-radius: 8px; }
+.participant-invite--embedded > p { margin: 0 0 14px; color: var(--director-muted); font-size: 14px; line-height: 1.65; }
+.participant-invite--embedded > strong { display: block; width: fit-content; margin-bottom: 16px; font-size: 24px; font-variant-numeric: tabular-nums; }
+.participant-invite--embedded > label { margin-bottom: 8px; color: var(--director-muted); font-size: 14px; }
+.participant-invite--embedded .participant-invite__actions { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin: 10px 0 18px; }
+.participant-presence-panel { border-top: 1px solid var(--director-line); padding-top: 16px; }
+.participant-presence-panel > header { display: flex; align-items: center; justify-content: space-between; gap: 16px; }
+.participant-presence-panel > header > div { display: grid; gap: 4px; min-width: 0; }
+.participant-presence-panel > header strong { color: var(--director-text); font-size: 16px; }
+.participant-presence-panel > header span { color: var(--director-muted); font-size: 13px; line-height: 1.45; }
+.participant-presence-panel > header > b { flex: none; color: var(--director-accent); font-size: 15px; }
+.participant-invite--embedded .participant-presence { gap: 0; margin: 12px 0 0; border-block: 1px solid var(--director-line); }
+.participant-invite--embedded .participant-presence > li { display: block; padding: 12px 0; border-bottom: 1px solid var(--director-line); }
+.participant-invite--embedded .participant-presence > li:last-child { border-bottom: 0; }
+.participant-presence__role { display: grid !important; grid-template-columns: 10px minmax(0, 1fr) auto; align-items: center; gap: 10px !important; margin: 0 !important; }
+.participant-presence__role > i { width: 8px; height: 8px; border-radius: 50%; background: #657d76; }
+.participant-presence > li[data-connected="true"] .participant-presence__role > i { background: var(--director-accent); box-shadow: 0 2px 8px rgba(109, 210, 195, .26); }
+.participant-presence__role > div { display: grid !important; gap: 3px !important; min-width: 0; margin: 0 !important; }
+.participant-presence__role strong { color: var(--director-text); font-size: 15px; overflow-wrap: anywhere; }
+.participant-presence__role small { color: var(--director-muted); font-size: 13px; line-height: 1.45; }
+.participant-presence__role > b { align-self: start; color: var(--director-muted); font-size: 13px; font-variant-numeric: tabular-nums; }
+.participant-presence__members { display: grid; gap: 6px; margin: 10px 0 0 20px; padding: 0; list-style: none; }
+.participant-presence__members li { display: grid !important; grid-template-columns: 8px minmax(0, 1fr) auto; align-items: center; gap: 8px !important; min-width: 0; }
+.participant-presence__members i { width: 6px !important; height: 6px !important; border-radius: 50%; background: #657d76 !important; }
+.participant-presence__members i[data-online="true"] { background: var(--director-accent) !important; }
+.participant-presence__members span { min-width: 0; overflow: hidden; color: #d9e8e3; font-size: 14px; text-overflow: ellipsis; white-space: nowrap; }
+.participant-presence__members time { color: var(--director-muted); font-size: 13px; font-variant-numeric: tabular-nums; }
+@media (max-width: 520px) {
+  .participant-invite--embedded .participant-invite__actions { grid-template-columns: 1fr; }
+  .participant-presence-panel > header { align-items: flex-start; flex-direction: column; gap: 8px; }
+}
 .scene-control-popover--embedded label { min-height: 58px; }
 .scene-control-popover--embedded label:first-child { border-top: 0; }
 .scene-control-popover--embedded .ui-field { display: grid; align-items: stretch; gap: var(--space-2); }

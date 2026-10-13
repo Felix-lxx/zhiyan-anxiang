@@ -14,6 +14,30 @@ def layout(roads, count=12, width=1.2):
     return add_spatial_layout(dict(parameters={"south_lane_status": "open", "hydrant_status": "available", "stair_width": width}, residents=people, road_network=deepcopy(roads), fire_origin={"x": 66, "y": 43}, robot_origin={"x": 34, "y": 48}), home)
 
 
+def test_dormant_session_fast_forward_preserves_exposure_and_late_commands(road_graph):
+    world = layout(road_graph, 1)
+    base = simulate(world, [], 200)["residents"][0]
+    later = simulate(world, [], 2_000_000)["residents"][0]
+    density = max(0., 1-math.dist(xyz(base), (66, 43, 0))/48)
+    assert math.isclose(later["smoke_exposure"]-base["smoke_exposure"], density*.85*(2_000_000-200), abs_tol=1e-6)
+    assert xyz(later) == xyz(base)
+    assert later["status"] == "waiting"
+    command = event("robot.broadcast_completed", 2_000_000, {})
+    result = simulate(world, [command], 2_000_300)["residents"][0]
+    assert result["status"] == "evacuated"
+    assert result["assembly_arrived_at_seconds"] >= 2_000_000
+
+
+def test_opening_drill_does_not_advance_or_wait_for_engine(exercise, monkeypatch):
+    client, headers, _, root, *_ = exercise
+    def unexpected(*args, **kwargs):
+        raise AssertionError("GET must not acquire the engine command lock")
+    monkeypatch.setattr(operations, "advance_engine", unexpected)
+    response = client.get(root, headers=headers)
+    assert response.status_code == 200
+    assert response.json()["simulation"]["residents"]
+
+
 def test_continuous_room_stair_door_exit_and_assembly(road_graph):
     world = layout(road_graph, 1)
     history = [event("robot.broadcast_completed", 0, {})]
@@ -35,6 +59,10 @@ def test_capacity_headway_and_narrow_stair_queue(road_graph):
     a, b = simulate(narrow, history, 55), simulate(wide, history, 55)
     assert sum(p["queue_seconds"] for p in a["residents"]) > sum(p["queue_seconds"] for p in b["residents"])
     assert sum(p["travelled"] for p in a["residents"]) < sum(p["travelled"] for p in b["residents"])
+    narrow_stairs = [edge for edge in a["spatial_network"]["edges"] if edge["kind"] == "stairs"]
+    wide_stairs = [edge for edge in b["spatial_network"]["edges"] if edge["kind"] == "stairs"]
+    assert max(edge["density_percent"] for edge in narrow_stairs) >= max(edge["density_percent"] for edge in wide_stairs)
+    assert all({"capacity_persons", "live_occupancy", "waiting_count", "flow_capacity_per_second", "risk_score"} <= edge.keys() for edge in narrow_stairs)
     for t in (8, 12, 20, 35):
         persons = simulate(narrow, history, t)["residents"]
         for i, p in enumerate(persons):

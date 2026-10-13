@@ -3,8 +3,8 @@ from collections import OrderedDict
 from threading import RLock
 
 
-def state_version(sequence: int, elapsed: int) -> str:
-    return f"{sequence}:{elapsed}"
+def state_version(sequence: int, elapsed: int, presence_revision: int = 0) -> str:
+    return f"{sequence}:{elapsed}:{presence_revision}"
 
 
 def snapshot_patch(previous: dict, current: dict, path: list | None = None) -> list[dict]:

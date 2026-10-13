@@ -49,10 +49,18 @@ class ParticipantJoin(BaseModel):
     display_name: str = Field(min_length=2, max_length=40)
 
 
+class ParticipantHeartbeat(BaseModel):
+    participant_token: str = Field(min_length=16, max_length=128)
+
+
 class TaskAction(BaseModel):
     action: str = Field(pattern=r"^(accept|arrive|submit)$")
     evidence: str = Field(default="", max_length=500)
     participant_token: str | None = Field(default=None, max_length=128)
+
+
+class TaskAssignment(BaseModel):
+    participant_id: str = Field(min_length=1, max_length=64)
 
 
 class DirectorConfig(BaseModel):
@@ -78,7 +86,7 @@ class SearchAssignment(BaseModel):
 
 class LiveCommand(BaseModel):
     command_id: str = Field(min_length=8, max_length=80, pattern=r"^[a-zA-Z0-9_-]+$")
-    kind: Literal["state", "event.inject", "road.reopen", "residents.assign", "robot.command", "search.assign", "participant.feedback", "task.action", "director.configure"]
+    kind: Literal["state", "event.inject", "road.reopen", "residents.assign", "robot.command", "search.assign", "participant.feedback", "task.assign", "task.action", "director.configure"]
     arguments: dict[str, Any] = Field(default_factory=dict)
     target_id: str | None = Field(default=None, max_length=64)
     expected_sequence: int | None = Field(default=None, ge=0)

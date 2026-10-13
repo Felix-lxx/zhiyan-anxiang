@@ -12,6 +12,7 @@ export interface TrainingPerson {
 }
 interface TrainingState {
   engine_version?: number; status: string; elapsed_seconds: number; tasks: ExerciseTask[]
+  participants: Array<{ role: string; members?: Array<{ id: string; name: string; online: boolean }> }>
   robot: { x: number; y: number; state: string; current_task?: string | null; task_queue?: Array<{ label: string; status: string; progress: number; ends_at_seconds?: number }> } | null
   events: Array<{ event_type: string; elapsed_seconds: number; message: string }>
   score?: { total_score: number; details?: Array<{ name: string; score: number; max_score?: number; evidence: string }> } | null
@@ -22,6 +23,7 @@ const props = defineProps<{ drill: TrainingState; busy: boolean; replay: boolean
 const emit = defineEmits<{
   start: []; resume: []; finish: []; retry: []; live: []; tasks: []; compare: []; indoor: []
   dispatch: [task: ExerciseTask]; locate: [task: ExerciseTask]; broadcast: []; assist: [ids: string[]]
+  assign: [taskId: string, participantId: string]
   evacuate: [ids: string[], exit: 'north' | 'south']; focus: [id: string]
   task: [id: string, action: 'accept' | 'arrive' | 'submit', evidence: string]
   block: [id: string]; reopen: [id: string]; seek: [time: number]
@@ -76,6 +78,7 @@ const stage = computed(() => {
   return { title: indoors.value.length ? '观察居民下楼与楼门排队' : '观察两条出口路线', why: `${indoors.value.length} 人还在楼内，${outside.value.length} 人在室外。楼梯有通行容量，重点人员速度较慢；不要把尚未到达误认为系统没有运行。`, key: 'observe' }
 })
 const workflow = computed(() => stage.value.key === 'power' ? power.value : stage.value.key === 'complete' ? remainingTask.value : undefined)
+const workflowAssignees = computed(() => props.drill.participants.find(item => item.role === workflow.value?.responsible_role)?.members?.filter(item => item.online) ?? [])
 const nextScoreHint = computed(() => ({
   ready: '开始后，系统按实际处置结果记分',
   perception: '完成连续采样并确认火情，可获得感知证据',
@@ -111,7 +114,7 @@ function split() {
         <button v-else :disabled="!canAct || travelling" @click="broadcastTask && emit('dispatch', broadcastTask)">{{ travelling ? '机器人移动中，等待到达入口' : '派机器人到住宅入口' }}</button>
       </template>
       <p v-if="stage.key === 'perception'" role="status">已记录 {{ drill.events.filter(e => e.event_type === 'robot.sensor_sample').length }}/3 次近场采样。<button class="training-link" @click="emit('tasks')">查看机器人路线与任务</button></p>
-      <TaskWorkflow v-if="workflow" :key="workflow.id" :task="workflow" :running="drill.status === 'running' && !replay" :busy="busy" director @action="(action, evidence) => emit('task', workflow!.id, action, evidence)" @locate="emit('locate', workflow)" @dispatch="emit('dispatch', workflow)" />
+      <TaskWorkflow v-if="workflow" :key="workflow.id" :task="workflow" :running="drill.status === 'running' && !replay" :busy="busy" :assignees="workflowAssignees" director @assign="participantId => emit('assign', workflow!.id, participantId)" @action="(action, evidence) => emit('task', workflow!.id, action, evidence)" @locate="emit('locate', workflow)" @dispatch="emit('dispatch', workflow)" />
       <button v-if="stage.key === 'complete'" :disabled="!canAct || uncounted > 0 || Boolean(remainingTask)" @click="emit('finish')">结束训练并查看结果</button>
       <template v-if="stage.key === 'ended'"><button @click="emit('tasks')">检查任务与遗漏</button><button @click="emit('compare')">比较另一种出口选择</button><button :disabled="busy" @click="emit('retry')">重新训练一次</button></template>
       <ul v-if="stage.key === 'ended'" class="training-omissions"><li v-for="t in drill.tasks.filter(t => t.status !== 'completed')" :key="t.id">未核验：{{ t.title }}</li><li v-if="people.some(p => p.status !== 'evacuated')">仍有 {{ people.filter(p => p.status !== 'evacuated').length }} 人未到出口；回看下楼、封路和疏散通知的时刻。</li><li v-if="!broadcastDone">本场没有广播证据，请检查是否只派出机器人却忘记通知居民。</li></ul>

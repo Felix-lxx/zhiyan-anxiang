@@ -8,9 +8,9 @@ export type DrillTask = ExerciseTask
 
 export interface Resident { id: string; label: string; vulnerable: boolean; status: string; x: number; y: number; progress: number; exit?: 'north' | 'south'; behavior?: string; smoke_exposure?: number; congestion?: number; speed_factor?: number; route_points?: Array<{ x: number; y: number; height?: number }>; route_edge_ids?: string[]; route_reachable?: boolean; estimated_seconds?: number; remaining_seconds?: number }
 
-export interface RoadEdge { id: string; name: string; start: { x: number; y: number }; end: { x: number; y: number }; width_meters: number; status: 'open' | 'restricted' | 'blocked'; blocked_by_event: boolean; risk_score: number }
+export interface RoadEdge { id: string; name: string; start: { x: number; y: number }; end: { x: number; y: number }; width_meters: number; status: 'open' | 'restricted' | 'blocked'; blocked_by_event: boolean; risk_score: number; smoke_risk?: number; density_percent?: number; live_occupancy?: number; waiting_count?: number; capacity_persons?: number; flow_capacity_per_second?: number }
 
-export interface Simulation { fire: { intensity: number; smoke_radius: number; temperature: number }; environment: { south_lane: string; east_hydrant: string; visibility: number; blockages?: Array<{ x: number; y: number; target: string }> }; sensors: { temperature: number; smoke_ppm: number; alarm: boolean }; residents: Resident[]; road_network?: { nodes: Array<{ id: string; name: string; x: number; y: number; is_exit: boolean }>; edges: RoadEdge[] }; summary: { total: number; evacuated: number; moving: number; vulnerable: number; missing: number; smoke_exposed?: number; congested?: number; north_load?: number; south_load?: number } }
+export interface Simulation { fire: { intensity: number; smoke_radius: number; temperature: number }; environment: { south_lane: string; east_hydrant: string; visibility: number; blockages?: Array<{ x: number; y: number; target: string }> }; sensors: { temperature: number; smoke_ppm: number; alarm: boolean }; residents: Resident[]; road_network?: { nodes: Array<{ id: string; name: string; x: number; y: number; is_exit: boolean }>; edges: RoadEdge[] }; summary: { total: number; evacuated: number; moving: number; vulnerable: number; missing: number; smoke_exposed?: number; congested?: number; congested_edges?: number; critical_edge?: { id: string; name: string; density_percent: number; waiting_count: number } | null; north_load?: number; south_load?: number } }
 
 export interface RobotTask { id: string; label: string; status: string; progress: number; route_edge_ids: string[]; route_points: Array<{ x: number; y: number }>; planned_duration_seconds: number; starts_at_seconds: number; ends_at_seconds: number }
 
@@ -18,7 +18,9 @@ export interface Robot { name: string; state: string; battery: number; x: number
 
 export interface Score { total_score: number; details: Array<{ name: string; score: number; max_score?: number; evidence: string; at_seconds?: number }>; recommendations: string[] }
 
-export interface Participant { role: string; name: string; ready: boolean; connected?: boolean; status?: string; last_action?: string | null; last_message?: string | null; last_seen_seconds?: number | null; action_count?: number }
+export interface ParticipantMember { id: string; name: string; online: boolean; last_seen_at: string }
+
+export interface Participant { role: string; name: string; ready: boolean; connected?: boolean; online_count?: number; registered_count?: number; members?: ParticipantMember[]; status?: string; last_action?: string | null; last_message?: string | null; last_seen_seconds?: number | null; action_count?: number }
 
 export interface CommandReceipt { id: string; kind: string; label: string; actor: string; submitted_at?: number; accepted_at: number; completed_at?: number | null; status: 'submitted' | 'accepted' | 'completed' | 'executing' | 'queued' | 'blocked' | 'paused' | 'superseded' | 'cancelled' | 'unfinished' | 'failed'; progress: number; reason: string; remaining_seconds: number | null; resident_ids: string[]; event_ids: string[]; score_before: number | null; score_after_acceptance: number | null; completed_count: number; selected_count: number; failure_code?: string | null }
 

@@ -2,9 +2,11 @@ import { ApiError, type ApiClient } from './client'
 
 export function commandForPath(path: string, arguments_: unknown) {
   const exact: Record<string, string> = { '/state': 'state', '/inject': 'event.inject', '/residents': 'residents.assign', '/robot': 'robot.command', '/searches': 'search.assign', '/participant-actions': 'participant.feedback', '/director/config': 'director.configure' }
-  const road = path.match(/^\/roads\/([^/]+)\/reopen$/), task = path.match(/^\/tasks\/([^/]+)\/actions$/)
-  const kind = exact[path] ?? (road ? 'road.reopen' : task ? 'task.action' : undefined)
-  return kind ? { kind, arguments: arguments_ ?? {}, target_id: road?.[1] ?? task?.[1] ?? null } : null
+  const road = path.match(/^\/roads\/([^/]+)\/reopen$/)
+  const taskAction = path.match(/^\/tasks\/([^/]+)\/actions$/)
+  const taskAssignment = path.match(/^\/tasks\/([^/]+)\/assign$/)
+  const kind = exact[path] ?? (road ? 'road.reopen' : taskAction ? 'task.action' : taskAssignment ? 'task.assign' : undefined)
+  return kind ? { kind, arguments: arguments_ ?? {}, target_id: road?.[1] ?? taskAction?.[1] ?? taskAssignment?.[1] ?? null } : null
 }
 
 /** Retry uncertain transport results with the same ID; the server executes only once. */

@@ -24,6 +24,7 @@ import UiSelect from './ui/UiSelect.vue'
 import '../director.css'
 import '../director-layout.css'
 import '../atlas-director.css'
+import '../styles/director-readability.css'
 
 interface Scene { id: string; name: string; status: string }
 
@@ -34,7 +35,29 @@ const emit = defineEmits<{ back: []; participant: [] }>()
 const scenes = ref<Scene[]>([]), drills = ref<Array<DrillIndex | Drill>>([])
 const drillLoading=ref(false)
 let drillGeneration=0
-async function loadSelectedDrill(id:string){const generation=++drillGeneration;drillLoading.value=true;try{const data=await api.get<Drill>('/drills/'+id);if(generation===drillGeneration)selectDrill(data)}catch(cause){if(generation===drillGeneration)error.value=cause instanceof Error?cause.message:'现场读取失败'}finally{if(generation===drillGeneration)drillLoading.value=false}}
+const indexLoading = ref(false)
+let indexGeneration = 0, sceneGeneration = 0
+let sceneRequest: AbortController | null = null, indexRequest: AbortController | null = null, drillRequest: AbortController | null = null
+function loadFailure(cause: unknown) {
+  return cause instanceof Error && ['TimeoutError', 'AbortError'].includes(cause.name)
+    ? '现场读取超时。请重试；历史演练和操作记录不会被重置。'
+    : cause instanceof Error ? cause.message : '现场读取失败，请检查服务后重试。'
+}
+async function loadSelectedDrill(id:string) {
+  const generation=++drillGeneration
+  drillRequest?.abort(); const controller = new AbortController(); drillRequest = controller
+  const timeout = window.setTimeout(() => controller.abort(new DOMException('现场读取超时', 'TimeoutError')), 20000)
+  drillLoading.value=true; error.value=''
+  try { const data=await api.get<Drill>('/drills/'+id, { signal:controller.signal }); if(generation===drillGeneration)selectDrill(data) }
+  catch(cause) { if(generation===drillGeneration)error.value=loadFailure(cause) }
+  finally { window.clearTimeout(timeout); if(generation===drillGeneration)drillLoading.value=false }
+}
+function cancelSceneLoad() {
+  sceneGeneration++; indexGeneration++; drillGeneration++
+  sceneRequest?.abort(); indexRequest?.abort(); drillRequest?.abort()
+  loading.value=false; indexLoading.value=false; drillLoading.value=false
+  error.value='已取消现场读取。可以重试或返回项目，演练记录没有改变。'
+}
 const selectedSceneId = ref(''), current = ref<Drill | null>(null)
 const loading = ref(true), busy = ref(false), isPreparingDemo = ref(false)
 const autoStartAttempted = ref(false)
@@ -86,6 +109,13 @@ const activeTaskCount = computed(() => displayed.value?.tasks.filter(task => tas
 const drawerTitle = computed(() => ({ none: '现场工具', missions: '处置任务', events: '事件证据', branches: '比较另一种决策', report: '本场复盘', more: '更多现场工具', participant: '手机参演', settings: '场次与显示' } satisfies Record<DirectorDrawerName, string>)[drawer.value])
 const displayClock = computed(() => formatClock(displayed.value?.elapsed_seconds ?? 0))
 function formatClock(value: number): string { return `${String(Math.floor(value / 60)).padStart(2,'0')}:${String(value % 60).padStart(2,'0')}` }
+const onlineParticipantCount = computed(() => current.value?.participants.reduce((sum, item) => sum + (item.online_count ?? (item.connected ? 1 : 0)), 0) ?? 0)
+function formatPresenceTime(value: string): string {
+  const seconds = Math.max(0, Math.round((Date.now() - new Date(value).getTime()) / 1000))
+  if (seconds < 15) return '刚刚同步'
+  if (seconds < 60) return `${seconds} 秒前`
+  return `${Math.floor(seconds / 60)} 分钟前`
+}
 let stopLive: (() => void) | undefined, directorTimer: number | null = null, parallelTimer: number | null = null, desiredDrillId = ''
 const activeCommands = computed(() => current.value?.commands?.filter(c => ['executing', 'queued', 'blocked', 'paused'].includes(c.status)) ?? [])
 const commandHint = computed(() => busy.value ? '正在提交指令…' : activeCommands.value.length ? `${activeCommands.value.length} 项指令执行中 · 查看进度` : current.value?.commands?.length ? '查看指令结果与证据' : '查看任务与执行进度')
@@ -100,15 +130,31 @@ const participantLink = computed(() => participantInvite.value ? `${participantO
 const headers = (): HeadersInit => ({ Authorization: `Bearer ${props.accessToken}` })
 
 async function loadScenes(): Promise<void> {
+  const generation=++sceneGeneration
+  sceneRequest?.abort(); const controller=new AbortController(); sceneRequest=controller
+  const timeout=window.setTimeout(()=>controller.abort(new DOMException('场景读取超时','TimeoutError')),15000)
   loading.value = true; error.value = ''
-  try { scenes.value = await api.request<Scene[]>(`${props.apiBaseUrl}/communities/${props.community.id}/scenes`, { headers: headers() }); const first = publishedScenes.value.find(scene=>scene.id===route.query.scene) ?? publishedScenes.value[0]; if (first) selectedSceneId.value = first.id }
-  catch (cause) { error.value = cause instanceof Error ? cause.message : '场景加载失败。' } finally { loading.value = false }
+  try {
+    const data = await api.get<Scene[]>(`/communities/${props.community.id}/scenes`, { signal:controller.signal })
+    if(generation!==sceneGeneration)return
+    scenes.value=data
+    const first = publishedScenes.value.find(scene=>scene.id===route.query.scene) ?? publishedScenes.value[0]
+    if(first) { if(selectedSceneId.value===first.id) void loadDrills(); else selectedSceneId.value=first.id }
+  } catch (cause) { if(generation===sceneGeneration)error.value=loadFailure(cause) }
+  finally { window.clearTimeout(timeout); if(generation===sceneGeneration)loading.value=false }
 }
 async function prepareThreeDemo(): Promise<void> { isPreparingDemo.value = true; try { await api.request(`${props.apiBaseUrl}/communities/demo-ready`, { method: 'POST', headers: headers() }); await loadScenes() } catch (cause) { error.value = cause instanceof Error ? cause.message : '三维演练初始化失败。' } finally { isPreparingDemo.value = false } }
 async function loadDrills(): Promise<void> {
   if (!selectedSceneId.value) return
+  const generation=++indexGeneration, sceneId=selectedSceneId.value
+  indexRequest?.abort(); const controller=new AbortController(); indexRequest=controller
+  const timeout=window.setTimeout(()=>controller.abort(new DOMException('场次列表读取超时','TimeoutError')),15000)
+  indexLoading.value=true; error.value=''
   try {
-    drills.value = await api.request<DrillIndex[]>(`${props.apiBaseUrl}/scenes/${selectedSceneId.value}/drills?summary=true`, { headers: headers() })
+    const data=await api.get<DrillIndex[]>(`/scenes/${sceneId}/drills?summary=true`, { signal:controller.signal })
+    if(generation!==indexGeneration || sceneId!==selectedSceneId.value)return
+    drills.value=data
+    indexLoading.value=false
     if (drills.value[0]) await loadSelectedDrill((drills.value.find((item) => item.id === route.query.drill) ?? drills.value[0]).id)
     else {
       current.value = null; desiredDrillId = ''; stopLive?.()
@@ -118,7 +164,8 @@ async function loadDrills(): Promise<void> {
       }
     }
   }
-  catch (cause) { error.value = cause instanceof Error ? cause.message : '演练场次加载失败。' }
+  catch (cause) { if(generation===indexGeneration)error.value=loadFailure(cause) }
+  finally { window.clearTimeout(timeout); if(generation===indexGeneration)indexLoading.value=false }
 }
 async function createDrill(): Promise<void> { busy.value = true; try { const drill = await api.request<Drill>(`${props.apiBaseUrl}/scenes/${selectedSceneId.value}/drills`, { method: 'POST', headers: { ...headers(), 'Content-Type': 'application/json' }, body: JSON.stringify(form.value) }); drills.value = [drill, ...drills.value]; selectDrill(drill) } catch (cause) { error.value = cause instanceof Error ? cause.message : '场次创建失败。' } finally { busy.value = false } }
 function selectDrill(drill: Drill): void { leaveReplay(); clearSpatialPreview(); branchEvidence.value=null; current.value = drill; branchComparison.value = null; showParallel.value = false; drawer.value = 'none'; void router.replace({query:{scene:selectedSceneId.value,drill:drill.id,...(directorMode.value==='replay'?{mode:'replay'}:{})}}); connectSocket(drill.id); void loadParticipantInvite(); if(directorMode.value==='replay') void seekReplay(0) }
@@ -197,6 +244,8 @@ async function commandResidents(context: { residentIds: string[]; exit: 'north' 
   await requestDrill('/residents', 'POST', { resident_ids: context.residentIds, exit: context.exit, action: context.action })
 }
 async function taskAction(taskId: string, action: 'accept' | 'arrive' | 'submit', evidence: string): Promise<void> { const label = action === 'accept' ? '任务已接收，请到目标点后回执到位' : action === 'arrive' ? '到位回执已记录，请提交处置证据' : '处置证据已核验，现场影响和过程评分已更新'; await requestDrill(`/tasks/${taskId}/actions`, 'POST', { action, evidence }, label) }
+function taskAssignees(task: DrillTask) { return current.value?.participants.find(item => item.role === task.responsible_role)?.members?.filter(item => item.online) ?? [] }
+async function assignTask(taskId: string, participantId: string): Promise<void> { await requestDrill(`/tasks/${taskId}/assign`, 'POST', { participant_id: participantId }, '任务已同步给指定参演成员，等待其在手机端接收') }
 function locateTask(task: DrillTask): void { drawer.value = 'none'; if (task.target_position) arena.value?.focusPoint(task.target_position.x, task.target_position.y) }
 async function dispatchTask(task: DrillTask): Promise<void> { if (task.target_position) await moveRobot({ ...task.target_position, target: task.title }) }
 async function reopenRoad(id: string): Promise<void> { await requestDrill(`/roads/${id}/reopen`, 'POST', undefined, '道路已恢复通行，人员与机器人从当前位置重新规划') }
@@ -257,20 +306,28 @@ function playCue(event: DrillEvent): void {
   if ('speechSynthesis' in window && event.event_type.startsWith('inject.')) { window.speechSynthesis.cancel(); window.speechSynthesis.speak(new SpeechSynthesisUtterance(event.message)) }
 }
 
-watch(selectedSceneId, () => { drillGeneration++; desiredDrillId = ''; current.value = null; stopLive?.(); void loadDrills() })
+watch(selectedSceneId, () => { drillGeneration++; drillRequest?.abort(); drillLoading.value=false; desiredDrillId = ''; current.value = null; stopLive?.(); void loadDrills() })
 watch(() => current.value?.events[0]?.sequence, () => { const event = current.value?.events[0]; if (event) playCue(event) })
 watch(highContrast, value => localStorage.setItem('zhiyan_high_contrast', value ? '1' : '0'))
 watch(replayPlaying, playing => { if (replayTimer) window.clearInterval(replayTimer); replayTimer = playing ? window.setInterval(() => { if (replayLoading.value) return; if (replayAt.value >= (current.value?.elapsed_seconds ?? 0)) { replayPlaying.value = false; return }; void seekReplay(replayAt.value + 1) }, 1000) : null })
 watch(showParallel, (visible) => { if (parallelTimer) window.clearInterval(parallelTimer); parallelTimer = visible ? window.setInterval(() => void refreshBranchWorlds(), 3000) : null })
 onMounted(() => { void loadScenes(); document.addEventListener('keydown', onEscape) })
-onBeforeUnmount(() => { drillGeneration++; document.removeEventListener('keydown', onEscape); if (replayTimer) window.clearInterval(replayTimer); replayRequest++ })
+onBeforeUnmount(() => { sceneGeneration++; indexGeneration++; drillGeneration++; sceneRequest?.abort(); indexRequest?.abort(); drillRequest?.abort(); document.removeEventListener('keydown', onEscape); if (replayTimer) window.clearInterval(replayTimer); replayRequest++ })
 onBeforeUnmount(() => { desiredDrillId = ''; stopLive?.(); if (directorTimer) window.clearInterval(directorTimer); if (parallelTimer) window.clearInterval(parallelTimer); void audioContext?.close() })
 </script>
 
 <template>
   <main id="main-content" class="operations-center operations-center--immersive atlas-director" :data-mode="directorMode" data-ui-theme="immersive" :class="{ 'coach-open': coachVisible, 'detail-panel-open': detailPanelOpen, 'assistant-open': assistantOpen, 'space-preview-open': spatialPreviewBusy || Boolean(spatialPreview) }" :data-replay="Boolean(replay)">
-    <UiToast v-if="error && !current" :message="error" tone="danger" action-label="重新加载" :dismissible="false" @action="loadScenes" />
-    <section v-if="loading || drillLoading" class="immersive-loading">正在装载社区数字孪生现场…</section>
+    <section v-if="loading || indexLoading || drillLoading" class="immersive-loading scene-entry-state" aria-busy="true" aria-live="polite">
+      <AppIcon name="building" :size="32" />
+      <h1>{{ loading ? '正在读取社区场景' : indexLoading ? '正在读取演练场次' : '正在恢复演练现场' }}</h1>
+      <p>{{ drillLoading ? '读取人员位置、道路状态与执行记录。精细模型将在进入后逐步载入。' : '正在读取社区配置与演练记录，请稍候。' }}</p>
+      <div><button type="button" @click="cancelSceneLoad">取消等待</button><button type="button" @click="cancelSceneLoad(); emit('back')">返回项目</button></div>
+    </section>
+    <section v-else-if="error && !current" class="operations-empty operations-empty--immersive scene-entry-state" role="alert">
+      <h1>暂时无法打开演练现场</h1><p>{{ error }}</p>
+      <div><button class="primary-button" type="button" @click="loadScenes">重新读取现场</button><button type="button" @click="emit('back')">返回项目</button></div>
+    </section>
     <section v-else-if="publishedScenes.length === 0" class="operations-empty operations-empty--immersive"><h1>准备三维演练现场</h1><p>先创建已发布场景，或使用充电棚火灾主案例。</p><button class="primary-button" type="button" :disabled="isPreparingDemo" @click="prepareThreeDemo">{{ isPreparingDemo ? '正在构建…' : '准备主案例' }}</button><button type="button" @click="emit('back')">返回项目</button></section>
     <section v-else-if="!current" class="operations-empty operations-empty--immersive"><span>导演台 · 场次准备</span><h1>新建演练场次</h1><p>先选择已发布场景，再冻结一份可运行的社区与人员配置；从项目页进入时会自动准备第一场。</p><div class="immersive-create"><label><span>运行场景</span><select v-model="selectedSceneId"><option v-for="scene in publishedScenes" :key="scene.id" :value="scene.id">{{ scene.name }}</option></select></label><label><span>场次名称</span><input v-model="form.name" maxlength="160" placeholder="例如：夜间充电棚火灾 · 第一轮" /></label><button class="primary-button" type="button" :disabled="busy" @click="createDrill">进入三维导演台</button></div></section>
     <template v-else-if="displayed">
@@ -280,7 +337,7 @@ onBeforeUnmount(() => { desiredDrillId = ''; stopLive?.(); if (directorTimer) wi
       <DirectorTopbar v-show="directorMode!=='replay'" :name="current.name" :subtitle="(current.engine_version ?? 1) >= 2 ? '场景配置已冻结 · 三维现场实时运行' : '历史场次 · 固定主案例模型'" :socket-state="socketState" :status-label="statusLabel" :display-clock="displayClock" :drill-status="current.status" :busy="busy" :coach-open="coachVisible" :replay="Boolean(replay)" @back="emit('back')" @toggle-coach="toggleCoach" @action="act" @create="createDrill" />
       <section v-show="directorMode!=='replay'" class="director-stage">
         <nav class="atlas-director-modes" aria-label="导演台模式"><button :aria-pressed="directorMode==='observe'" @click="directorMode='observe';closeFloatingPanels()"><AppIcon name="eye"/>观察</button><button :aria-pressed="directorMode==='command'" @click="directorMode='command';closeFloatingPanels()"><AppIcon name="robot"/>指挥</button><button @click="openReplay"><AppIcon name="history"/>复盘</button></nav>
-        <GuidedExercise v-if="coachOpen" :drill="displayed" :busy="busy" :replay="Boolean(replay)" @indoor="arena?.showIndoor()" @start="act('start')" @resume="act('resume')" @finish="act('end')" @retry="createDrill" @live="leaveReplay" @tasks="toggleDrawer('missions')" @compare="toggleDrawer('branches')" @dispatch="dispatchTask" @locate="locateTask" @broadcast="robot('broadcast')" @assist="ids => commandResidents({ residentIds: ids, exit: 'north', action: 'priority_assist' })" @evacuate="(ids, exit) => commandResidents({ residentIds: ids, exit, action: 'evacuate' })" @focus="id => arena?.focusResident(id)" @task="taskAction" @block="id => inject('channel_blocked', { road_edge_id: id })" @reopen="reopenRoad" @seek="seekReplay"><SpatialTrainingLab v-if="(current.engine_version ?? 1) >= 3" ref="trainingLab" :drill="displayed" :api-base-url="apiBaseUrl" :access-token="accessToken" :replay="Boolean(replay)" @updated="updateFromLab" @forked="forkFromLab" @select="ids => arena?.selectResidents(ids)" @preview="people => routePreview = people as Resident[]" @focus="id => arena?.focusResident(id)" @compare="compareEditable" /><section v-else class="training-upgrade"><h2>当前场次使用历史模型</h2><p>新建连续空间训练，启用楼内行走、路线预览、集合核验与历史重做；原场次不会删除或改写。</p><button :disabled="busy" @click="createDrill">新建连续空间训练</button></section></GuidedExercise>
+        <GuidedExercise v-if="coachOpen" :drill="displayed" :busy="busy" :replay="Boolean(replay)" @indoor="arena?.showIndoor()" @start="act('start')" @resume="act('resume')" @finish="act('end')" @retry="createDrill" @live="leaveReplay" @tasks="toggleDrawer('missions')" @compare="toggleDrawer('branches')" @dispatch="dispatchTask" @assign="assignTask" @locate="locateTask" @broadcast="robot('broadcast')" @assist="ids => commandResidents({ residentIds: ids, exit: 'north', action: 'priority_assist' })" @evacuate="(ids, exit) => commandResidents({ residentIds: ids, exit, action: 'evacuate' })" @focus="id => arena?.focusResident(id)" @task="taskAction" @block="id => inject('channel_blocked', { road_edge_id: id })" @reopen="reopenRoad" @seek="seekReplay"><SpatialTrainingLab v-if="(current.engine_version ?? 1) >= 3" ref="trainingLab" :drill="displayed" :api-base-url="apiBaseUrl" :access-token="accessToken" :replay="Boolean(replay)" @updated="updateFromLab" @forked="forkFromLab" @select="ids => arena?.selectResidents(ids)" @preview="people => routePreview = people as Resident[]" @focus="id => arena?.focusResident(id)" @compare="compareEditable" /><section v-else class="training-upgrade"><h2>当前场次使用历史模型</h2><p>新建连续空间训练，启用楼内行走、路线预览、集合核验与历史重做；原场次不会删除或改写。</p><button :disabled="busy" @click="createDrill">新建连续空间训练</button></section></GuidedExercise>
         <DigitalTwinArena :key="current.id" ref="arena" :route-preview="routePreview" :robot-route-preview="spatialPreview?.kind === 'robot' ? spatialPreview.route_points : []" :operation-preview="spatialPreview" :operation-busy="spatialPreviewBusy || Boolean(spatialPreview && busy)" @selection="ids => trainingLab?.selectIds(ids)" @context-selection="updateAssistantContext" @ask-assistant="openAssistant" :status="replay ? 'paused' : current.status" :elapsed-seconds="displayed.elapsed_seconds" :robot="displayed.robot" :simulation="displayed.simulation" :events="displayed.events" :interactive="!replay && current.status === 'running' && !busy" :effects-enabled="effectsEnabled" :camera-enabled="cameraEnabled && !replay" :high-contrast="highContrast" @inject="inject" @robot-command="robot" @preview-action="previewSpatialAction" @confirm-action="confirmSpatialAction" @cancel-action="clearSpatialPreview" @reopen-road="reopenRoad" />
         <aside class="director-metrics" aria-label="现场关键态势">
           <div><span>火势指数</span><strong>{{ displayed.simulation.fire.intensity }}</strong></div>
@@ -297,7 +354,7 @@ onBeforeUnmount(() => { desiredDrillId = ''; stopLive?.(); if (directorTimer) wi
               <ol class="robot-task-queue"><li v-for="item in displayed.robot.task_queue" :key="item.id"><strong>{{ item.label }}</strong><span>{{ { executing: '移动中', queued: '排队等待', blocked: '无法到达', completed: '已到达', cancelled: '已取消' }[item.status] ?? item.status }}</span><progress :value="item.progress" max="1" :aria-label="item.label + '进度'"></progress><small>{{ item.route_edge_ids.length }} 个道路段 · {{ Math.round(item.progress * 100) }}%</small><button v-if="!replay && ['executing','queued','blocked'].includes(item.status)" type="button" :disabled="busy || current.status !== 'running'" @click="cancelRobotTask(item.id)">取消任务</button></li></ol>
               <div v-if="!replay"><button type="button" :disabled="busy || current.status !== 'running'" @click="robot('replan')">重算风险路径</button><button type="button" :disabled="busy || current.status !== 'running' || !canBroadcast" @click="robot('broadcast')">{{ canBroadcast ? '在此执行广播' : '等待机器人到达' }}</button></div>
             </article>
-            <TaskWorkflow v-for="task in displayed.tasks" :key="task.id" :task="task" :running="!replay && current.status === 'running'" :readonly="Boolean(replay)" :busy="busy" director @action="(action, evidence) => taskAction(task.id, action, evidence)" @locate="locateTask(task)" @dispatch="dispatchTask(task)" />
+            <TaskWorkflow v-for="task in displayed.tasks" :key="task.id" :task="task" :running="!replay && current.status === 'running'" :readonly="Boolean(replay)" :busy="busy" :assignees="taskAssignees(task)" director @assign="participantId => assignTask(task.id, participantId)" @action="(action, evidence) => taskAction(task.id, action, evidence)" @locate="locateTask(task)" @dispatch="dispatchTask(task)" />
             <p v-if="!displayed.tasks.length">此时尚无已触发任务。</p>
           </div>
           <ol v-else-if="drawer === 'events'" class="director-event-list"><li v-for="event in displayed.events" :key="event.id"><button type="button" :aria-label="'回放 ' + formatClock(event.elapsed_seconds) + event.message" @click="seekReplay(event.elapsed_seconds)"><time :datetime="`PT${event.elapsed_seconds}S`">{{ formatClock(event.elapsed_seconds) }}</time></button><div><strong>{{ event.message }}</strong><span>{{ event.actor }}</span><small v-if="event.payload?.blocked_edge_id">道路：{{ event.payload.blocked_edge_name }}</small><small v-if="event.payload?.impact">预计 30 秒后：拥堵 {{ event.payload.impact.congested_before }}→{{ event.payload.impact.congested_after }}，暴露 {{ event.payload.impact.smoke_exposed_before }}→{{ event.payload.impact.smoke_exposed_after }}</small></div></li></ol>
@@ -309,7 +366,24 @@ onBeforeUnmount(() => { desiredDrillId = ''; stopLive?.(); if (directorTimer) wi
             <button type="button" @click="toggleControls"><AppIcon name="settings" /><span><strong>场次与显示</strong><small>自动导演、声音、灯光与镜头</small></span><AppIcon name="arrowRight" /></button>
             <button type="button" @click="toggleGuide"><AppIcon name="help" /><span><strong>操作指引</strong><small>用四步完成一次可复盘处置</small></span><AppIcon name="arrowRight" /></button>
           </nav>
-          <div v-else-if="drawer === 'participant' && participantInvite" class="participant-invite participant-invite--embedded"><p>同一局域网打开链接，登记姓名与角色。身份绑定当前设备，任务按责任分配。</p><strong>{{ participantInvite.code }}</strong><label>电脑访问地址<input v-model="participantOrigin" /></label><input :value="participantLink" readonly aria-label="完整参演链接" /><div><button type="button" @click="copyParticipantLink">复制链接</button><button type="button" @click="emit('participant')">本机预览</button></div><p>以下是角色反馈记录，不代表设备在线人数。</p><ul class="participant-presence"><li v-for="participant in current.participants" :key="participant.role"><div><strong>{{ participant.role }}</strong><small>{{ participant.status ?? '等待反馈' }}</small></div></li></ul></div>
+          <div v-else-if="drawer === 'participant' && participantInvite" class="participant-invite participant-invite--embedded">
+            <p>让参演人员在同一局域网打开链接，登记后即可接收责任任务并实时回执。</p>
+            <strong>{{ participantInvite.code }}</strong>
+            <label>电脑访问地址<input v-model="participantOrigin" /></label>
+            <input :value="participantLink" readonly aria-label="完整参演链接" />
+            <div class="participant-invite__actions"><button type="button" @click="copyParticipantLink">复制参演链接</button><button type="button" @click="emit('participant')">本机预览</button></div>
+            <section class="participant-presence-panel" aria-live="polite">
+              <header><div><strong>现场协作</strong><span>设备心跳超过 25 秒自动离线</span></div><b>{{ onlineParticipantCount }} 人在线</b></header>
+              <ul class="participant-presence">
+                <li v-for="participant in current.participants" :key="participant.role" :data-connected="participant.connected">
+                  <div class="participant-presence__role"><i aria-hidden="true"></i><div><strong>{{ participant.role }}</strong><small>{{ participant.status ?? '等待设备上线' }}<template v-if="participant.action_count"> · {{ participant.action_count }} 次有效反馈</template></small></div><b>{{ participant.online_count ?? 0 }}/{{ participant.registered_count ?? 0 }}</b></div>
+                  <ul v-if="participant.members?.length" class="participant-presence__members">
+                    <li v-for="member in participant.members" :key="member.id"><i :data-online="member.online" aria-hidden="true"></i><span>{{ member.name }}</span><time :datetime="member.last_seen_at">{{ member.online ? '在线' : formatPresenceTime(member.last_seen_at) }}</time></li>
+                  </ul>
+                </li>
+              </ul>
+            </section>
+          </div>
           <div v-else-if="drawer === 'settings'" class="scene-control-popover scene-control-popover--embedded">
           <UiSelect v-model="selectedSceneId" label="当前场景" :options="sceneOptions" hint="切换场景后载入对应的历史场次" />
           <UiSelect :model-value="current.id" label="历史场次" :options="drillOptions" @change="changeDrill" @update:model-value="() => undefined" />

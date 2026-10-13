@@ -175,3 +175,21 @@ export function createStreet(length: number, width: number, materials?: SceneMat
   }
   return group
 }
+
+/** Road-aligned closure equipment; width comes from the actual blocked edge. */
+export function createRoadBarrier(width: number) {
+  const group = new THREE.Group()
+  const span = Math.max(.6, Math.min(20, width * .9))
+  box(group, [span, .34, .09], [0, .92, 0], 0xe4dfce)
+  const stripes: Array<[number,number,number,number]> = []
+  const count = Math.max(2, Math.floor(span / .4))
+  for (let i = 0; i < count; i++) if (i % 2 === 0) stripes.push([-span/2 + (i+.5)*span/count, .92, .055, 0])
+  instances(group, new THREE.BoxGeometry(span/count*.85, .32, .02), surface(0xb94d37, .48), stripes)
+  for (const x of [-span*.39, span*.39]) {
+    box(group, [.055, .93, .055], [x, .49, 0], 0x52605b)
+    box(group, [.3, .075, .6], [x, .04, 0], 0x34413b)
+    const lamp = new THREE.Mesh(new THREE.SphereGeometry(.075, 10, 8), new THREE.MeshStandardMaterial({color:0xe9b650,emissive:0x8a5718,emissiveIntensity:.6,roughness:.4}))
+    lamp.position.set(x, 1.19, 0); group.add(lamp)
+  }
+  return group
+}

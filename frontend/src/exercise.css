@@ -91,6 +91,10 @@
 .task-workflow__actions button:disabled { opacity: .45; cursor: not-allowed; }
 .task-workflow__blockers { padding-left: 20px; font-size: 13px; line-height: 1.65; }
 .task-workflow__hint { font-size: 12px !important; }
+.task-workflow__assignment { display: grid; gap: 8px; margin-top: 14px; padding-block: 12px; border-block: 1px solid var(--exercise-line, #557064); }
+.task-workflow__assignment label { margin: 0; color: #d9e8e1; font-size: 14px; }
+.task-workflow__assignment select { width: 100%; min-width: 0; min-height: 44px; border: 1px solid #57796b; border-radius: 8px; background: #173b31; color: #eef6f2; padding-inline: 10px; font-size: 14px; }
+.task-workflow__assignment p { margin: 0; color: #afc6bc; font-size: 13px; line-height: 1.55; overflow-wrap: anywhere; }
 .task-workflow__evidence { padding: 12px; background: #57846620; overflow-wrap: anywhere; }
 .participant-console h2 { font-size: 18px; margin: 0 0 14px; }
 .participant-console .participant-header button { min-height: 44px; }

@@ -13,7 +13,14 @@ export function isNewerState(candidate: VersionedState, current: VersionedState 
   if (!current.state_version) return true
   const next = candidate.state_version.split(':').map(Number)
   const old = current.state_version.split(':').map(Number)
-  return next[0]! > old[0]! || (next[0] === old[0] && next[1]! >= old[1]!)
+  for (let index = 0; index < 2; index += 1) {
+    const nextPart = next[index] ?? 0
+    const oldPart = old[index] ?? 0
+    if (nextPart !== oldPart) return nextPart > oldPart
+  }
+  // Presence is an independently versioned live projection; ordered socket delivery
+  // makes any differing presence revision authoritative for the same simulation tick.
+  return true
 }
 
 export function applyLiveMessage<T extends VersionedState>(previous: T | null, message: LiveMessage<T>): T | null {

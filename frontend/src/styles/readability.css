@@ -1,6 +1,6 @@
 /* Reading scale shared by workspace pages. Spatial labels keep their own scale. */
-:root { --ui-body-size: 16px; --ui-label-size: 15px; --ui-meta-size: 14px; }
-:root[data-reading-size="large"] { --ui-body-size: 18px; --ui-label-size: 17px; --ui-meta-size: 16px; }
+:root { --ui-body-size: 16px; --ui-label-size: 16px; --ui-meta-size: 14px; }
+:root[data-reading-size="large"] { --ui-body-size: 18px; --ui-label-size: 18px; --ui-meta-size: 16px; }
 html .atlas-home, html .atlas-preparation, html .atlas-replay { font-size: var(--ui-body-size); }
 html .atlas-home :is(.atlas-home__title p,.atlas-case__details>p,.home-guide-steps p,.home-guide-note p,.home-project-info p,.home-create label,.home-create input,.home-create textarea),
 html .atlas-preparation :is(.atlas-preparation__inspector p,.atlas-properties input,.atlas-properties select),

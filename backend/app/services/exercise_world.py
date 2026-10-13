@@ -55,6 +55,7 @@ def projected_tasks(world: dict, events: list, elapsed: int, simulation: dict, r
     result = []
     for source in world["tasks"]:
         history = [e for e in events if e.payload.get("task_id") == source["id"]]
+        assigned = next((e for e in reversed(history) if e.event_type == "task.assigned"), None)
         accepted = next((e for e in history if e.event_type == "task.accepted"), None)
         arrived = next((e for e in history if e.event_type == "task.arrived"), None)
         done = next((e for e in history if e.event_type == "task.completed"), None)
@@ -69,5 +70,6 @@ def projected_tasks(world: dict, events: list, elapsed: int, simulation: dict, r
             blockers.append("请先接收任务并回执到位")
         elif elapsed - arrived.elapsed_seconds < source["duration_seconds"]:
             blockers.append(f"处置还需 {source['duration_seconds'] - (elapsed - arrived.elapsed_seconds)} 秒")
-        result.append({**source, "status": state, "overdue": confirmed is not None and remaining < 0 and not done, "remaining_seconds": max(0, remaining), "assignee": accepted.actor if accepted else None, "assignee_id": accepted.payload.get("participant_id") if accepted else None, "blockers": blockers, "can_submit": bool(arrived and not blockers and not done), "evidence": done.payload.get("evidence") if done else None, "completed_at": done.elapsed_seconds if done else None})
+        owner = accepted or assigned
+        result.append({**source, "status": state, "overdue": confirmed is not None and remaining < 0 and not done, "remaining_seconds": max(0, remaining), "assignee": owner.actor if owner else None, "assignee_id": owner.payload.get("participant_id") if owner else None, "assignment_locked": accepted is not None, "blockers": blockers, "can_submit": bool(arrived and not blockers and not done), "evidence": done.payload.get("evidence") if done else None, "completed_at": done.elapsed_seconds if done else None})
     return result

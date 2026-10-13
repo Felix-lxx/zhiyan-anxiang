@@ -28,10 +28,12 @@ const planSimulation=computed(()=>current.value?.simulation as Simulation|undefi
 const taskStep=computed(()=>({waiting:0,pending:0,executing:1,verifying:2,completed:3}[activeTask.value?.status??'']??0))
 const invite = ref(props.inviteCode ?? '')
 const displayName = ref(''), countedResidents = ref<string[]>([])
-const member = ref<{ token: string; role: string; name: string } | null>(null)
-const myTasks = computed(() => current.value?.tasks.filter(t => !t.responsible_role || t.responsible_role === role.value) ?? [])
+const member = ref<{ token: string; role: string; name: string; participant_id: string } | null>(null)
+const presence = ref<'offline' | 'syncing' | 'online'>('offline')
+const myTasks = computed(() => current.value?.tasks.filter(t => (!t.responsible_role || t.responsible_role === role.value) && (!t.assignee_id || t.assignee_id === member.value?.participant_id)) ?? [])
 const canAct = computed(() => !busy.value && current.value?.status === 'running' && ((current.value.engine_version ?? 1) < 2 || Boolean(member.value)))
 let stopLive: (() => void) | undefined
+let heartbeatTimer: number | null = null
 function applyCurrent(value: Drill) { if (!disposed && value.id === current.value?.id && isNewerState(value, current.value)) current.value = value }
 let disposed = false
 const roles = ['应急指挥人员', '物业/网格员', '居民代表']
@@ -59,9 +61,10 @@ function selectDrill(drill: Drill): void {
   stopLive?.()
   current.value = drill; connected.value = false
   try { member.value = JSON.parse(localStorage.getItem('zhiyan_member_' + drill.id) ?? 'null'); if (member.value) role.value = member.value.role } catch { member.value = null }
-  if (!invite.value && props.accessToken) void api.get<{code:string}>('/drills/' + drill.id + '/participant-invite').then(data => { if(!disposed) invite.value = data.code }).catch(cause=>{if(!disposed) error.value=cause instanceof Error?cause.message:'加入码读取失败，请重试。'})
+  if (!invite.value && props.accessToken) void api.get<{code:string}>('/drills/' + drill.id + '/participant-invite').then(data => { if(!disposed) { invite.value = data.code; startHeartbeat() } }).catch(cause=>{if(!disposed) error.value=cause instanceof Error?cause.message:'加入码读取失败，请重试。'})
   const credential = props.inviteCode ? `code=${encodeURIComponent(props.inviteCode)}` : `token=${encodeURIComponent(props.accessToken ?? '')}`
   stopLive = connectLive<Drill>({ url: api.websocketUrl(`/api/v1/ws/drills/${drill.id}?${credential}`), drillId: drill.id, onState: applyCurrent, onStatus: state => { connected.value = state === 'live' }, onError: message => { error.value = message } })
+  startHeartbeat()
 }
 function selectRole(value: string): void { if (member.value) return; role.value = value; localStorage.setItem('zhiyan_participant_role', value) }
 async function join(): Promise<void> {
@@ -70,9 +73,38 @@ async function join(): Promise<void> {
   try {
     member.value = await api.request(props.apiBaseUrl + '/participant/drills/' + current.value.id + '/join?code=' + encodeURIComponent(invite.value), { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ role: role.value, display_name: displayName.value.trim() }) })
     localStorage.setItem('zhiyan_member_' + current.value.id, JSON.stringify(member.value))
+    startHeartbeat()
   } catch (cause) { error.value = cause instanceof Error ? cause.message : '登记失败，请重试' } finally { busy.value = false }
 }
-function clearIdentity(): void { if (current.value) localStorage.removeItem('zhiyan_member_' + current.value.id); member.value = null; error.value = '' }
+async function heartbeat(): Promise<void> {
+  if (!current.value || !member.value || !invite.value || disposed) return
+  presence.value = 'syncing'
+  try {
+    const live = await api.request<{ participant_id: string; role: string; name: string }>(`${props.apiBaseUrl}/participant/drills/${current.value.id}/heartbeat?code=${encodeURIComponent(invite.value)}`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ participant_token: member.value.token }) })
+    if (member.value.participant_id !== live.participant_id) {
+      member.value = { ...member.value, participant_id: live.participant_id }
+      localStorage.setItem('zhiyan_member_' + current.value.id, JSON.stringify(member.value))
+    }
+    presence.value = 'online'
+  } catch { presence.value = 'offline' }
+}
+function startHeartbeat(): void {
+  if (heartbeatTimer !== null) window.clearInterval(heartbeatTimer)
+  heartbeatTimer = null
+  if (!member.value || !invite.value) return
+  void heartbeat()
+  heartbeatTimer = window.setInterval(() => void heartbeat(), 10_000)
+}
+async function clearIdentity(): Promise<void> {
+  const drill = current.value, identity = member.value
+  if (drill && identity && invite.value) {
+    try { await api.request(`${props.apiBaseUrl}/participant/drills/${drill.id}/leave?code=${encodeURIComponent(invite.value)}`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ participant_token: identity.token }) }) } catch { /* Local reset still recovers an invalid identity. */ }
+  }
+  if (heartbeatTimer !== null) window.clearInterval(heartbeatTimer)
+  heartbeatTimer = null; presence.value = 'offline'
+  if (drill) localStorage.removeItem('zhiyan_member_' + drill.id)
+  member.value = null; error.value = ''
+}
 async function action(actionName: 'acknowledge' | 'arrived' | 'resource_ready' | 'resident_counted' | 'report', message: string): Promise<void> {
   if (!current.value) return; busy.value = true; error.value = ''
   try { const path = invite.value ? `/participant/drills/${current.value.id}/actions?code=${encodeURIComponent(invite.value)}` : `/drills/${current.value.id}/participant-actions`; applyCurrent(await api.request<Drill>(`${props.apiBaseUrl}${path}`, { method: 'POST', headers: { ...headers(), 'Content-Type': 'application/json' }, body: JSON.stringify({ role: role.value, action: actionName, message, resident_ids: countedResidents.value, participant_token: member.value?.token }) })); notice.value='反馈已写入本场证据，导演台将同步更新'; if(actionName==='report'){reportOpen.value=false;reportText.value=''} }
@@ -83,13 +115,14 @@ async function completeTask(taskId: string, taskAction: 'accept' | 'arrive' | 's
   try { const path = `/participant/drills/${current.value.id}/tasks/${taskId}/actions?code=${encodeURIComponent(invite.value)}`; applyCurrent(await api.request<Drill>(`${props.apiBaseUrl}${path}`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ action: taskAction, evidence, participant_token: member.value?.token }) })); notice.value = taskAction === 'submit' ? '处置已核验，现场与过程评分同步更新' : taskAction === 'accept' ? '已接收任务，请到目标位置后回执到位' : '到位回执已记录，请完成处置后提交证据' }
   catch (cause) { error.value = cause instanceof Error ? cause.message : '任务提交失败。' } finally { busy.value = false }
 }
-onMounted(() => void load())
-onBeforeUnmount(() => { disposed = true; stopLive?.() })
+function syncWhenVisible(): void { if (document.visibilityState === 'visible') void heartbeat() }
+onMounted(() => { document.addEventListener('visibilitychange', syncWhenVisible); void load() })
+onBeforeUnmount(() => { disposed = true; stopLive?.(); if (heartbeatTimer !== null) window.clearInterval(heartbeatTimer); document.removeEventListener('visibilitychange', syncWhenVisible) })
 </script>
 
 <template>
   <main id="main-content" class="participant-console atlas-participant" data-ui-theme="immersive">
-    <header class="participant-header"><button type="button" @click="emit('back')"><AppIcon name="back" />退出参演</button><div><strong>{{ current?.name ?? '智演安巷' }}</strong></div><i :data-live="connected">{{ connected ? '实时' : '离线' }}</i></header>
+    <header class="participant-header"><button type="button" @click="emit('back')"><AppIcon name="back" />退出参演</button><div><strong>{{ current?.name ?? '智演安巷' }}</strong></div><i :data-live="connected && (!member || presence === 'online')">{{ !connected ? '现场断线' : member && presence !== 'online' ? '身份同步中' : '实时在线' }}</i></header>
     <section v-if="!current" class="participant-empty"><h1>正在加入演练</h1><p>{{ error || '正在读取现场与责任任务…' }}</p><button type="button" @click="load">重新连接</button></section>
     <template v-else>
       <section id="participant-scene" class="participant-hero" :data-alarm="current.status === 'running' && current.simulation.fire.intensity > 35"><div><span>{{ statusLabel }}</span><h1>{{ current.status === 'ended' ? '本轮演练已结束' : member ? '做好当前这一项处置' : '登记身份，接收责任任务' }}</h1><p>{{ current.status === 'ended' ? '下方保留你的任务结果，未完成项不再接受提交。' : latestAlert }}</p></div><strong>{{ clock }}</strong></section>

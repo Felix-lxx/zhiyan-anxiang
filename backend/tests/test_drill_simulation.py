@@ -78,6 +78,22 @@ def test_block_applies_at_event_time_and_replay_does_not_leak_future(road_graph)
     assert len(points) == 1
 
 
+def test_robot_route_avoids_live_queue_when_safe_alternative_exists():
+    nodes = [
+        {"id": "a", "name": "起点", "x": 0, "y": 0},
+        {"id": "b", "name": "拥堵路口", "x": 10, "y": -4},
+        {"id": "c", "name": "备用路口", "x": 10, "y": 4},
+        {"id": "d", "name": "终点", "x": 20, "y": 0},
+    ]
+    lookup = {node["id"]: node for node in nodes}
+    edges = []
+    for start, end, density, waiting in (("a", "b", 100, 4), ("b", "d", 100, 4), ("a", "c", 0, 0), ("c", "d", 0, 0)):
+        edges.append({"id": start+end, "name": start+end, "start_node_id": start, "end_node_id": end, "start": lookup[start], "end": lookup[end], "width_meters": 3, "status": "open", "density_percent": density, "waiting_count": waiting})
+    _, _, route_edges, _, risks = plan_route({"nodes": nodes, "edges": edges}, (0, 0), (20, 0), 0)
+    assert route_edges == ["ac", "cd"]
+    assert all(item["traffic_penalty"] == 0 for item in risks)
+
+
 def test_parallel_worlds_share_history_then_diverge(road_graph):
     block = event("inject.channel_blocked", 20, {"blocked_edge_id": "cs", "x": 84, "y": 68})
     left_start = simulate_residents(road_graph, [block], 20, "south_standard", 20)

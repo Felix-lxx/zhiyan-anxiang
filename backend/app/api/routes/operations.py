@@ -9,7 +9,7 @@ from functools import wraps
 from threading import RLock
 from copy import deepcopy
 from types import SimpleNamespace
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 
 from fastapi import APIRouter, Depends, HTTPException, WebSocket, WebSocketDisconnect, status
 from sqlalchemy import delete, func, select
@@ -19,9 +19,9 @@ from app.api.routes.auth import AuthenticatedIdentity, authenticate_access_token
 from app.api.routes.scenes import owned_community
 from app.core.database import SessionLocal, get_db
 from app.models.domain import RoadEdge, RoadEdgeStatus, RoadNode, Scene, SceneStatus, SceneVersion
-from app.models.operations import DrillCommand, DrillEngineLease, DrillEvent, DrillScore, DrillSession, DrillStateSnapshot, RobotAgent
+from app.models.operations import DrillCommand, DrillEngineLease, DrillEvent, DrillScore, DrillSession, DrillStateSnapshot, ParticipantSession, RobotAgent
 from app.models.tasks import DecisionTask
-from app.schemas.operations import BranchCompareRequest, DrillAction, DrillCreate, EventInject, ParticipantAction, ResidentCommand, RobotCommand, ParticipantJoin, TaskAction, DirectorConfig
+from app.schemas.operations import BranchCompareRequest, DrillAction, DrillCreate, EventInject, ParticipantAction, ResidentCommand, RobotCommand, ParticipantHeartbeat, ParticipantJoin, TaskAction, TaskAssignment, DirectorConfig
 from app.services.drill_simulation import plan_route, simulate_residents
 from app.services.exercise_world import capture_world, frozen_world, projected_tasks
 from app.schemas.operations import EditableBranchCreate, SearchAssignment
@@ -33,6 +33,7 @@ from app.services.state_store import load_snapshot, persist_snapshot
 
 
 router = APIRouter(tags=["drill operations"])
+PARTICIPANT_ONLINE_SECONDS = 25
 
 # SQLite local deployment: serialize whole command transactions, not just inserts.
 # Reentrant because director/engine commands reuse the same validated handlers.
@@ -47,13 +48,45 @@ def serialized_command(function):
     return wrapped
 
 
-def participant_identity(session: Session, drill: DrillSession, token: str | None) -> dict:
+def aware(value: datetime) -> datetime:
+    return value if value.tzinfo else value.replace(tzinfo=UTC)
+
+
+def participant_identity(session: Session, drill: DrillSession, token: str | None, *, touch: bool = True) -> dict:
     digest = hashlib.sha256((token or "").encode()).hexdigest()
+    record = session.scalar(select(ParticipantSession).where(
+        ParticipantSession.drill_session_id == drill.id,
+        ParticipantSession.token_hash == digest,
+        ParticipantSession.left_at.is_(None),
+    ))
+    if record:
+        if touch:
+            record.last_seen_at = datetime.now(UTC)
+        return {"participant_id": record.id, "role": record.role, "name": record.display_name}
     events = session.scalars(select(DrillEvent).where(DrillEvent.drill_session_id == drill.id, DrillEvent.event_type == "participant.joined"))
     member = next((e.payload for e in events if secrets.compare_digest(e.payload.get("token_hash", ""), digest)), None)
     if not member:
         raise HTTPException(403, "请先登记参演身份；本场身份凭证缺失或无效。")
-    return member
+    record = ParticipantSession(
+        id=member["participant_id"], drill_session_id=drill.id, role=member["role"],
+        display_name=member["name"], token_hash=digest, last_seen_at=datetime.now(UTC),
+    )
+    session.add(record)
+    session.flush()
+    return {"participant_id": record.id, "role": record.role, "name": record.display_name}
+
+
+def participant_presence_revision(session: Session, drill_id: str) -> int:
+    sessions = list(session.scalars(select(ParticipantSession).where(
+        ParticipantSession.drill_session_id == drill_id,
+    )))
+    if not sessions:
+        return 0
+    now = datetime.now(UTC)
+    latest = max(int(aware(item.last_seen_at).timestamp()) for item in sessions)
+    offline_count = sum(1 for item in sessions if item.left_at is not None or (now - aware(item.last_seen_at)).total_seconds() > PARTICIPANT_ONLINE_SECONDS)
+    # Heartbeats advance the epoch component; each independent expiry also changes the suffix.
+    return latest * 10_000 + min(offline_count, 9_999)
 
 
 def validate_feedback(session: Session, drill: DrillSession, payload: ParticipantAction) -> None:
@@ -137,10 +170,37 @@ def join_participant(drill_id: str, code: str, payload: ParticipantJoin, session
     if payload.role not in {p["role"] for p in drill.participants} - {"演练总控/导演"}:
         raise HTTPException(422, "无效参演角色。")
     token = secrets.token_urlsafe(32)
-    member = {"participant_id": secrets.token_hex(12), "role": payload.role, "name": payload.display_name, "token_hash": hashlib.sha256(token.encode()).hexdigest()}
+    record = ParticipantSession(
+        drill_session_id=drill.id, role=payload.role, display_name=payload.display_name,
+        token_hash=hashlib.sha256(token.encode()).hexdigest(),
+    )
+    session.add(record)
+    session.flush()
+    member = {"participant_id": record.id, "role": record.role, "name": record.display_name, "token_hash": record.token_hash}
     append_event(session, drill, "participant.joined", payload.role, f"{payload.display_name}登记加入，身份固定为{payload.role}。", member)
     commit_changes(session)
-    return {"token": token, "role": payload.role, "name": payload.display_name, "participant_id": member["participant_id"]}
+    return {"token": token, "role": record.role, "name": record.display_name, "participant_id": record.id}
+
+
+@router.post("/participant/drills/{drill_id}/heartbeat")
+@serialized_command
+def participant_heartbeat(drill_id: str, code: str, payload: ParticipantHeartbeat, session: Session = Depends(get_db)):
+    drill = require_participant_drill(session, drill_id, code)
+    member = participant_identity(session, drill, payload.participant_token)
+    session.commit()
+    return {**member, "online": True, "server_time": datetime.now(UTC).isoformat()}
+
+
+@router.post("/participant/drills/{drill_id}/leave")
+@serialized_command
+def leave_participant(drill_id: str, code: str, payload: ParticipantHeartbeat, session: Session = Depends(get_db)):
+    drill = require_participant_drill(session, drill_id, code)
+    member = participant_identity(session, drill, payload.participant_token, touch=False)
+    record = session.get(ParticipantSession, member["participant_id"])
+    if record:
+        record.left_at = datetime.now(UTC)
+        session.commit()
+    return {"participant_id": member["participant_id"], "online": False}
 
 
 @serialized_command
@@ -194,6 +254,39 @@ def director_task_action(drill_id: str, task_id: str, payload: TaskAction, ident
     if not task:
         raise HTTPException(404, "未找到任务。")
     return perform_task(session, drill, task_id, payload, {"participant_id": "director:" + identity.username, "name": "总控代办：" + identity.username, "role": task["responsible_role"]})
+
+
+@router.post("/drills/{drill_id}/tasks/{task_id}/assign")
+@serialized_command
+def assign_task(drill_id: str, task_id: str, payload: TaskAssignment, identity: AuthenticatedIdentity = Depends(get_current_identity), session: Session = Depends(get_db)):
+    drill = require_drill(session, drill_id, identity.username)
+    if drill.status != "running":
+        raise HTTPException(409, "只有运行中的演练可以指派任务。")
+    data = snapshot(session, drill)
+    task = next((item for item in data["tasks"] if item["id"] == task_id), None)
+    if not task or data["engine_version"] < 2:
+        raise HTTPException(404, "未找到可指派的场次任务。")
+    if task["status"] not in {"waiting", "pending"} or task.get("assignment_locked"):
+        raise HTTPException(409, "任务已被接收或进入处置阶段，不能重新指派。")
+    member = session.scalar(select(ParticipantSession).where(
+        ParticipantSession.id == payload.participant_id,
+        ParticipantSession.drill_session_id == drill.id,
+        ParticipantSession.left_at.is_(None),
+    ))
+    if not member:
+        raise HTTPException(404, "参演成员已离开本场，请刷新在线列表后重新选择。")
+    if member.role != task["responsible_role"]:
+        raise HTTPException(422, f"该任务只能指派给{task['responsible_role']}。")
+    if (datetime.now(UTC) - aware(member.last_seen_at)).total_seconds() > PARTICIPANT_ONLINE_SECONDS:
+        raise HTTPException(409, "该成员当前离线，请选择在线成员或等待其重新连接。")
+    if task.get("assignee_id") == member.id:
+        return data
+    append_event(session, drill, "task.assigned", member.display_name, f"{task['title']}已指派给{member.display_name}。", {
+        "task_id": task_id, "participant_id": member.id, "role": member.role,
+        "assigned_name": member.display_name, "assigned_by": identity.username,
+    })
+    commit_changes(session)
+    return snapshot(session, drill)
 
 
 @router.patch("/drills/{drill_id}/director/config")
@@ -259,8 +352,17 @@ def plan_robot_route(
     start: tuple[float, float],
     target: tuple[float, float],
 ) -> tuple[list[str], list[dict], list[str], float, list[dict]]:
-    events = list(session.scalars(select(DrillEvent).where(DrillEvent.drill_session_id == drill.id)))
-    return plan_route(road_network_state(session, drill, events), start, target, effective_elapsed(drill))
+    events = list(session.scalars(select(DrillEvent).where(DrillEvent.drill_session_id == drill.id).order_by(DrillEvent.sequence)))
+    elapsed = effective_elapsed(drill)
+    network = road_network_state(session, drill, events)
+    world = frozen_world(session, drill)
+    if world and world.get("schema_version", 2) >= 3:
+        evidence = [{"sequence": event.sequence, "elapsed_seconds": event.elapsed_seconds, "event_type": event.event_type, "payload": event.payload} for event in events]
+        live_network = simulate_residents(network, evidence, elapsed, world=world)["road_network"]
+        live_network["fire_origin"] = network.get("fire_origin", world["fire_origin"])
+        live_network["obstacles"] = network.get("obstacles", [])
+        network = live_network
+    return plan_route(network, start, target, elapsed)
 
 
 def route_position(points: list[dict], progress: float) -> tuple[float, float]:
@@ -427,7 +529,7 @@ def calculate_score_data(session: Session, drill: DrillSession, events: list[Dri
     total_tasks = session.scalar(select(func.count(DecisionTask.id)).where(DecisionTask.scene_version_id == drill.scene_version_id)) or 0
     simulation = simulation if simulation is not None else simulation_state(drill, events, session=session)
     safety_score = max(0, 10 - min(10, simulation["summary"]["smoke_exposed"] // 2 + simulation["summary"]["missing"] * 3))
-    participant_roles = {event.actor for event in events if event.event_type.startswith("participant.")}
+    participant_roles = {event.actor for event in events if event.event_type.startswith("participant.") and event.event_type != "participant.joined"}
     resident_commands = [event for event in events if event.event_type == "resident.command"]
     exact_block = any(event.event_type == "inject.channel_blocked" and event.payload.get("blocked_edge_id") for event in events)
     valid_replan = any(event.event_type == "robot.replanned" and len(event.payload.get("route_points", [])) > 1 and event.payload.get("route_edge_ids") for event in events)
@@ -580,14 +682,37 @@ def snapshot(session: Session, drill: DrillSession) -> dict:
     completed_task_ids = {event.payload.get("task_id") for event in all_events if event.event_type == "task.completed"}
     elapsed = effective_elapsed(drill)
     live_robot = robot_runtime(robot, all_events, elapsed)
-    participant_events = [event for event in all_events if event.event_type.startswith("participant.")]
+    participant_events = [event for event in all_events if event.event_type.startswith("participant.") and event.event_type != "participant.joined"]
+    participant_sessions = list(session.scalars(select(ParticipantSession).where(
+        ParticipantSession.drill_session_id == drill.id,
+        ParticipantSession.left_at.is_(None),
+    ).order_by(ParticipantSession.joined_at)))
+    online_cutoff = datetime.now(UTC) - timedelta(seconds=PARTICIPANT_ONLINE_SECONDS)
     participant_state = []
     action_labels = {"acknowledge": "已确认警报", "arrived": "已到达岗位", "resource_ready": "资源已就绪", "resident_counted": "已完成清点"}
     for participant in drill.participants:
         role_events = [event for event in participant_events if event.actor == participant.get("role")]
         latest = role_events[-1] if role_events else None
         action = latest.event_type.removeprefix("participant.") if latest else None
-        participant_state.append({**participant, "connected": participant.get("role") == "演练总控/导演" or bool(role_events), "status": action_labels.get(action, "等待反馈" if drill.status == "running" else "已就绪"), "last_action": action, "last_message": latest.message if latest else None, "last_seen_seconds": latest.elapsed_seconds if latest else None, "action_count": len(role_events)})
+        role_sessions = [item for item in participant_sessions if item.role == participant.get("role")]
+        members = [{
+            "id": item.id,
+            "name": item.display_name,
+            "online": aware(item.last_seen_at) >= online_cutoff,
+            "last_seen_at": aware(item.last_seen_at).isoformat(),
+        } for item in role_sessions]
+        online_count = sum(1 for item in members if item["online"])
+        if participant.get("role") == "演练总控/导演":
+            online_count = 1
+            members = [{"id": "director", "name": "演练总控", "online": True, "last_seen_at": datetime.now(UTC).isoformat()}]
+        status_text = f"{online_count} 人在线" if online_count else action_labels.get(action, "等待设备上线" if drill.status == "running" else "当前离线")
+        participant_state.append({
+            **participant, "connected": online_count > 0, "online_count": online_count,
+            "registered_count": len(role_sessions) if role_sessions else (1 if participant.get("role") == "演练总控/导演" else 0),
+            "members": members, "status": status_text, "last_action": action,
+            "last_message": latest.message if latest else None,
+            "last_seen_seconds": latest.elapsed_seconds if latest else None, "action_count": len(role_events),
+        })
     simulation = simulation_state(drill, all_events, elapsed, session=session)
     world = simulation.get("world")
     task_states = projected_tasks(world, all_events, elapsed, simulation, live_robot) if world else None
@@ -606,7 +731,7 @@ def snapshot(session: Session, drill: DrillSession) -> dict:
         "score_preview": score_preview,
         "simulation": simulation,
         "latest_event_sequence": all_events[-1].sequence if all_events else 0,
-        "state_version": state_version(all_events[-1].sequence if all_events else 0, elapsed),
+        "state_version": state_version(all_events[-1].sequence if all_events else 0, elapsed, participant_presence_revision(session, drill.id)),
         "commands": ledger_feedback(session, drill, derived_commands),
     }
 
@@ -655,7 +780,8 @@ def list_drills(scene_id: str, summary: bool = False, identity: AuthenticatedIde
 @router.get("/drills/{drill_id}")
 def get_drill(drill_id: str, identity: AuthenticatedIdentity = Depends(get_current_identity), session: Session = Depends(get_db)):
     drill = require_drill(session, drill_id, identity.username)
-    advance_engine(session, drill)
+    # Opening a view must not queue behind an unrelated engine write transaction.
+    # Only the scheduler and explicit commands reconcile execution milestones.
     return snapshot(session, drill)
 
 
@@ -797,7 +923,7 @@ def preview_robot_target(drill_id: str, payload: RobotCommand, identity: Authent
         "route_points": points, "route_edge_ids": edge_ids, "route_distance": distance,
         "planned_duration_seconds": max(8, round(distance / 3.5)) if reachable else None,
         "queue_position": len(pending) + 1, "risk_score": round(sum(item["cost"] for item in risks) / max(1, len(risks)), 1),
-        "risk_details": risks, "notice": "A* 按封锁、道路宽度与当前烟气风险计算；确认前不会写入任务队列。",
+        "risk_details": risks, "notice": "A* 按封锁、道路宽度、实时通行密度、入口排队与当前烟气风险计算；确认前不会写入任务队列。",
         "score_impact": {"before": state["score_preview"]["total_score"], "after": state["score_preview"]["total_score"], "delta": 0, "note": "加入队列本身不计分；机器人到达并完成现场动作后才形成得分证据。"},
     }
 
@@ -1521,11 +1647,11 @@ def execute_live_command(drill_id: str, payload: LiveCommand, identity: Authenti
         "state": (DrillAction, change_state), "event.inject": (EventInject, inject_event),
         "residents.assign": (ResidentCommand, command_residents), "robot.command": (RobotCommand, command_robot),
         "search.assign": (SearchAssignment, assign_search), "participant.feedback": (ParticipantAction, participant_action),
-        "task.action": (TaskAction, director_task_action), "director.configure": (DirectorConfig, configure_director),
+        "task.assign": (TaskAssignment, assign_task), "task.action": (TaskAction, director_task_action), "director.configure": (DirectorConfig, configure_director),
     }
-    if payload.kind in {"road.reopen", "task.action"} and not payload.target_id:
+    if payload.kind in {"road.reopen", "task.assign", "task.action"} and not payload.target_id:
         raise HTTPException(422, "请选择本场道路或处置任务。")
-    labels = {"state": "演练状态已更新", "event.inject": "现场扰动已生效", "road.reopen": "道路通行已恢复", "residents.assign": "居民撤离指令", "robot.command": "机器人指令", "search.assign": "搜索责任已指派", "participant.feedback": "参演反馈已记录", "task.action": "处置任务已更新", "director.configure": "事件导演设置已更新"}
+    labels = {"state": "演练状态已更新", "event.inject": "现场扰动已生效", "road.reopen": "道路通行已恢复", "residents.assign": "居民撤离指令", "robot.command": "机器人指令", "search.assign": "搜索责任已指派", "participant.feedback": "参演反馈已记录", "task.assign": "处置任务已指派", "task.action": "处置任务已更新", "director.configure": "事件导演设置已更新"}
     command_record = DrillCommand(
         drill_session_id=drill.id,
         command_id=payload.command_id,
@@ -1549,7 +1675,7 @@ def execute_live_command(drill_id: str, payload: LiveCommand, identity: Authenti
         else:
             schema, handler = dispatch[payload.kind]
             arguments = schema.model_validate(payload.arguments)
-            if payload.kind == "task.action":
+            if payload.kind in {"task.assign", "task.action"}:
                 result = handler(drill_id, payload.target_id, arguments, identity, session)
             else:
                 result = handler(drill_id, arguments, identity, session)
@@ -1657,7 +1783,7 @@ async def drill_socket(websocket: WebSocket, drill_id: str, token: str | None = 
                 return snapshot(session, drill)
             # Only the scheduler advances v2 live sessions. Observers never tick it.
             sequence = session.scalar(select(func.max(DrillEvent.sequence)).where(DrillEvent.drill_session_id == drill_id)) or 0
-            version = state_version(sequence, effective_elapsed(drill))
+            version = state_version(sequence, effective_elapsed(drill), participant_presence_revision(session, drill.id))
             return live_snapshots.get(drill_id, version, lambda: load_snapshot(session, drill_id, version) or snapshot(session, drill))
 
     try:

@@ -54,8 +54,11 @@ def plan_route(network: dict, start: tuple[float, float], target: tuple[float, f
         fire_penalty = max(0, smoke_radius - fire_distance) * 1.8
         width_penalty = 12 / max(1, edge["width_meters"])
         restricted_penalty = 12 if edge["status"] == "restricted" else 0
-        cost = distance + fire_penalty + width_penalty + restricted_penalty
-        diagnostics[edge["id"]] = {"edge_id": edge["id"], "name": edge["name"], "distance": round(distance, 2), "width_meters": edge["width_meters"], "fire_penalty": round(fire_penalty, 2), "width_penalty": round(width_penalty, 2), "restricted_penalty": restricted_penalty, "cost": round(cost, 2)}
+        density = max(0., min(1., float(edge.get("density_percent", 0))/100))
+        waiting = max(0, int(edge.get("waiting_count", 0)))
+        traffic_penalty = density*density*18 + waiting*2
+        cost = distance + fire_penalty + width_penalty + restricted_penalty + traffic_penalty
+        diagnostics[edge["id"]] = {"edge_id": edge["id"], "name": edge["name"], "distance": round(distance, 2), "width_meters": edge["width_meters"], "fire_penalty": round(fire_penalty, 2), "width_penalty": round(width_penalty, 2), "restricted_penalty": restricted_penalty, "density_percent": edge.get("density_percent", 0), "waiting_count": waiting, "traffic_penalty": round(traffic_penalty, 2), "cost": round(cost, 2)}
         adjacency[a["id"]].append((b["id"], cost, edge["id"]))
         adjacency[b["id"]].append((a["id"], cost, edge["id"]))
     frontier = [(0.0, first["id"])]

@@ -31,6 +31,12 @@ def test_join_code_and_exception_report(client: TestClient):
     assert resolved.status_code == 200 and resolved.json()['drill_id'] == drill_id
     assert client.get('/api/v1/participant/resolve?code=bad').status_code == 422
     member = client.post(f'/api/v1/participant/drills/{drill_id}/join?code={code}', json={'role': '物业/网格员', 'display_name': '测试处置组'}).json()
+    heartbeat = client.post(f'/api/v1/participant/drills/{drill_id}/heartbeat?code={code}', json={'participant_token': member['token']})
+    assert heartbeat.status_code == 200 and heartbeat.json()['online'] is True
+    presence = client.get(f'/api/v1/participant/drills/{drill_id}?code={code}').json()
+    property_role = next(item for item in presence['participants'] if item['role'] == '物业/网格员')
+    assert property_role['online_count'] == 1
+    assert property_role['members'][0]['name'] == '测试处置组'
     path = f'/api/v1/participant/drills/{drill_id}/actions?code={code}'
     payload = {'role': '物业/网格员', 'action': 'report', 'message': '北门附近道路受阻，请求导演核查。', 'participant_token': member['token']}
     assert client.post(path, json=payload).status_code == 409
@@ -39,5 +45,8 @@ def test_join_code_and_exception_report(client: TestClient):
     assert report.status_code == 200
     assert any(e['event_type']=='participant.report' and payload['message'] in e['message'] for e in report.json()['events'])
     assert client.post(path, json={**payload, 'participant_token':'invalid'}).status_code == 403
+    assert client.post(f'/api/v1/participant/drills/{drill_id}/leave?code={code}', json={'participant_token': member['token']}).status_code == 200
+    presence = client.get(f'/api/v1/participant/drills/{drill_id}?code={code}').json()
+    assert next(item for item in presence['participants'] if item['role'] == '物业/网格员')['online_count'] == 0
     client.patch(f'/api/v1/drills/{drill_id}/state', headers=headers, json={'action':'end'})
     assert client.get('/api/v1/participant/resolve', params={'code':code}).status_code == 404

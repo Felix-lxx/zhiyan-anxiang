@@ -3,7 +3,7 @@ from sqlalchemy import select
 
 from app.api.routes import operations
 from app.models.domain import MapObject, SceneVersion, RoadNode
-from app.models.operations import DrillEvent
+from app.models.operations import DrillEvent, DrillSession
 from app.services.drill_simulation import plan_route, clear_segment
 
 
@@ -19,6 +19,9 @@ def exercise(client, monkeypatch):
     public = '/api/v1/participant/drills/' + demo["drill_id"]
     def tick(t):
         clock["t"] = t
+        # The scheduler owns advancement; opening GET /drills is now read-only.
+        with operations.SessionLocal() as session:
+            operations.advance_engine(session, session.get(DrillSession, demo["drill_id"]))
         response = client.get(root, headers=headers)
         assert response.status_code == 200, response.text
         return response.json()
@@ -64,6 +67,14 @@ def test_perception_task_identity_evidence_and_replay(exercise):
     task = next(t for t in data["tasks"] if t["kind"] == "power_off")
     join = lambda role: client.post(public + '/join?code=' + code, json={"role": role, "display_name": role + '测试员'}).json()
     owner, foreign = join('物业/网格员'), join('居民代表')
+    assigned = client.post(root + '/commands', headers=headers, json={
+        'command_id': 'assign-property-task-001', 'kind': 'task.assign', 'target_id': task['id'],
+        'arguments': {'participant_id': owner['participant_id']},
+    })
+    assert assigned.status_code == 200, assigned.text
+    assigned_task = next(item for item in assigned.json()['tasks'] if item['id'] == task['id'])
+    assert assigned_task['assignee_id'] == owner['participant_id']
+    assert assigned_task['assignee'] == '物业/网格员测试员'
     def act(action, member=owner, evidence=''):
         return client.post(public + '/tasks/' + task["id"] + '/actions?code=' + code, json={"action": action, "participant_token": member["token"], "evidence": evidence})
     assert act('accept', foreign).status_code == 403

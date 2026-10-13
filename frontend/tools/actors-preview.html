@@ -1,0 +1,37 @@
+<!doctype html>
+<html lang="zh-CN"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>智演安巷 · 角色模型验收</title>
+<style>
+*{box-sizing:border-box}body{margin:0;background:#e9ece7;color:#193b32;font:16px/1.6 system-ui,sans-serif}header{padding:28px 40px;border-bottom:1px solid #c4cec5;display:flex;justify-content:space-between;align-items:center;gap:20px}h1{font-size:24px;margin:0}p{margin:4px 0;color:#51675d}main{height:calc(100vh - 210px);min-height:400px}canvas{display:block;width:100%;height:100%}footer{display:flex;justify-content:space-around;gap:16px;padding:20px 32px}strong{display:block;font-size:18px}button{padding:10px 18px;color:#193b32;background:#fff;border:1px solid #9aac9f;border-radius:6px;font:inherit;cursor:pointer}button:focus-visible{outline:3px solid #327363;outline-offset:3px}@media(max-width:600px){header{padding:16px;flex-wrap:wrap}h1{font-size:20px}footer{padding:12px;font-size:13px}strong{font-size:15px}}
+</style>
+<header><div><h1>居民、护送员与巡检机器人</h1><p>本地模型验收 · 与三维导演台共用模型与动画代码</p></div><button id="motion">暂停动作</button></header>
+<main id="stage"></main>
+<footer><div><strong>参演居民</strong>日常服装 / 骨骼行走</div><div><strong>重点人员</strong>外观差异 / 慢速步态</div><div><strong>现场护送员</strong>安全帽 / 工作服</div><div><strong>巡检机器人</strong>工程底盘 / 摄像头 / 雷达</div></footer>
+<script type="module">
+import * as THREE from 'three'
+import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js'
+import { ActorAssets } from '/src/three/actorAssets.ts'
+import { createPerson, createPatrolRobot } from '/src/three/actors.ts'
+const stage = document.querySelector('#stage')
+const scene = new THREE.Scene(); scene.background = new THREE.Color(0xe9ece7)
+const camera = new THREE.PerspectiveCamera(35, 1, .01, 100)
+camera.position.set(0, 2.5, -7.8); camera.lookAt(0, .9, 0)
+const renderer = new THREE.WebGLRenderer({ antialias:true, preserveDrawingBuffer:true })
+renderer.setPixelRatio(1.5); renderer.shadowMap.enabled=true;renderer.shadowMap.type=THREE.PCFSoftShadowMap
+renderer.toneMapping=THREE.ACESFilmicToneMapping;renderer.toneMappingExposure=1.15
+stage.append(renderer.domElement)
+const controls = new OrbitControls(camera,renderer.domElement); controls.target.set(0,.85,0); controls.update()
+scene.add(new THREE.HemisphereLight(0xf6faf8,0x7e9181,2.7))
+const sun=new THREE.DirectionalLight(0xfff1dd,3.2);sun.position.set(-3,7,-4);sun.castShadow=true;sun.shadow.mapSize.set(2048,2048);sun.shadow.camera.left=-6;sun.shadow.camera.right=6;sun.shadow.camera.top=4;sun.shadow.camera.bottom=-4;sun.shadow.normalBias=.02;scene.add(sun)
+const ground=new THREE.Mesh(new THREE.PlaneGeometry(200,200),new THREE.MeshStandardMaterial({color:0xe0e5dc,roughness:1}));ground.rotation.x=-Math.PI/2;ground.position.y=-.015;ground.receiveShadow=true;scene.add(ground)
+const assets=new ActorAssets()
+const people=[createPerson('resident-04'),createPerson('resident-07',true),createPerson('helper-01',false,true)]
+people.forEach((person,i)=>{person.position.x=2.6-i*1.55;person.rotation.y=-.18;scene.add(person)})
+const robot=createPatrolRobot();robot.position.set(-2.2,0,0);robot.rotation.y=-.4;scene.add(robot)
+await Promise.all([assets.person(people[0],'resident-04'),assets.person(people[1],'resident-07',true),assets.person(people[2],'helper-01',false,true),assets.robot(robot)])
+let paused=false,last=0,elapsed=0
+document.querySelector('#motion').onclick=()=>{paused=!paused;document.querySelector('#motion').textContent=paused?'继续动作':'暂停动作'}
+window.actorPreview={scene,camera,assets,people,robot,renderer,controls,ready:true,setPaused:value=>{paused=value},robotView:()=>{camera.position.set(-3.3,1.65,-1.6);controls.target.set(-2.2,.53,0);controls.update()},lineup:()=>{camera.position.set(0,2.5,-7.8);controls.target.set(0,.85,0);controls.update()}}
+function animate(time){requestAnimationFrame(animate);const delta=Math.min(.05,(time-last)/1000);last=time;if(!paused)elapsed+=delta;people.forEach((person,i)=>assets.updatePerson(person,delta,paused?0:delta*(i===1?.42:.9),!paused,camera));assets.updateRobot(robot,delta,paused?0:delta*.22,'scanning',!paused,elapsed);renderer.render(scene,camera)}
+function resize(){const {width,height}=stage.getBoundingClientRect();renderer.setSize(width,height);camera.aspect=width/height;camera.updateProjectionMatrix()}new ResizeObserver(resize).observe(stage);resize();requestAnimationFrame(animate)
+</script></html>

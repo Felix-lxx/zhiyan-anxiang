@@ -1,0 +1,47 @@
+/* Role-based type overrides. Keep spatial canvas scale independent of reading size. */
+html .atlas-director { font-size: var(--ui-body-size); }
+html .atlas-director :is(.director-actions button,.director-rail>button,.twin-inspector button,.indoor-toggle,.resident-pov-command,.spatial-action-buttons button,.spatial-tool-rack>button,.exercise-timeline button,.twin-object-nav select) {
+  font-size: var(--ui-label-size); line-height: 1.45; min-height: 44px;
+}
+html .atlas-director :is(.director-brand span,.director-status span,.director-status em,.twin-object-nav,.twin-quality,.twin-quality small,.director-metrics span,.director-metrics button,.atlas-timeline-events button,.exercise-timeline label,.twin-stage__legend,.twin-stage__legend small,.spatial-guidance,.twin-inspector>span,.resident-pov-grid>span,.resident-pov-exposure>span,.resident-pov-hud header span,.spatial-action-preview header span,.spatial-action-metrics span,.spatial-action-metrics small,.spatial-impact>span,.spatial-evidence) {
+  font-size: var(--ui-meta-size); line-height: 1.5;
+}
+html .atlas-director :is(.twin-inspector p,.twin-inspector dl,.robot-execution,.resident-pov-hud>p,.resident-pov-grid strong,.spatial-impact p,.spatial-action-note,.spatial-score-impact>small,.director-drawer p,.director-drawer li,.director-drawer button) {
+  font-size: var(--ui-body-size); line-height: 1.65;
+}
+html .atlas-director .twin-views button { font-size: var(--ui-meta-size); }
+html .atlas-director :is(.spatial-action-metrics strong,.robot-execution__state strong,.resident-pov-hud header strong) { font-size: 20px; line-height: 1.45; }
+html .atlas-director :is(.resident-vitals dd,.resident-pov-grid strong) { white-space: normal; overflow-wrap: anywhere; }
+html .atlas-director :is(.twin-quality select,.spatial-action-preview button) { min-height: 44px; }
+html .atlas-director .twin-quality { flex-wrap: wrap; }
+html .atlas-director .twin-quality small { color: var(--text-secondary); }
+html .atlas-director .atlas-timeline-events button { flex: 0 0 168px; width: 168px; min-height: 60px; padding: 4px 8px; }
+html .atlas-director .atlas-timeline-events span { display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; white-space: normal; line-height: 1.4; text-align: left; }
+html .atlas-director .atlas-timeline-events time { font-weight: 600; }
+html .atlas-director .director-rail>button { width: auto; flex: 1; padding-inline: 12px; white-space: nowrap; }
+html .atlas-director .twin-stage__legend { gap: 8px 12px; }
+html .atlas-director .twin-stage__legend>span:last-child:not(.risk-scale):not(.stair-density) { display:none; }
+html .atlas-director .risk-scale { flex: 1 1 100%; }
+html .atlas-director .resident-pov-grid { gap: 8px; }
+html .atlas-director .resident-pov-grid>span { padding: 8px; color: var(--text-secondary); }
+html .atlas-director .spatial-action-metrics { gap: 8px; }
+html .atlas-director .twin-inspector p { color: var(--text-secondary); }
+html .atlas-director .resident-vitals { display:block; }
+html .atlas-director .resident-vitals>div { display:flex; align-items:baseline; justify-content:space-between; gap:16px; background:transparent; border:0; padding:8px 0; }
+html .atlas-director .resident-vitals dt { font-size:var(--ui-meta-size); line-height:1.6; color:var(--text-secondary); }
+html .atlas-director .twin-inspector .resident-vitals dd { flex:none; margin:0; font-size:var(--ui-body-size); line-height:1.6; color:var(--text-primary); font-variant-numeric:tabular-nums; }
+html .atlas-director .director-rail>button span { font-size:inherit; }
+html .atlas-director .twin-stage__legend span { font-size:inherit; }
+/* Action previews are teleported to body, so cannot inherit the director selector. */
+html .spatial-action-preview--immersive :is(header span,.spatial-action-metrics span,.spatial-action-metrics small,.spatial-impact>span,.spatial-evidence) { font-size:var(--ui-meta-size); line-height:1.5; }
+html .spatial-action-preview--immersive :is(.spatial-impact p,.spatial-action-note,.spatial-score-impact>small,.spatial-action-buttons button) { font-size:var(--ui-body-size); line-height:1.6; }
+html .spatial-action-preview--immersive .spatial-impact p { flex-wrap:wrap; }
+@media(max-width:760px) {
+  html .atlas-director .director-brand strong { font-size: 18px; }
+  html .atlas-director .atlas-director-modes button { font-size: var(--ui-meta-size); padding-inline:6px; white-space:nowrap; }
+  html .atlas-director .twin-views button { font-size: 0; width: 44px; }
+  html .atlas-director .director-rail>button { padding-inline: 8px; font-size: var(--ui-meta-size); }
+  html .atlas-director .director-metrics>button { font-size: var(--ui-meta-size); }
+  html .atlas-director .atlas-timeline-events button:nth-child(even) { display:grid; }
+  html .atlas-director .twin-quality small { display:none; }
+}

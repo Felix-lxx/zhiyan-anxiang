@@ -1,0 +1,17 @@
+<!doctype html><html lang="zh-CN"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>导演台模型接入核验</title>
+<style>html,body,#app{margin:0;width:100%;height:100%;background:#142329}.twin-stage{height:100vh!important}.twin-stage__viewport{height:100%!important}</style>
+<div id="app"></div><script type="module">
+import {createApp,h,reactive} from 'vue'
+import DigitalTwinArena from '/src/components/DigitalTwinArena.vue'
+import '/src/styles/tokens.css'
+import '/src/styles.css'
+import '/src/styles/base.css'
+import '/src/styles/components.css'
+import '/src/styles/responsive.css'
+import '/src/exercise.css'
+import '/src/director.css'
+const state=reactive({status:'running',elapsedSeconds:0,robot:{state:'scanning',battery:95,x:50,y:50,route:[],reason:'本地模型核验，无业务指令'},simulation:{world:{parameters:{start_time:'10:00'},objects:[],fire_origin:{x:70,y:70}},fire:{intensity:0,smoke_radius:0,temperature:22},environment:{south_lane:'open',east_hydrant:'available',visibility:100},sensors:{temperature:22,smoke_ppm:0,alarm:false},residents:[{id:'resident-04',label:'模型核验居民',x:52,y:50,height:0,status:'moving',progress:0,vulnerable:false,indoor_stage:'outdoor'}],helpers:[],summary:{total:1,evacuated:0,moving:1,vulnerable:0}}})
+window.arenaPreview=state
+window.arenaCommands=[]
+createApp({render:()=>h(DigitalTwinArena,{...state,interactive:true,onRobotCommand:command=>window.arenaCommands.push(command)})}).mount('#app')
+</script></html>

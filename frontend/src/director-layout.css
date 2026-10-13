@@ -1,4 +1,9 @@
 /* The immersive shell owns positioning. Legacy exercise styles only own content. */
+.operations-center--immersive .scene-entry-state { display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 20px; min-height: 100dvh; padding: 32px 20px; text-align: center; }
+.scene-entry-state h1 { margin: 0; font-size: clamp(24px, 3vw, 32px); line-height: 1.35; }
+.scene-entry-state p { max-width: 40rem; margin: 0; font-size: 16px; line-height: 1.8; color: var(--text-secondary); }
+.scene-entry-state > div { display: flex; flex-wrap: wrap; justify-content: center; gap: 12px; }
+.scene-entry-state button { min-height: 44px; padding: 10px 20px; font-size: 16px; }
 .operations-center--immersive .exercise-timeline .execution-link { display: inline-flex; align-items: center; min-width: 44px; max-width: 240px; gap: 6px; padding-inline: 10px; }
 .execution-link span { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .execution-link svg { flex-shrink: 0; }
@@ -106,6 +111,7 @@
     inset: auto 8px var(--scene-bottom) 8px; width: auto; max-height: calc(100% - 350px);
   }
   .operations-center--immersive > .director-stage:has(.twin-inspector, .resident-pov-hud) .indoor-toggle { display: none; }
+  .operations-center--immersive > .director-stage .twin-stage--object-open .spatial-tool-rack { display: none; }
   .operations-center--immersive > .director-stage .training-panel,
   .operations-center--immersive > .director-stage .director-drawer,
   .operations-center--immersive > .director-stage .experience-guide {
@@ -127,4 +133,40 @@
   .operations-center--immersive > .director-stage .twin-stage__legend { display: none; }
   .operations-center--immersive > .director-stage .indoor-toggle { bottom: var(--scene-bottom); }
   .operations-center--immersive > .director-stage .spatial-tool-rack { max-height: calc(100% - 190px - var(--scene-bottom)); }
+}
+
+/* Reading-sized controls reserve their own bands instead of covering each other. */
+html .operations-center--immersive.atlas-director { --director-timeline: 176px; }
+html .atlas-director .exercise-timeline { height:var(--director-timeline); min-height:var(--director-timeline); padding-top:106px; }
+html .atlas-director .atlas-timeline-events { overflow-x:auto; justify-content:flex-start; padding-bottom:6px; scrollbar-gutter:stable; }
+html .atlas-director>.director-stage .director-rail { bottom:calc(var(--director-timeline) + 14px); height:56px; }
+html .atlas-director>.director-stage .twin-stage__legend { bottom:calc(var(--director-timeline) + 14px); width:360px; max-width:360px; max-height:100px; }
+html .atlas-director>.director-stage .indoor-toggle { bottom:calc(var(--director-timeline) + 126px); }
+html .atlas-director>.director-stage .twin-views { max-width:calc(100% - 410px); flex-wrap:wrap; }
+html .atlas-director>.director-stage .director-metrics { top:142px; width:430px; }
+html .atlas-director>.director-stage .spatial-tool-rack { top:232px; max-height:calc(100% - 244px - var(--director-timeline)); }
+html .atlas-director>.director-stage .twin-inspector { width:380px; top:96px; max-height:calc(100% - var(--director-timeline) - 174px); }
+html .atlas-director>.director-stage :is(.director-drawer,.resident-pov-hud) { bottom:calc(var(--director-timeline) + 82px); }
+@media(min-width:761px) and (max-width:1100px) {
+  html .atlas-director>.director-stage .twin-views { max-width:calc(100% - 380px); }
+  html .atlas-director>.director-stage .twin-object-nav { top:16px; }
+  html .atlas-director>.director-stage .director-metrics { width:340px; top:174px; }
+  html .atlas-director>.director-stage .spatial-tool-rack { top:268px; }
+  html .atlas-director>.director-stage .twin-stage__legend { display:none; }
+  html .atlas-director>.director-stage .twin-inspector { width:320px; }
+}
+@media(max-width:760px) {
+  html .operations-center--immersive.atlas-director { --director-timeline:164px; --director-topbar:112px; }
+  html .atlas-director>.director-topbar { height:var(--director-topbar); min-height:var(--director-topbar); }
+  html .atlas-director>.director-stage .twin-views { left:66px; right:8px; top:8px; width:auto; max-width:none; gap:4px; }
+  html .atlas-director>.director-stage .director-metrics { top:86px; left:66px; right:8px; width:auto; display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); }
+  html .atlas-director>.director-stage .director-metrics>div { padding:8px; }
+  html .atlas-director>.director-stage .director-metrics>div>span { white-space:nowrap; }
+  html .atlas-director>.director-stage .director-metrics>button { grid-column:1/-1; max-width:none; min-height:40px; padding:6px; }
+  html .atlas-director>.director-stage .spatial-tool-rack { top:222px; max-height:calc(100% - 298px - var(--director-timeline)); overflow:auto; }
+  html .atlas-director>.director-stage .director-rail { left:8px; right:8px; bottom:calc(var(--director-timeline) + 8px); }
+  html .atlas-director>.director-stage .indoor-toggle { bottom:calc(var(--director-timeline) + 78px); }
+  html .atlas-director>.director-stage :is(.twin-inspector,.resident-pov-hud) { inset:8px 8px calc(var(--director-timeline) + 78px) 66px; width:auto; max-height:none; }
+  html .atlas-director>.director-stage:has(.twin-inspector,.resident-pov-hud) :is(.twin-views,.director-metrics) { display:none; }
+  html .atlas-director .exercise-timeline { padding:100px 8px 8px; }
 }

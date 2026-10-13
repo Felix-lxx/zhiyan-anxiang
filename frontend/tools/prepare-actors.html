@@ -1,0 +1,44 @@
+<!doctype html><html lang="zh-CN"><meta charset="utf-8"><title>本地模型转换工具</title>
+<body>仅用于开发：将已下载的许可模型整理为演练资源。<script type="module">
+import * as THREE from 'three'
+import { ColladaLoader } from 'three/examples/jsm/loaders/ColladaLoader.js'
+import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js'
+import { GLTFExporter } from 'three/examples/jsm/exporters/GLTFExporter.js'
+import { mergeVertices } from 'three/examples/jsm/utils/BufferGeometryUtils.js'
+const exporter = new GLTFExporter()
+async function encode(root, animations = []) {
+  const buffer = await exporter.parseAsync(root, { binary: true, animations, onlyVisible: false })
+  const bytes = new Uint8Array(buffer)
+  let binary = ''
+  for (let i = 0; i < bytes.length; i += 8192) binary += String.fromCharCode(...bytes.subarray(i, i + 8192))
+  return btoa(binary)
+}
+window.prepareActors = async () => {
+  const robot = new THREE.Group(); robot.name = 'HuskyParts'
+  const report = {}
+  for (const name of ['base_link', 'wheel', 'top_chassis', 'top_plate', 'bumper']) {
+    const { scene } = await new ColladaLoader().loadAsync(`/tools/actor-sources/${name}.dae`)
+    // ColladaLoader adds Z-up conversion. Keep each part in its original ROS coordinates;
+    // the assembled robot applies one shared ROS -> Three.js transform at runtime.
+    scene.quaternion.identity(); scene.name = name
+    let triangles = 0
+    scene.traverse(object => {
+      if (!object.isMesh) return
+      object.geometry = mergeVertices(object.geometry, 1e-5)
+      triangles += object.geometry.index.count / 3
+      const convert = material => new THREE.MeshStandardMaterial({
+        name: material.name, color: material.color, roughness: name === 'wheel' ? .92 : .64,
+        metalness: name === 'wheel' ? .06 : .32,
+      })
+      object.material = Array.isArray(object.material) ? object.material.map(convert) : convert(object.material)
+    })
+    report[name] = triangles; robot.add(scene)
+  }
+  const person = await new GLTFLoader().loadAsync('/tools/actor-sources/resident-casual.glb')
+  const helper = await new GLTFLoader().loadAsync('/tools/actor-sources/helper-worker.glb')
+  const animations = person.animations.filter(clip => /\|(Idle|Idle_Neutral|Walk|Run|Wave|Interact)$/.test(clip.name))
+  report.animations = animations.map(clip => clip.name)
+  report.bounds = new THREE.Box3().setFromObject(person.scene).getSize(new THREE.Vector3()).toArray()
+  return { robot: await encode(robot), person: await encode(person.scene, animations), helper: await encode(helper.scene, helper.animations.filter(clip => /\|(Idle|Idle_Neutral|Walk|Run|Wave|Interact)$/.test(clip.name))), report }
+}
+</script></body></html>

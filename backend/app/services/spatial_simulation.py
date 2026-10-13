@@ -47,14 +47,34 @@ def simulate(world, events, elapsed, strategy=None, branch_at=None):
     people = [{**deepcopy(p), "node_id": p["start_node_id"], "edge_id": None, "edge_progress": 0., "exit": "north" if i % 2 == 0 else "south", "status": "waiting", "release_at": 10**9, "assisted": False, "smoke_exposure": 0., "congestion": 0., "travelled": 0., "queue_seconds": 0., "counted": False, "forced_exit": False} for i, p in enumerate(world["residents"])]
     by_id = {p["id"]: p for p in people}
     helpers = {}
-    now, index, revision = 0., 0, 0
+    now, index, revision, flow_revision = 0., 0, 0, 0
     route_cache = {}
     origin = world["fire_origin"]
     fire, env = environment(world, history, 0)
+    occupied = defaultdict(list)
+    waiting_counts = defaultdict(int)
+
+    def lane_count(edge):
+        return 1 if edge["status"] == "restricted" else max(1, int(edge["width_meters"]/.8))
+
+    def edge_capacity(edge):
+        # Capacity is a physical occupancy bound, not a score: parallel lanes
+        # multiplied by 0.8 m pedestrian headway along the segment.
+        return max(1, lane_count(edge) * max(1, int(edge["length"]/.8)))
+
+    def pressure(eid):
+        edge = edges[eid]
+        load = len(occupied.get(eid, ())) + waiting_counts.get(eid, 0) * .72
+        return min(2., load / edge_capacity(edge))
+
+    def invalidate_flow():
+        nonlocal flow_revision
+        flow_revision += 1
+        route_cache.clear()
 
     def route(start, goal):
         if start == goal: return []
-        key = (revision, int(now//10), start, goal)
+        key = (revision, flow_revision, int(now//4), start, goal)
         if key in route_cache: return route_cache[key]
         frontier, costs, previous = [(0., start)], {start: 0.}, {}
         while frontier:
@@ -65,7 +85,13 @@ def simulate(world, events, elapsed, strategy=None, branch_at=None):
                 if edge["status"] == "blocked": continue
                 mid = ((nodes[current]["x"]+nodes[other]["x"])/2, (nodes[current]["y"]+nodes[other]["y"])/2)
                 risk = max(0, fire["smoke_radius"]-math.dist(mid, (origin["x"], origin["y"]))) * .1
-                cost = costs[current]+edge["length"]*(1+risk)+1/edge["width_meters"]+(8 if edge["status"] == "restricted" else 0)
+                congestion = pressure(eid)
+                queue = waiting_counts.get(eid, 0)
+                # A* weighs current occupancy and the queue at the segment
+                # entrance. Full segments remain traversable when no safe
+                # alternative exists, but alternatives become preferable.
+                traffic_penalty = congestion * congestion * max(6., edge["length"]*.72) + queue*1.4
+                cost = costs[current]+edge["length"]*(1+risk)+1/edge["width_meters"]+(8 if edge["status"] == "restricted" else 0)+traffic_penalty
                 if cost < costs.get(other, math.inf):
                     costs[other], previous[other] = cost, (current, eid)
                     heapq.heappush(frontier, (cost+math.dist(xyz(nodes[other]), xyz(nodes[goal])), other))
@@ -125,10 +151,39 @@ def simulate(world, events, elapsed, strategy=None, branch_at=None):
         if now >= elapsed: break
         dt = min(.5, elapsed-now, history[index]["elapsed_seconds"]-now if index < len(history) else .5)
         fire, env = environment(world, history, now)
+        # Dormant sessions can be days old. Once smoke has saturated, waiting
+        # actors have constant exposure and no positional changes. Integrate that
+        # interval directly, stopping BEFORE the next event or preparation end.
+        # Never skip moving walkers, queues, approaching helpers, or a changing
+        # environment; those retain the original half-second capacity rules.
+        stationary = (
+            fire["smoke_radius"] >= 48
+            and not any(h["state"] in {"approaching", "blocked"} for h in helpers.values())
+            and all(not p.get("edge_id") and (
+                p["status"] in {"evacuated", "missing"}
+                or now < p["release_at"] + p.get("preparation_seconds", 3)
+            ) for p in people)
+        )
+        if stationary:
+            boundary = min(float(elapsed), float(history[index]["elapsed_seconds"]) if index < len(history) else float(elapsed))
+            for person in people:
+                if person["status"] not in {"evacuated", "missing"}:
+                    boundary = min(boundary, person["release_at"] + person.get("preparation_seconds", 3))
+            skipped = math.floor((boundary-now)/.5)*.5
+            if skipped > .5:
+                for person in people:
+                    person["congestion"] = 0.
+                    if person["status"] != "evacuated":
+                        density = max(0., 1-math.dist(xyz(person), (origin["x"], origin["y"], 0))/48)
+                        person["smoke_exposure"] += density*skipped*(1.2 if person["vulnerable"] else .85)
+                now += skipped
+                continue
         actors = [*people, *(h for h in helpers.values() if h["state"] in {"approaching", "blocked"})]
         occupied = defaultdict(list)
+        waiting_counts = defaultdict(int)
         for a in actors:
             if a.get("edge_id"): occupied[a["edge_id"]].append(a)
+            if a.get("waiting_for_edge"): waiting_counts[a["waiting_for_edge"]] += 1
         # Front walkers move first; entrants retain stable FIFO priority.
         actors.sort(key=lambda a: (a.get("edge_id") or "~", -a.get("edge_progress", 0), a.get("queued_at", now), a["id"]))
         for actor in actors:
@@ -163,21 +218,31 @@ def simulate(world, events, elapsed, strategy=None, branch_at=None):
                         continue
                     else: continue
                 eid, to = path[0]; edge = edges[eid]
-                lanes = max(1, int(edge["width_meters"]/.8))
-                if edge["status"] == "restricted": lanes = 1
+                lanes = lane_count(edge)
                 occupants = occupied[eid]
                 lane = next((i for i in sorted(range(lanes), key=lambda lane: abs(lane-(lanes-1)/2)) if not any(a.get("lane") == i and (a["edge_from"] != actor["node_id"] or a["edge_progress"] < .8) for a in occupants)), None)
                 if lane is None:
+                    previous_wait = actor.get("waiting_for_edge")
+                    if previous_wait != eid:
+                        if previous_wait: waiting_counts[previous_wait] = max(0, waiting_counts[previous_wait]-1)
+                        waiting_counts[eid] += 1
+                        actor["waiting_for_edge"] = eid
+                        invalidate_flow()
                     actor["queue_seconds"] += dt; actor["congestion"] = 100.; actor.setdefault("queued_at", now)
                     continue
+                previous_wait = actor.pop("waiting_for_edge", None)
+                if previous_wait:
+                    waiting_counts[previous_wait] = max(0, waiting_counts[previous_wait]-1)
                 actor.update(edge_id=eid, edge_from=actor["node_id"], edge_to=to, edge_progress=0., lane=lane, edge_started_at=now)
                 actor.pop("queued_at", None)
                 occupied[eid].append(actor)
+                invalidate_flow()
             edge = edges[actor["edge_id"]]
             retreat = edge["status"] == "blocked"
             speed = 1.6 if is_helper else (.8 if person["vulnerable"] else 1.3)*(1.2 if person["assisted"] else 1)
             if edge["kind"] == "stairs": speed *= .65
-            lanes = max(1, int(edge["width_meters"]/.8)) if edge["status"] != "restricted" else 1
+            lanes = lane_count(edge)
+            actor["congestion"] = round(min(100., pressure(actor["edge_id"])*100))
             lateral_amplitude = abs(actor["lane"]-(lanes-1)/2)*.55
             # Bound actual 3-D displacement including curved lane transitions.
             speed /= math.sqrt(1+(math.pi*lateral_amplitude/edge["length"])**2)
@@ -198,7 +263,7 @@ def simulate(world, events, elapsed, strategy=None, branch_at=None):
             for key in ("x", "y", "height"): actor[key] = a[key]+(b[key]-a[key])*ratio
             # Parallel lanes have separate visible centre-lines; the offset
             # fades to zero at vertices, preserving continuity on every turn.
-            lanes = max(1, int(edge["width_meters"]/.8)) if edge["status"] != "restricted" else 1
+            lanes = lane_count(edge)
             offset = (actor["lane"]-(lanes-1)/2)*.55*math.sin(math.pi*ratio)
             horizontal = math.hypot(b["x"]-a["x"], b["y"]-a["y"])
             if horizontal > .01:
@@ -212,6 +277,7 @@ def simulate(world, events, elapsed, strategy=None, branch_at=None):
             if (retreat and progress <= .00001) or (not retreat and progress >= edge["length"]-.00001):
                 actor["node_id"] = actor["edge_from"] if retreat else actor["edge_to"]
                 occupied[actor["edge_id"]].remove(actor); actor["edge_id"] = None
+                invalidate_flow()
                 if not is_helper and actor["node_id"] == "home:door": actor.setdefault("building_exited_at_seconds", now+dt)
                 if not is_helper and nodes[actor["node_id"]].get("is_exit"): actor.setdefault("exit_reached_at_seconds", now+dt)
             if not is_helper and person["id"] in helpers and helpers[person["id"]]["state"] == "escorting":
@@ -232,10 +298,30 @@ def simulate(world, events, elapsed, strategy=None, branch_at=None):
         person["last_location"] = nodes[person.get("edge_from") if person.get("edge_id") else person["node_id"]]["name"] + (" → "+nodes[person["edge_to"]]["name"] if person.get("edge_id") else "")
         helper = helpers.get(person["id"])
         person["behavior"] = "集合点已核验" if person["counted"] else "已到集合点，等待清点" if person["status"] == "evacuated" else "失联，等待搜索会合" if person["status"] == "missing" else "等待护送员入楼会合" if helper and helper["state"] in {"approaching", "blocked"} else "通道排队，前人通过后前进" if person["congestion"] else "所选集合点不可达，请改道" if not person["route_reachable"] else "等待通知" if now < person["release_at"] else "准备离开房间" if now < person["release_at"]+person.get("preparation_seconds", 3) else "护送同行" if person["assisted"] else "沿连续通道撤离"
+    final_actors = [*people, *(h for h in helpers.values() if h["state"] in {"approaching", "blocked"})]
+    occupied = defaultdict(list)
+    waiting_counts = defaultdict(int)
+    for actor in final_actors:
+        if actor.get("edge_id"): occupied[actor["edge_id"]].append(actor)
+        if actor.get("waiting_for_edge"): waiting_counts[actor["waiting_for_edge"]] += 1
+    runtime_edges = {}
+    for live_edge in graph["edges"]:
+        source = edges[live_edge["id"]]
+        mid = ((source["start"]["x"]+source["end"]["x"])/2, (source["start"]["y"]+source["end"]["y"])/2)
+        smoke_risk = round(max(0, 1-math.dist(mid, (origin["x"], origin["y"]))/fire["smoke_radius"])*100)
+        capacity = edge_capacity(source)
+        occupancy, waiting = len(occupied[source["id"]]), waiting_counts[source["id"]]
+        density = min(100, round((occupancy+waiting*.72)/capacity*100))
+        status_penalty = 100 if source["status"] == "blocked" else 12 if source["status"] == "restricted" else 0
+        risk_score = 100 if source["status"] == "blocked" else min(99, round(smoke_risk*.68+density*.32+status_penalty))
+        flow_modifier = .58 if source["status"] == "restricted" else .72 if source.get("kind") == "stairs" else .82 if source.get("kind") in {"room", "door"} else 1.
+        live_edge.update(status=source["status"], length=round(source["length"], 2), lane_count=lane_count(source), capacity_persons=capacity, live_occupancy=occupancy, waiting_count=waiting, density_percent=density, flow_capacity_per_second=round(max(.35, source["width_meters"]*1.15*flow_modifier), 2), smoke_risk=smoke_risk, risk_score=risk_score)
+        runtime_edges[live_edge["id"]] = live_edge
     roads = deepcopy(world["road_network"])
     for e in roads["edges"]:
-        e["status"] = edges[e["id"]]["status"]
-        e["risk_score"] = 100 if e["status"] == "blocked" else round(max(0, 1-math.dist(((e["start"]["x"]+e["end"]["x"])/2, (e["start"]["y"]+e["end"]["y"])/2), (origin["x"], origin["y"]))/fire["smoke_radius"])*65)
+        metrics = runtime_edges[e["id"]]
+        e.update({key: metrics[key] for key in ("status", "lane_count", "capacity_persons", "live_occupancy", "waiting_count", "density_percent", "flow_capacity_per_second", "smoke_risk", "risk_score")})
     south = [e for e in roads["edges"] if "南" in e["name"]]
     env.update(south_lane="blocked" if any(e["status"] == "blocked" for e in south) else "restricted" if any(e["status"] == "restricted" for e in south) else "open", visibility=max(8, round(100-fire["smoke_radius"]*1.8)), blockages=[{"x": (e["start"]["x"]+e["end"]["x"])/2, "y": (e["start"]["y"]+e["end"]["y"])/2, "target": e["name"], "road_edge_id": e["id"]} for e in roads["edges"] if e["status"] == "blocked"])
-    return dict(fire=fire, environment=env, sensors={"temperature": fire["temperature"], "smoke_ppm": round(45+fire["smoke_radius"]*31), "alarm": fire["intensity"] >= 35}, residents=people, helpers=list(helpers.values()), world=world, spatial_network=graph, road_network=roads, strategy=strategy or "live_commands", parallel_strategy=strategy, summary=dict(total=len(people), evacuated=sum(p["status"] == "evacuated" for p in people), counted=sum(p["counted"] for p in people), moving=sum(p["status"] == "moving" for p in people), vulnerable=sum(p["vulnerable"] for p in people), missing=sum(p["status"] == "missing" for p in people), smoke_exposed=sum(p["smoke_exposure"] > 5 for p in people), congested=sum(p["congestion"] > 55 for p in people), north_load=sum(p["exit"] == "north" for p in people), south_load=sum(p["exit"] == "south" for p in people)))
+    congested_edges = sorted((edge for edge in runtime_edges.values() if edge["density_percent"] >= 55), key=lambda edge: (-edge["density_percent"], -edge["waiting_count"], edge["id"]))
+    return dict(fire=fire, environment=env, sensors={"temperature": fire["temperature"], "smoke_ppm": round(45+fire["smoke_radius"]*31), "alarm": fire["intensity"] >= 35}, residents=people, helpers=list(helpers.values()), world=world, spatial_network=graph, road_network=roads, strategy=strategy or "live_commands", parallel_strategy=strategy, summary=dict(total=len(people), evacuated=sum(p["status"] == "evacuated" for p in people), counted=sum(p["counted"] for p in people), moving=sum(p["status"] == "moving" for p in people), vulnerable=sum(p["vulnerable"] for p in people), missing=sum(p["status"] == "missing" for p in people), smoke_exposed=sum(p["smoke_exposure"] > 5 for p in people), congested=sum(p["congestion"] > 55 for p in people), congested_edges=len(congested_edges), critical_edge=({key: congested_edges[0][key] for key in ("id", "name", "density_percent", "waiting_count")} if congested_edges else None), north_load=sum(p["exit"] == "north" for p in people), south_load=sum(p["exit"] == "south" for p in people)))
