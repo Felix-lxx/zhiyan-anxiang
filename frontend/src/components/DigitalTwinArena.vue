@@ -4,9 +4,11 @@ import * as THREE from 'three'
 import { createApartment, createChargingShed, createFireStation, createStreet, createStreetFurniture, createRoadBarrier } from '../three/communityModels'
 import { SceneMaterials, displayHeight } from '../three/sceneMaterials'
 import { createPerson, createPatrolRobot, posePerson } from '../three/actors'
+import { CrowdRenderer } from '../three/crowdRenderer'
 import { ActorAssets, type ActorAssetStatus } from '../three/actorAssets'
 import { ActorMotion } from '../three/actorMotion'
 import { FireEffects } from '../three/fireEffects'
+import { RoadVisuals } from '../three/roadVisuals'
 import { assemblyAttendance, createAssemblyPoint, type AssemblyResident } from '../three/assemblyPoint'
 import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js'
 import AppIcon from './AppIcon.vue'
@@ -15,9 +17,9 @@ interface Resident { height?: number; building_id?: string; floor?: number; curr
 interface SpatialEdgeState { id: string; kind: string; start: { x: number; y: number; height: number }; end: { x: number; y: number; height: number }; width_meters: number; density_percent?: number; live_occupancy?: number; waiting_count?: number; capacity_persons?: number }
 interface RoadEdgeState { id: string; name: string; start: { x: number; y: number }; end: { x: number; y: number }; width_meters: number; status: 'open' | 'restricted' | 'blocked'; blocked_by_event: boolean; risk_score: number; smoke_risk?: number; density_percent?: number; live_occupancy?: number; waiting_count?: number; capacity_persons?: number; flow_capacity_per_second?: number }
 interface Simulation {
-  spatial_network?: { nodes: Array<{id:string;name:string;x:number;y:number;height:number;kind:string;floor:number;is_exit?:boolean}>; edges: SpatialEdgeState[] }
+  spatial_network?: { nodes: Array<{id:string;name:string;x:number;y:number;height:number;kind:string;floor:number;is_exit?:boolean;building_id?:string}>; edges: SpatialEdgeState[] }
   world?: { schema_version?: number; parameters?: { start_time?: string; wind_direction?: string }; objects: Array<{ id: string; name: string; type: string; x: number; y: number; width: number; depth: number; floors: number; entry: { x: number; y: number } }>; fire_origin: { x: number; y: number } } | null
-  helpers?: Array<{ id: string; resident_id?: string; x: number; y: number; height?: number; edge_id?: string | null; state: string; responsible?: string; met_at_seconds?: number }>
+  helpers?: Array<{ id: string; resident_id?: string; x: number; y: number; height?: number; edge_id?: string | null; state: string; behavior?: string; responsible?: string; met_at_seconds?: number; route_points?: Array<{ x: number; y: number; height?: number }> }>
   fire: { intensity: number; smoke_radius: number; temperature: number }
   environment: { south_lane: string; east_hydrant: string; visibility: number; blockages?: Array<{ x: number; y: number; target: string; road_edge_id?: string }> }
   sensors: { temperature: number; smoke_ppm: number; alarm: boolean }
@@ -124,6 +126,7 @@ let sampleStarted = 0
 const fps = ref(0)
 const quality = ref<'low' | 'medium' | 'high'>(window.innerWidth < 760 ? 'low' : (navigator.hardwareConcurrency ?? 8) <= 4 ? 'medium' : 'high')
 const residentMeshes = new Map<string, THREE.Group>()
+let crowdRenderer: CrowdRenderer | undefined
 const buildingMeshes = new Map<string, THREE.Object3D>()
 const residentTrails = new Map<string, THREE.Vector3[]>()
 const residentTrailLines = new Map<string, THREE.Line>()
@@ -139,18 +142,22 @@ const targetLookAt = new THREE.Vector3(0, 0, 0)
 const raycaster = new THREE.Raycaster()
 const pointer = new THREE.Vector2()
 const pointerStart = new THREE.Vector2()
-const reducedMotion = window.matchMedia('(prefers-reduced-motion: reduce)').matches
+const motionPreference = window.matchMedia('(prefers-reduced-motion: reduce)')
+let reducedMotion = motionPreference.matches || document.documentElement.dataset.reduceMotion === 'true'
 let qualityFactor = quality.value === 'high' ? 1 : quality.value === 'medium' ? .72 : .45
 let pageVisible = !document.hidden
 let renderDirty = true
 let destroyed = false
-let roadNetworkSignature = ''
+const roadVisuals = new RoadVisuals()
+let residentRouteSignature = ''
+let robotRouteSignature = ''
+let lastEntitySeconds = -1
 let blockageSignature = ''
 const hydrantModels: Array<{ group: THREE.Group; paint: THREE.MeshStandardMaterial[]; warning: THREE.Mesh; isEast: boolean }> = []
 const exitModels: Array<{ group: THREE.Group; materials: THREE.MeshStandardMaterial[]; nodeId?: string }> = []
 const environmentRequests = new Set<AbortController>()
 const assemblyModels = new Map<string, ReturnType<typeof createAssemblyPoint>>()
-const assemblyNodes = computed(() => props.simulation?.spatial_network?.nodes.filter(node => node.kind === 'assembly') ?? [])
+const assemblyNodes = computed(() => props.simulation?.spatial_network?.nodes.filter(node => node.kind === 'assembly' && /^assembly:(north|south)$/.test(node.id)) ?? [])
 const selectedAssembly = computed(() => assemblyNodes.value.find(node => node.name === selected.value?.title && selected.value?.type === '集合点'))
 const assemblyPeople = computed(() => (props.simulation?.residents ?? []) as Array<Resident & AssemblyResident>)
 const assemblyCounts = computed(() => selectedAssembly.value ? assemblyAttendance(assemblyPeople.value, selectedAssembly.value.id) : null)
@@ -166,7 +173,18 @@ const actorAssetLabel = computed(() => actorAssetStatus.value === 'loading' ? '�
 
 const clockLabel = computed(() => `${String(Math.floor(props.elapsedSeconds / 60)).padStart(2, '0')}:${String(props.elapsedSeconds % 60).padStart(2, '0')}`)
 const activeResident = computed(() => props.simulation?.residents.find((item) => item.id === selectedResident.value) ?? props.simulation?.residents.find((item) => item.status === 'moving'))
-const activeHelper = computed(() => props.simulation?.helpers?.find((helper) => helper.resident_id === activeResident.value?.id && helper.state !== 'completed'))
+const activeHelper = computed(() => props.simulation?.helpers?.find((helper) => helper.resident_id === activeResident.value?.id))
+const escortStatusLabel = computed(() => {
+  switch (activeHelper.value?.state) {
+    case 'completed': return '已护送到达'
+    case 'escorting': return '已会合同行'
+    case 'blocked': return '会合路线受阻'
+    case 'approaching': return '护送员接近中'
+    default: return activeResident.value?.assisted
+      ? activeResident.value.status === 'evacuated' ? '已护送到达' : '护送中'
+      : '未指派'
+  }
+})
 const stairCongestion = computed(() => {
   const stairs = props.simulation?.spatial_network?.edges.filter((edge) => edge.kind === 'stairs') ?? []
   return {
@@ -202,7 +220,8 @@ function roadDetail(edge: RoadEdgeState): string {
 
 function register(object: THREE.Object3D, data: { title: string; type: string; detail: string; action?: string; residentId?: string; x?: number; y?: number }): void {
   object.userData.selection = data
-  object.traverse((child) => { child.userData.selection = data; interactiveMeshes.push(child) })
+  object.traverse((child) => { child.userData.selection = data })
+  interactiveMeshes.push(object)
 }
 
 function addBuilding(name: string, x: number, z: number, width: number, depth: number, floors: number): THREE.LOD {
@@ -358,10 +377,20 @@ function createResidents(): void {
   const residents = props.simulation?.residents ?? []
   const visibleResidents = residents
   for (const resident of visibleResidents) {
-    const group = createPerson(resident.id, resident.vulnerable)
+    const group = residents.length > 60 ? new THREE.Group() : createPerson(resident.id, resident.vulnerable)
+    group.name = resident.id; group.userData.vulnerable = resident.vulnerable
     group.position.copy(worldPoint(resident.x, resident.y, resident.height)); scene.add(group); residentMeshes.set(resident.id, group)
     register(group, { title: resident.label, type: resident.vulnerable ? '重点关照人员' : '参演居民智能体', detail: resident.vulnerable ? '移动速度较慢，需要优先引导至集合点' : '根据告警、广播和道路状态执行疏散', residentId: resident.id, x: resident.x, y: resident.y })
-    void actorAssets.person(group, resident.id, resident.vulnerable)
+    if (residents.length <= 60) void actorAssets.person(group, resident.id, resident.vulnerable)
+  }
+  if (residents.length > 60) {
+    let slot = 0
+    crowdRenderer = new CrowdRenderer([...residentMeshes.values()], () => {
+      const model = createPerson(`crowd-detail-${slot++}`)
+      void actorAssets.person(model, model.uuid)
+      return model
+    })
+    scene.add(crowdRenderer.group); interactiveMeshes.push(crowdRenderer.group)
   }
 }
 
@@ -382,7 +411,7 @@ function buildScene(): void {
   groundPlane = new THREE.Mesh(new THREE.PlaneGeometry(116, 116), sceneMaterials.surface('paving',0x999b88,36,36)); groundPlane.rotation.x = -Math.PI / 2; groundPlane.receiveShadow = true; scene.add(groundPlane)
   blockageLayer = new THREE.Group(); scene.add(blockageLayer)
   environmentAssetLayer = new THREE.Group(); scene.add(environmentAssetLayer)
-  roadNetworkLayer = new THREE.Group(); scene.add(roadNetworkLayer)
+  roadNetworkLayer = roadVisuals.group; scene.add(roadNetworkLayer)
   residentRouteLayer = new THREE.Group(); scene.add(residentRouteLayer)
   residentTrailLayer = new THREE.Group(); scene.add(residentTrailLayer)
   helperLinkLayer = new THREE.Group(); scene.add(helperLinkLayer)
@@ -474,9 +503,10 @@ function buildSpatialGeometry(): void {
   const graph=props.simulation?.spatial_network
   if(!graph)return
   const homeId=props.simulation?.residents.find(p=>p.building_id)?.building_id
-  const home=props.simulation?.world?.objects.find(o=>o.id===homeId)
-  if(home) {
-    const levels=[...new Set(graph.nodes.filter(n=>n.kind==='corridor').map(n=>n.height))]
+  const homes=props.simulation?.world?.objects.filter(o=>o.type==='building') ?? []
+  for(const home of homes) {
+    const belongs=(n: typeof graph.nodes[number]) => n.building_id ? n.building_id===home.id : home.id===homeId
+    const levels=[...new Set(graph.nodes.filter(n=>n.kind==='corridor' && belongs(n)).map(n=>n.height))]
     for(const height of levels) {
       // Open stairwell on the west side; partial-height partitions retain a readable cutaway.
       const floor=new THREE.Mesh(new THREE.BoxGeometry(home.width*.63,.12,home.depth*.92),sceneMaterials.surface('paving',0xafa994,2,2))
@@ -485,8 +515,12 @@ function buildSpatialGeometry(): void {
         const wall=new THREE.Mesh(new THREE.BoxGeometry(home.width*.63,.85,.1),material(0xbeb9a6))
         wall.position.copy(floor.position);wall.position.z+=side*home.depth*.46;wall.position.y+=.49;indoorGeometry.add(wall)
       }
-      const rooms=graph.nodes.filter(n=>n.kind==='room'&&n.height===height)
+      const rooms=graph.nodes.filter(n=>n.kind==='room'&&n.height===height&&belongs(n))
+      const seenRooms = new Set<string>()
       for(const room of rooms) {
+        const key = `${room.x}:${room.y}:${room.height}`
+        if (seenRooms.has(key)) continue
+        seenRooms.add(key)
         const door=new THREE.Group(),frameMaterial=material(0x8b7257,.75)
         for(const side of [-1,1]){const jamb=new THREE.Mesh(new THREE.BoxGeometry(.065,2.1,.12),frameMaterial);jamb.position.set(side*.43,1.05,0);door.add(jamb)}
         const lintel=new THREE.Mesh(new THREE.BoxGeometry(.92,.08,.12),frameMaterial);lintel.position.y=2.12;door.add(lintel)
@@ -494,7 +528,11 @@ function buildSpatialGeometry(): void {
       }
     }
   }
+  const drawnConnections = new Set<string>()
   for(const edge of graph.edges.filter(e=>e.id.startsWith('space:') && !e.id.includes(':resident-') || e.kind==='room')) {
+    const visualKey=JSON.stringify([edge.kind,edge.start,edge.end,edge.width_meters])
+    if (drawnConnections.has(visualKey)) continue
+    drawnConnections.add(visualKey)
     const a=worldPoint(edge.start.x,edge.start.y,edge.start.height), b=worldPoint(edge.end.x,edge.end.y,edge.end.height)
     a.y+=.035;b.y+=.035
     const horizontal=Math.hypot(b.x-a.x,b.z-a.z), rise=Math.abs(b.y-a.y)
@@ -522,8 +560,6 @@ function buildSpatialGeometry(): void {
     const rail=new THREE.Mesh(new THREE.CylinderGeometry(.055,.055,a.distanceTo(b),6),material(color))
     rail.position.copy(a).lerp(b,.5);rail.quaternion.setFromUnitVectors(new THREE.Vector3(0,1,0),b.clone().sub(a).normalize());indoorGeometry.add(rail)
     if(edge.kind==='stairs') {
-      const steps=Math.ceil(Math.abs(a.y-b.y)/.16)
-      for(let i=0;i<=steps;i++){const step=new THREE.Mesh(new THREE.BoxGeometry(edge.width_meters,.045,.22),material(0x63847b));step.position.copy(a).lerp(b,i/steps);indoorGeometry.add(step)}
       const heatMaterial = new THREE.MeshBasicMaterial({ color: 0x54d4a4, transparent: true, opacity: .2, depthWrite: false, blending: THREE.AdditiveBlending })
       const heat = new THREE.Mesh(new THREE.CylinderGeometry(Math.max(.28, edge.width_meters * .3), Math.max(.28, edge.width_meters * .3), a.distanceTo(b), 8, 1, true), heatMaterial)
       heat.position.copy(a).lerp(b,.5); heat.quaternion.setFromUnitVectors(new THREE.Vector3(0,1,0),b.clone().sub(a).normalize()); heat.userData.density = 0; indoorGeometry.add(heat); stairHeatMeshes.set(edge.id, heat)
@@ -544,15 +580,16 @@ function buildSpatialGeometry(): void {
 function showIndoor(): void {
   indoorView.value = !indoorView.value
   if(indoorGeometry) indoorGeometry.visible=indoorView.value
-  const person = props.simulation?.residents.find(p => p.floor)
+  const person = activeResident.value ?? props.simulation?.residents.find(p => p.floor)
   const home = props.simulation?.world?.objects.find(o => o.id === person?.building_id)
-  for(const child of scene.children) if(child.userData.buildingLabel) child.visible=!indoorView.value || child.userData.buildingLabel===home?.id
+  const occupiedBuildings = new Set(props.simulation?.residents.map(p=>p.building_id))
+  for(const child of scene.children) if(child.userData.buildingLabel) child.visible=true
   for (const [id, object] of buildingMeshes) {
-    object.visible=!indoorView.value || id===home?.id
+    object.visible=true
     object.traverse(child => {
     const mesh = child as THREE.Mesh
     const materials = Array.isArray(mesh.material) ? mesh.material : mesh.material ? [mesh.material] : []
-    for (const mat of materials) { mat.transparent = indoorView.value && id === home?.id; mat.opacity = mat.transparent ? .13 : 1; mat.depthWrite = !mat.transparent; mat.needsUpdate = true }
+    for (const mat of materials) { mat.transparent = indoorView.value && occupiedBuildings.has(id); mat.opacity = mat.transparent ? .13 : 1; mat.depthWrite = !mat.transparent; mat.needsUpdate = true }
     })
   }
   if (home) {
@@ -590,7 +627,9 @@ function animate(time = 0): void {
   animationFrame = requestAnimationFrame(animate)
   const delta = Math.min(.05, Math.max(0, (time-lastFrameTime)/1000)); lastFrameTime=time
   if (!pageVisible) return
-  const activelyAnimating = props.status === 'running' && !reducedMotion
+  // Reduced motion removes decorative pulses and camera easing, not the drill's
+  // essential spatial feedback. Positions still stop at the server's last sample.
+  const activelyAnimating = props.status === 'running'
   if (!activelyAnimating && !renderDirty) return
   const fireScale = .8 + (props.simulation?.fire.intensity ?? 20) / 115
   if(activelyAnimating)visualSeconds+=delta
@@ -598,11 +637,15 @@ function animate(time = 0): void {
   fireEffects?.update(reducedMotion ? 0 : visualSeconds, props.simulation?.fire.intensity ?? 0, props.simulation?.fire.smoke_radius ?? 8, wind, camera, qualityFactor)
   for(const mesh of [...residentMeshes.values(),...helperMeshes.values()]) {
     const distance = actorMotion.step(mesh, delta, activelyAnimating)
+    mesh.userData.frameDistance = distance; mesh.userData.moved = distance > .00001
     const moving=activelyAnimating && distance > .00001
+    if (crowdRenderer && residentMeshes.has(mesh.name)) continue
     if (!actorAssets.updatePerson(mesh, delta, distance, activelyAnimating, camera)) {
       posePerson(mesh,moving,visualSeconds,Boolean(mesh.userData.exposed),Boolean(mesh.userData.crowded))
     }
   }
+  crowdRenderer?.update(camera, new Set([...selectedResidents.value, activeResident.value?.id ?? '']), quality.value === 'high' ? 24 : quality.value === 'medium' ? 12 : 6, time / 1000, activelyAnimating,
+    (model, actor) => { if (!actorAssets.updatePerson(model, delta, actor.userData.frameDistance ?? 0, activelyAnimating, camera)) posePerson(model, actor.userData.moved, visualSeconds, actor.userData.exposed, actor.userData.crowded) })
   if(robotGroup?.userData.targetPosition) {
     const distance=actorMotion.step(robotGroup, delta, activelyAnimating)
     for(const wheel of robotGroup.userData.wheels as THREE.Mesh[])wheel.rotation.x-=distance/.23
@@ -718,7 +761,13 @@ function updateStairHeat(): void {
 }
 
 function updateEntities(): void {
-  if (!scene) return
+  if (!scene || destroyed) return
+  if (props.elapsedSeconds < lastEntitySeconds) {
+    // A replay seek starts a new visible history; never draw trails from the future.
+    actorMotion.clear(); residentTrails.clear(); residentTrailLines.clear(); residentHeadings.clear()
+    disposeLayer(residentTrailLayer)
+  }
+  lastEntitySeconds = props.elapsedSeconds
   for (const [id, marker] of assemblyModels) marker.update(assemblyAttendance(assemblyPeople.value,id))
   for (const exit of exitModels) {
     const node=props.simulation?.road_network?.nodes.find(item=>item.id===exit.nodeId)
@@ -755,18 +804,20 @@ function updateEntities(): void {
       scene.add(mesh); helperMeshes.set(helper.id, mesh)
       void actorAssets.person(mesh, helper.id, false, true)
     }
-    const next=worldPoint(helper.x, helper.y, helper.height ?? 0);next.x+=.32
-    actorMotion.accept(mesh, next, [], props.elapsedSeconds, props.status === 'running' && !reducedMotion)
+    const next=worldPoint(helper.x, helper.y, helper.height ?? 0)
+    const route = (helper.route_points ?? []).map(point => worldPoint(point.x, point.y, point.height))
+    actorMotion.accept(mesh, next, route, props.elapsedSeconds, props.status === 'running')
     mesh.userData.behaviorState = helper.state
     mesh.userData.targetPosition=next;mesh.visible = helper.state !== 'completed' && ((helper.height??0)===0 || indoorView.value)
   }
   for (const [id, mesh] of helperMeshes) if (!props.simulation?.helpers?.some(h => h.id === id)) mesh.visible = false
+  for (const [id, line] of helperLinkLines) if (!props.simulation?.helpers?.some(h => h.id === id)) line.visible = false
   if (robotGroup) robotGroup.visible = Boolean(props.robot)
   if (!props.robot && selected.value?.action === 'robot') selected.value = null
   if (props.robot && robotGroup) {
     const next=worldPoint(props.robot.x, props.robot.y)
     const taskRoute = currentRobotTask.value?.route_points ?? props.robot.task_queue?.filter(task => task.status === 'completed').slice(-1)[0]?.route_points ?? []
-    actorMotion.accept(robotGroup, next, taskRoute.map(p => worldPoint(p.x, p.y, p.height)), props.elapsedSeconds, props.status === 'running' && !reducedMotion)
+    actorMotion.accept(robotGroup, next, taskRoute.map(p => worldPoint(p.x, p.y, p.height)), props.elapsedSeconds, props.status === 'running')
     robotGroup.userData.targetPosition=next
     if(robotGroup.userData.scan)robotGroup.userData.scan.visible=['sensing','inspecting','scanning','verifying'].includes(props.robot.state)
     rebuildRoute()
@@ -776,7 +827,7 @@ function updateEntities(): void {
     if (mesh) {
       const previousPosition = mesh.position.clone()
       const nextPosition=worldPoint(resident.x, resident.y, resident.height ?? 0)
-      actorMotion.accept(mesh, nextPosition, (resident.route_points ?? []).map(p => worldPoint(p.x, p.y, p.height)), props.elapsedSeconds, props.status === 'running' && !reducedMotion)
+      actorMotion.accept(mesh, nextPosition, (resident.route_points ?? []).map(p => worldPoint(p.x, p.y, p.height)), props.elapsedSeconds, props.status === 'running')
       mesh.userData.targetPosition=nextPosition; mesh.visible = indoorView.value || !resident.indoor_stage || resident.indoor_stage === 'outdoor'
       const ringMaterial = (mesh.userData.ring as THREE.Mesh | undefined)?.material as THREE.MeshBasicMaterial | undefined
       const danger = (resident.smoke_exposure ?? 0) > 5
@@ -848,51 +899,26 @@ function disposeLayer(layer: THREE.Group): void {
 function rebuildRoadNetwork(): void {
   if (!roadNetworkLayer) return
   const edges = props.simulation?.road_network?.edges ?? []
-  const signature = edges.map((edge) => `${edge.id}:${edge.status}:${edge.risk_score}:${edge.density_percent ?? 0}:${edge.waiting_count ?? 0}`).join('|')
-  if (signature === roadNetworkSignature) return
-  roadNetworkSignature = signature
-  interactiveMeshes.splice(0, interactiveMeshes.length, ...interactiveMeshes.filter((object) => !roadInteractiveMeshes.has(object)))
-  roadInteractiveMeshes.clear()
-  disposeLayer(roadNetworkLayer)
-  roadHeatMesh = null
-  const heatGeometry = new THREE.BoxGeometry(1, .05, 1)
-  const heatMaterial = new THREE.MeshBasicMaterial({ vertexColors: true, transparent: true, opacity: .36, depthWrite: false, blending: THREE.AdditiveBlending })
-  const heatInstances = new THREE.InstancedMesh(heatGeometry, heatMaterial, edges.length)
-  const transform = new THREE.Object3D()
-  for (const edge of edges) {
-    const start = worldPoint(edge.start.x, edge.start.y);start.y=.22
-    const end = worldPoint(edge.end.x, edge.end.y);end.y=.22
-    const length = start.distanceTo(end)
-    const width = Math.max(1.8, edge.width_meters * .72)
-    const risk = THREE.MathUtils.clamp(edge.risk_score / 100, 0, 1)
-    const density = THREE.MathUtils.clamp((edge.density_percent ?? 0) / 100, 0, 1)
-    const heatColor = edge.status === 'blocked' ? new THREE.Color(0xff352c) : edge.status === 'restricted' ? new THREE.Color(0xffa637) : new THREE.Color(0x39c99b).lerp(new THREE.Color(0xff4935), Math.max(risk, density))
-    const color = heatColor.clone().multiplyScalar(.58)
-    const roadMaterial = new THREE.MeshStandardMaterial({ color, roughness: .76, metalness: .08, emissive: edge.status === 'blocked' ? 0x7e160f : density > .65 ? 0x6a2e0b : 0x0, emissiveIntensity: edge.status === 'blocked' ? .62 : density > .65 ? .28 : 0, transparent: true, opacity: edge.status === 'blocked' ? .72 : .24 + density*.18, depthWrite: false })
-    const mesh = new THREE.Mesh(new THREE.BoxGeometry(width, .16, length), roadMaterial)
-    mesh.position.copy(start).lerp(end, .5)
-    mesh.rotation.y = Math.atan2(end.x - start.x, end.z - start.z)
-    mesh.receiveShadow = true
-    const midpoint = { x: Number(((edge.start.x + edge.end.x) / 2).toFixed(1)), y: Number(((edge.start.y + edge.end.y) / 2).toFixed(1)) }
-    const selection = { title: edge.name, type: '真实道路路段', detail: roadDetail(edge), action: edge.status === 'blocked' ? undefined : 'channel_blocked', roadEdgeId: edge.id, ...midpoint }
-    mesh.userData.selection = selection
-    roadNetworkLayer.add(mesh)
-    interactiveMeshes.push(mesh)
-    roadInteractiveMeshes.add(mesh)
-    const index = edges.indexOf(edge)
-    transform.position.copy(start).lerp(end, .5); transform.position.y = .36
-    transform.rotation.set(0, Math.atan2(end.x - start.x, end.z - start.z), 0); transform.scale.set(width * .28, 1, Math.max(.2, length * .96)); transform.updateMatrix()
-    heatInstances.setMatrixAt(index, transform.matrix); heatInstances.setColorAt(index, heatColor)
+  const rebuilt = roadVisuals.update(edges, edge => roadDetail(edge as RoadEdgeState))
+  roadHeatMesh = roadVisuals.heat
+  if (rebuilt) {
+    interactiveMeshes.splice(0, interactiveMeshes.length, ...interactiveMeshes.filter(object => !roadInteractiveMeshes.has(object)))
+    roadInteractiveMeshes.clear()
+    for (const mesh of roadVisuals.meshes.values()) { interactiveMeshes.push(mesh); roadInteractiveMeshes.add(mesh) }
   }
-  if (edges.length) { heatInstances.instanceMatrix.needsUpdate = true; if (heatInstances.instanceColor) heatInstances.instanceColor.needsUpdate = true; heatInstances.frustumCulled = false; roadNetworkLayer.add(heatInstances); roadHeatMesh = heatInstances }
-  else { heatGeometry.dispose(); heatMaterial.dispose() }
+  const focused = selected.value?.roadEdgeId && roadVisuals.meshes.get(selected.value.roadEdgeId)
+  if (focused) Object.assign(selected.value!, focused.userData.selection)
 }
 
 function rebuildResidentRoutes(): void {
   if (!residentRouteLayer) return
+  const ids = [...new Set([...(props.routePreview ?? []).map(p => p.id), ...selectedResidents.value, ...(selected.value?.residentId ? [selected.value.residentId] : [])])]
+  const routes = ids.map(id => props.routePreview?.find(p => p.id === id) ?? props.simulation?.residents.find(p => p.id === id))
+  const signature = JSON.stringify([Boolean(props.routePreview?.length), routes.map(p => [p?.id, p?.route_points])])
+  if (signature === residentRouteSignature) return
+  residentRouteSignature = signature
   disposeLayer(residentRouteLayer)
-  for (const residentId of new Set([...(props.routePreview??[]).map(p=>p.id), ...selectedResidents.value, ...(selected.value?.residentId ? [selected.value.residentId] : [])])) {
-    const resident = props.routePreview?.find(p=>p.id===residentId) ?? props.simulation?.residents.find((item) => item.id === residentId)
+  for (const resident of routes) {
     if (!resident?.route_points || resident.route_points.length < 2) continue
     const geometry = new THREE.BufferGeometry().setFromPoints(resident.route_points.map((point) => {const p=worldPoint(point.x, point.y, point.height??0);p.y+=.12;return p}))
     const line = new THREE.Line(geometry, new THREE.LineDashedMaterial({ color: props.routePreview?.length ? 0xffd789 : 0x8fe8da, dashSize: .9, gapSize: .45, transparent: true, opacity: .9 }))
@@ -903,6 +929,9 @@ function rebuildResidentRoutes(): void {
 
 function rebuildRoute(): void {
   if (!scene) return
+  const signature = JSON.stringify([Boolean(props.robotRoutePreview?.length), latestRoutePoints.value])
+  if (signature === robotRouteSignature) return
+  robotRouteSignature = signature
   if (routeLine) { scene.remove(routeLine); routeLine.geometry.dispose(); (routeLine.material as THREE.Material).dispose() }
   const eventPoints = latestRoutePoints.value.map((point) => {const p=worldPoint(point.x, point.y, point.height??0);p.y+=.18;return p})
   if (eventPoints.length < 2) { routeLine = null; return }
@@ -911,7 +940,9 @@ function rebuildRoute(): void {
 }
 
 function setView(mode: typeof viewMode.value): void {
-  if (mode === 'resident' && !activeResident.value && props.simulation?.residents[0]) selectedResident.value = props.simulation.residents[0].id
+  // Pin the person being followed. Otherwise the moving-person fallback changes
+  // targets (or disappears) at arrival, hiding the result of the user's decision.
+  if (mode === 'resident') selectedResident.value = activeResident.value?.id ?? props.simulation?.residents[0]?.id ?? ''
   if(mode==='resident' && activeResident.value?.indoor_stage && activeResident.value.indoor_stage!=='outdoor' && !indoorView.value)showIndoor()
   viewMode.value = mode; controls.enabled = mode === 'director'
   if (mode === 'director') { targetCameraPosition.set(66, 76, 74); targetLookAt.set(0, 0, 0) }
@@ -960,7 +991,7 @@ function onPointerUp(event: PointerEvent): void {
   })
    const roadHit = hit?.object.userData.selection?.roadEdgeId ? hit : undefined
   const groundHit = raycaster.intersectObject(groundPlane)[0]
-  const selection = hit?.object.userData.selection as typeof selected.value
+  const selection = (hit?.object.userData.crowd?.selection(hit.instanceId) ?? hit?.object.userData.selection) as typeof selected.value
   const roadSelection = roadHit?.object.userData.selection as typeof selected.value
   const point = groundHit?.point
   const x = point ? Math.max(0, Math.min(100, Number((point.x + 50).toFixed(1)))) : undefined
@@ -1073,6 +1104,8 @@ function selectAccessibleObject(event: Event): void {
 }
 
 function onVisibilityChange(): void { pageVisible = !document.hidden; renderDirty = true }
+function updateMotionPreference(): void { reducedMotion = motionPreference.matches || document.documentElement.dataset.reduceMotion === 'true'; renderDirty = true }
+const preferenceObserver = new MutationObserver(updateMotionPreference)
 function onContextLost(event: Event): void { event.preventDefault(); renderError.value = '三维渲染上下文正在恢复，请稍候。'; window.setTimeout(() => renderer?.forceContextRestore(), 350) }
 function onContextRestored(): void { renderError.value = ''; resize(); renderDirty = true }
 
@@ -1088,11 +1121,14 @@ watch(() => props.events?.[0]?.sequence, () => {
   window.setTimeout(() => { if (directorCue.value === event.message) directorCue.value = '' }, 4200)
 })
 onMounted(() => {
+  motionPreference.addEventListener('change', updateMotionPreference)
+  preferenceObserver.observe(document.documentElement, { attributes: true, attributeFilter: ['data-reduce-motion'] })
   try { buildScene(); applyQuality() }
   catch { renderError.value = '当前浏览器无法初始化三维渲染，请检查硬件加速设置后重新进入演练中心。' }
 })
 onBeforeUnmount(() => {
   destroyed = true
+  motionPreference.removeEventListener('change', updateMotionPreference); preferenceObserver.disconnect()
   for (const request of environmentRequests) request.abort()
   environmentRequests.clear(); hydrantModels.length=0
   cancelAnimationFrame(animationFrame); resizeObserver?.disconnect(); document.removeEventListener('visibilitychange', onVisibilityChange)
@@ -1100,6 +1136,7 @@ onBeforeUnmount(() => {
   controls?.dispose()
   actorAssets.dispose()
   actorMotion.clear()
+  roadVisuals.dispose()
   assemblyModels.clear()
   exitModels.length=0
   scene?.traverse((object) => {
@@ -1128,12 +1165,29 @@ watch(() => [props.routePreview, props.robotRoutePreview], () => updateEntities(
 .robot-execution progress::-webkit-progress-value { background: var(--text-primary); border-radius: 4px; }
 .robot-execution progress::-moz-progress-bar { background: var(--text-primary); border-radius: 4px; }
 @media (max-width: 760px) {
-  .twin-stage--object-open .spatial-tool-rack { display: none; }
+  .twin-stage--object-open .spatial-tool-rack,
+  .twin-stage--resident-view .spatial-tool-rack { display: none; }
+  .twin-stage--resident-view .resident-pov-hud {
+    max-height: calc(100dvh - 230px);
+    overflow-y: auto;
+    overscroll-behavior: contain;
+    box-sizing: border-box;
+  }
+}
+.resident-pov-hud > .resident-escort-feedback {
+  margin: 12px 0 0;
+  padding-top: 12px;
+  border-top: 1px solid rgba(112,153,144,.35);
+  color: #c5e4d9;
+  font-size: 16px;
+  line-height: 1.6;
+  white-space: normal;
+  overflow-wrap: anywhere;
 }
 </style>
 
 <template>
-  <section class="twin-stage" :class="{ 'twin-stage--compact': compact, 'twin-stage--object-open': inspectorOpen }" :data-status="status">
+  <section class="twin-stage" :class="{ 'twin-stage--compact': compact, 'twin-stage--object-open': inspectorOpen, 'twin-stage--resident-view': viewMode === 'resident' }" :data-status="status">
     <div class="twin-stage__viewport" ref="host" role="application" aria-label="安巷社区三维消防演练沙盘，可使用鼠标旋转缩放，或通过对象导航操作" tabindex="0" @dragover.prevent @drop="dropEvent">
       <div v-if="marquee" class="spatial-marquee" :style="{left:marquee.left+'px',top:marquee.top+'px',width:marquee.width+'px',height:marquee.height+'px'}"></div>
       <div v-if="worldLabel" class="twin-world-label"><span>平行世界</span><strong>{{ worldLabel }}</strong></div>
@@ -1156,9 +1210,10 @@ watch(() => [props.routePreview, props.robotRoutePreview], () => updateEntities(
       <label v-if="!compact" class="twin-object-nav">对象导航<select aria-label="选择沙盘对象" @change="selectAccessibleObject"><option value="">选择建筑、设施或人员</option><option v-for="item in accessibleObjects" :key="item.key" :value="item.key">{{ item.label }}</option></select></label>
 
       <aside v-if="viewMode === 'resident' && activeResident && !compact" class="resident-pov-hud" aria-live="polite">
-        <header><div><span>第一视角跟随</span><strong>{{ activeResident.label }}</strong></div><div class="resident-pov-switch"><button type="button" aria-label="上一位居民" @click="cycleResident(-1)"><AppIcon name="chevron" /></button><button type="button" aria-label="下一位居民" @click="cycleResident(1)"><AppIcon name="chevron" /></button></div></header>
+        <header><div><span>第一视角跟随</span><strong>{{ activeResident.label }}</strong></div><div class="resident-pov-switch"><button type="button" aria-label="上一位居民" @click="cycleResident(-1)"><AppIcon name="chevron" /></button><button type="button" aria-label="下一位居民" @click="cycleResident(1)"><AppIcon name="chevron" /></button><button type="button" aria-label="返回总控鸟瞰" title="返回总控鸟瞰" @click="setView('director')"><AppIcon name="close" /></button></div></header>
         <p>{{ activeResident.last_location ?? '正在定位连续空间位置' }}</p>
-        <div class="resident-pov-grid"><span>当前行为<strong>{{ activeResident.behavior ?? '等待指令' }}</strong></span><span>目标出口<strong>{{ activeResident.exit === 'north' ? '北侧集合点' : activeResident.exit === 'south' ? '南侧集合点' : '未分配' }}</strong></span><span>排队累计<strong>{{ Math.round(activeResident.queue_seconds ?? 0) }} 秒</strong></span><span>护送状态<strong>{{ activeHelper ? (activeHelper.state === 'escorting' ? '已会合同行' : '护送员接近中') : activeResident.assisted ? '护送中' : '未指派' }}</strong></span></div>
+        <div class="resident-pov-grid"><span>当前行为<strong>{{ activeResident.behavior ?? '等待指令' }}</strong></span><span>目标出口<strong>{{ activeResident.exit === 'north' ? '北侧集合点' : activeResident.exit === 'south' ? '南侧集合点' : '未分配' }}</strong></span><span>排队累计<strong>{{ Math.round(activeResident.queue_seconds ?? 0) }} 秒</strong></span><span>护送状态<strong>{{ escortStatusLabel }}</strong></span></div>
+        <p v-if="activeHelper?.behavior" role="status" class="resident-escort-feedback">{{ activeHelper.responsible }} · {{ activeHelper.behavior }}</p>
         <div class="resident-pov-exposure"><span>烟气暴露轨迹<strong>{{ povExposureLevel }}%</strong></span><i><b :style="{ width: povExposureLevel + '%' }"></b></i></div>
         <button v-if="interactive" class="resident-pov-command" type="button" @click="selectCurrentResident"><AppIcon name="route" :size="17" />指挥此居民</button>
       </aside>

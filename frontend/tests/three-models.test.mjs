@@ -16,6 +16,53 @@ async function load(name) {
 }
 const { displayHeight } = await load('sceneMaterials')
 const { createPerson, posePerson, createPatrolRobot } = await load('actors')
+const { RoadVisuals } = await load('roadVisuals')
+const { CrowdRenderer } = await load('crowdRenderer')
+
+test('1000 residents share five instance batches; detail pool stays bounded and selection survives reuse', () => {
+  const actors = Array.from({length:1000}, (_, i) => {
+    const actor = new THREE.Group(); actor.name = `resident-${i}`
+    actor.position.set(i % 32, 0, Math.floor(i / 32)); actor.userData.selection = { residentId: actor.name }
+    return actor
+  })
+  let created = 0
+  const crowd = new CrowdRenderer(actors, () => { created++; return new THREE.Group() })
+  const camera = new THREE.PerspectiveCamera(); camera.position.set(0, 5, 5)
+  crowd.update(camera, new Set(), 12, 1, true, () => {})
+  assert.equal(created, 12)
+  assert.equal(crowd.group.children.filter(o=>o.isInstancedMesh).length, 5)
+  assert.equal(crowd.selection(999).residentId, 'resident-999')
+  for(let t=2;t<30;t++) {
+    camera.position.x = t
+    crowd.update(camera, new Set(['resident-999']), 12, t, true, () => {})
+  }
+  assert.equal(created, 12)
+  assert.equal(actors[999].children.length, 1)
+  assert.equal(actors[999].children[0].userData.selection.residentId, 'resident-999')
+  crowd.update(camera, new Set(), 6, 31, true, () => {})
+  assert.equal(actors.filter(a=>a.children.length).length, 6)
+  assert.equal(crowd.group.children.filter(o=>!o.isInstancedMesh).length, 6, 'unused slots remain owned for disposal')
+})
+
+test('road risk updates reuse meshes, refresh selection and rebuild only on topology changes', () => {
+  const visuals = new RoadVisuals()
+  const road = { id: 'north', name: '北门通道', start: { x: 50, y: 20 }, end: { x: 50, y: 40 }, width_meters: 4, status: 'open', risk_score: 0 }
+  assert.equal(visuals.update([road], edge => edge.status), true)
+  const mesh = visuals.meshes.get(road.id), geometry = mesh.geometry, heat = visuals.heat
+  for (let risk = 1; risk <= 100; risk++) {
+    assert.equal(visuals.update([{ ...road, risk_score: risk, density_percent: risk }], edge => edge.status), false)
+    assert.equal(visuals.meshes.get(road.id).geometry, geometry)
+    assert.equal(visuals.heat, heat)
+  }
+  visuals.update([{ ...road, status: 'blocked' }], edge => edge.status)
+  assert.equal(mesh.userData.selection.detail, 'blocked')
+  assert.equal(mesh.userData.selection.action, undefined)
+  assert.equal(mesh.material.opacity, .72)
+  assert.equal(visuals.update([{ ...road, width_meters: 2 }], edge => edge.status), true)
+  assert.notEqual(visuals.meshes.get(road.id).geometry, geometry)
+  visuals.dispose()
+  assert.equal(visuals.group.children.length, 0)
+})
 const { createApartment } = await load('communityModels')
 const { FireEffects } = await load('fireEffects')
 const { ActorMotion } = await load('actorMotion')

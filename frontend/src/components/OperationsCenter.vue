@@ -92,10 +92,17 @@ const spatialPreviewBusy = ref(false)
 let spatialPreviewRequest = 0
 const branchEvidence = ref<{at_seconds:number;source_name:string;branch_name:string;notice:string;worlds:{baseline:Simulation;alternative:Simulation};residents:Array<{id:string;label:string;original_status:string;branch_status:string;exposure_delta:number;queue_delta:number}>}|null>(null)
 function applyCurrent(value: Drill) { if (value.id === current.value?.id && isNewerState(value, current.value)) current.value = value }
-function updateFromLab(value: unknown) { applyCurrent(value as Drill); latestCue.value = '指令已受理，可在执行进度查看人员行程、等待原因和关联证据'; clearSpatialPreview() }
+function updateFromLab(value: unknown) { applyCurrent(value as Drill); notifyCommand('指令已受理，可在执行进度查看人员行程、等待原因和关联证据'); clearSpatialPreview() }
 function forkFromLab(value: unknown) { const drill=value as Drill; drills.value=[drill,...drills.value]; selectDrill(drill); latestCue.value='已创建历史分支。点击继续训练，再选择另一条路线。' }
 async function compareEditable() { if(!current.value)return; try { branchEvidence.value=await api.request(`${props.apiBaseUrl}/drills/${current.value.id}/branch-comparison`, {headers:headers()}) } catch(cause) { error.value=cause instanceof Error?cause.message:'比较失败' } }
 const latestCue = ref('等待导演指令'), socketState = ref<'connecting' | 'live' | 'stale'>('connecting')
+const commandNotice = ref('')
+let commandNoticeTimer: ReturnType<typeof setTimeout> | undefined
+function notifyCommand(message: string) {
+  latestCue.value = message; commandNotice.value = message
+  clearTimeout(commandNoticeTimer)
+  commandNoticeTimer = setTimeout(() => { commandNotice.value = '' }, 7000)
+}
 const participantInvite = ref<{ drill_id: string; code: string; name: string; lan_addresses?: string[] } | null>(null)
 const participantOrigin = ref(location.origin)
 const arena = ref<InstanceType<typeof DigitalTwinArena> | null>(null)
@@ -118,7 +125,8 @@ function formatPresenceTime(value: string): string {
 }
 let stopLive: (() => void) | undefined, directorTimer: number | null = null, parallelTimer: number | null = null, desiredDrillId = ''
 const activeCommands = computed(() => current.value?.commands?.filter(c => ['executing', 'queued', 'blocked', 'paused'].includes(c.status)) ?? [])
-const commandHint = computed(() => busy.value ? '正在提交指令…' : activeCommands.value.length ? `${activeCommands.value.length} 项指令执行中 · 查看进度` : current.value?.commands?.length ? '查看指令结果与证据' : '查看任务与执行进度')
+const blockedCommands = computed(() => activeCommands.value.filter(command => command.status === 'blocked'))
+const commandHint = computed(() => busy.value ? '正在提交指令…' : blockedCommands.value.length ? `${blockedCommands.value.length} 项受阻 · 查看原因` : activeCommands.value.length ? `${activeCommands.value.length} 项待完成 · 查看进度` : current.value?.commands?.length ? '查看指令结果与证据' : '查看任务与执行进度')
 let audioContext: AudioContext | null = null
 
 const publishedScenes = computed(() => scenes.value.filter((scene) => scene.status === 'published'))
@@ -169,7 +177,17 @@ async function loadDrills(): Promise<void> {
 }
 async function createDrill(): Promise<void> { busy.value = true; try { const drill = await api.request<Drill>(`${props.apiBaseUrl}/scenes/${selectedSceneId.value}/drills`, { method: 'POST', headers: { ...headers(), 'Content-Type': 'application/json' }, body: JSON.stringify(form.value) }); drills.value = [drill, ...drills.value]; selectDrill(drill) } catch (cause) { error.value = cause instanceof Error ? cause.message : '场次创建失败。' } finally { busy.value = false } }
 function selectDrill(drill: Drill): void { leaveReplay(); clearSpatialPreview(); branchEvidence.value=null; current.value = drill; branchComparison.value = null; showParallel.value = false; drawer.value = 'none'; void router.replace({query:{scene:selectedSceneId.value,drill:drill.id,...(directorMode.value==='replay'?{mode:'replay'}:{})}}); connectSocket(drill.id); void loadParticipantInvite(); if(directorMode.value==='replay') void seekReplay(0) }
-async function loadParticipantInvite(): Promise<void> { if (!current.value) return; try { const invite = await api.request<{ drill_id: string; code: string; name: string; lan_addresses?: string[] }>(`${props.apiBaseUrl}/drills/${current.value.id}/participant-invite`, { headers: headers() }); participantInvite.value = invite; if (['127.0.0.1', 'localhost'].includes(location.hostname) && invite.lan_addresses?.[0]) participantOrigin.value = `http://${invite.lan_addresses[0]}:${location.port || '5173'}` } catch { participantInvite.value = null } }
+async function loadParticipantInvite(): Promise<void> {
+  const drillId = current.value?.id
+  participantInvite.value = null
+  if (!drillId) return
+  try {
+    const invite = await api.request<{ drill_id: string; code: string; name: string; lan_addresses?: string[] }>(`${props.apiBaseUrl}/drills/${drillId}/participant-invite`, { headers: headers() })
+    if (desiredDrillId !== drillId || current.value?.id !== drillId) return
+    participantInvite.value = invite
+    if (['127.0.0.1', 'localhost'].includes(location.hostname) && invite.lan_addresses?.[0]) participantOrigin.value = `http://${invite.lan_addresses[0]}:${location.port || '5173'}`
+  } catch { if (current.value?.id === drillId) participantInvite.value = null }
+}
 async function copyParticipantLink(): Promise<void> { if (!participantLink.value) return; try { await navigator.clipboard.writeText(participantLink.value); latestCue.value = '参演链接已复制，可在手机浏览器直接打开' } catch { error.value = '当前浏览器未开放剪贴板权限，请选中上方完整参演链接并手动复制。' } }
 function connectSocket(drillId: string): void {
   desiredDrillId = drillId; stopLive?.()
@@ -184,7 +202,7 @@ async function requestDrill(path: string, method: 'POST' | 'PATCH', body?: unkno
   if (!current.value || busy.value) return false; busy.value = true; error.value = ''
   try {
     applyCurrent(await sendCommand<Drill>(api, current.value.id, path, body, method, expectedSequence))
-    if (successMessage) latestCue.value = successMessage
+    if (successMessage) notifyCommand(successMessage)
     return true
   }
   catch (cause) { error.value = cause instanceof Error ? cause.message : '现场操作失败。'; return false }
@@ -232,7 +250,7 @@ async function confirmSpatialAction(): Promise<void> {
   else if (intent.kind === 'robot') applied = await requestDrill('/robot', 'POST', { command: 'move', x: intent.x, y: intent.y, target: intent.target }, undefined, preview.expected_sequence)
   else applied = await requestDrill('/residents', 'POST', { resident_ids: intent.residentIds, exit: intent.exit, action: intent.action }, undefined, preview.expected_sequence)
   if (applied) {
-    latestCue.value = intent.kind === 'road' ? '道路封锁已写入证据，居民与机器人正在按新路网改道' : intent.kind === 'robot' ? '机器人任务已加入动态队列，正在沿 A* 路线逐段执行' : '居民指令已生效，正在按楼内容量与排队规则连续移动'
+    notifyCommand(intent.kind === 'road' ? '道路封锁已写入证据，居民与机器人正在按新路网改道' : intent.kind === 'robot' ? '机器人任务已加入队列；执行进度会显示排队、移动或受阻原因' : '居民指令已生效，可查看准备、排队、移动和到达进度')
     clearSpatialPreview()
   } else if (error.value.includes('重新预览')) {
     latestCue.value = '现场在确认前发生变化，正在按最新路网和人员状态重新预演'
@@ -307,13 +325,15 @@ function playCue(event: DrillEvent): void {
 }
 
 watch(selectedSceneId, () => { drillGeneration++; drillRequest?.abort(); drillLoading.value=false; desiredDrillId = ''; current.value = null; stopLive?.(); void loadDrills() })
+watch(() => current.value?.id, () => { commandNotice.value = ''; clearTimeout(commandNoticeTimer) })
+watch(() => props.accessToken, token => { if (token && current.value) connectSocket(current.value.id) })
 watch(() => current.value?.events[0]?.sequence, () => { const event = current.value?.events[0]; if (event) playCue(event) })
 watch(highContrast, value => localStorage.setItem('zhiyan_high_contrast', value ? '1' : '0'))
 watch(replayPlaying, playing => { if (replayTimer) window.clearInterval(replayTimer); replayTimer = playing ? window.setInterval(() => { if (replayLoading.value) return; if (replayAt.value >= (current.value?.elapsed_seconds ?? 0)) { replayPlaying.value = false; return }; void seekReplay(replayAt.value + 1) }, 1000) : null })
 watch(showParallel, (visible) => { if (parallelTimer) window.clearInterval(parallelTimer); parallelTimer = visible ? window.setInterval(() => void refreshBranchWorlds(), 3000) : null })
 onMounted(() => { void loadScenes(); document.addEventListener('keydown', onEscape) })
 onBeforeUnmount(() => { sceneGeneration++; indexGeneration++; drillGeneration++; sceneRequest?.abort(); indexRequest?.abort(); drillRequest?.abort(); document.removeEventListener('keydown', onEscape); if (replayTimer) window.clearInterval(replayTimer); replayRequest++ })
-onBeforeUnmount(() => { desiredDrillId = ''; stopLive?.(); if (directorTimer) window.clearInterval(directorTimer); if (parallelTimer) window.clearInterval(parallelTimer); void audioContext?.close() })
+onBeforeUnmount(() => { desiredDrillId = ''; stopLive?.(); clearTimeout(commandNoticeTimer); if (directorTimer) window.clearInterval(directorTimer); if (parallelTimer) window.clearInterval(parallelTimer); void audioContext?.close() })
 </script>
 
 <template>
@@ -405,6 +425,7 @@ onBeforeUnmount(() => { desiredDrillId = ''; stopLive?.(); if (directorTimer) wi
           <button v-else class="execution-link" type="button" :title="commandHint" @click="toggleDrawer('missions')"><AppIcon name="tasks" :size="16" /><span>{{ commandHint }}</span></button>
         </div>
         <UiToast v-if="error" :message="error" tone="danger" @dismiss="error = ''" />
+        <UiToast v-else-if="commandNotice && !replay" :message="commandNotice" tone="success" action-label="查看执行" @action="commandNotice = ''; toggleDrawer('missions')" @dismiss="commandNotice = ''" />
         <UiConfirmDialog :open="endConfirmationOpen" title="结束本场并生成评分？" :description="`结束后本场不能继续，当前仍有 ${activeTaskCount} 项任务未完成。系统将冻结现场并生成复盘证据。`" confirm-label="结束并评分" cancel-label="继续演练" :busy="busy" theme="immersive" danger @confirm="confirmEnd" @cancel="endConfirmationOpen = false" />
       </section>
       <section v-if="showParallel && branchComparison" class="parallel-worlds" aria-label="左右双世界三维平行推演"><header><div><h2>同一现场，两种疏散策略</h2><p>向前预测 {{ branchComparison.projection_seconds }} 秒 · 规则仿真</p></div><button type="button" @click="showParallel = false">返回现场</button></header><div class="parallel-worlds__stage"><article v-for="side in (['baseline','alternative'] as const)" :key="side"><DigitalTwinArena :key="current.id + '-' + side" status="running" :elapsed-seconds="branchComparison.at_seconds" :robot="branchComparison.robots[side]" :simulation="branchComparison.worlds[side]" compact :high-contrast="highContrast" :world-label="branchComparison[side].name" /><footer><span>疏散 {{ branchComparison[side].evacuation_seconds === null ? '无法完成' : branchComparison[side].evacuation_seconds + ' 秒' }}</span><span>暴露 {{ branchComparison[side].smoke_exposed }} 人</span><span>不可达 {{ branchComparison[side].unreachable }}</span><strong>{{ branchComparison[side].projected_score }} 分</strong></footer></article></div><div class="parallel-verdict"><strong>{{ branchComparison.recommendation }}</strong><small>{{ branchComparison.disclaimer }}</small></div></section>

@@ -6,8 +6,8 @@ import { computed, nextTick, ref, watch } from 'vue'
 import AppIcon from './AppIcon.vue'
 
 type Point = { x: number; y: number; height?: number }
-type Person = Point & { id: string; label: string; floor?: number; current_floor?: number; status: string; indoor_stage?: string; counted?: boolean; last_location?: string; search_responsible?: string; behavior?: string; vulnerable: boolean; route_reachable?: boolean; route_points?: Point[]; remaining_seconds?: number; queue_seconds?: number }
-interface State { id: string; status: string; elapsed_seconds: number; branch?: { source_name: string } | null; simulation: { residents: Person[] }; events: Array<{ sequence: number; event_type: string; message: string; elapsed_seconds: number }> }
+type Person = Point & { id: string; label: string; building_id?: string; floor?: number; current_floor?: number; status: string; indoor_stage?: string; counted?: boolean; last_location?: string; search_responsible?: string; behavior?: string; vulnerable: boolean; route_reachable?: boolean; route_points?: Point[]; remaining_seconds?: number; queue_seconds?: number }
+interface State { id: string; status: string; elapsed_seconds: number; branch?: { source_name: string } | null; simulation: { residents: Person[]; world?: { objects: Array<{id:string;name:string}> } | null }; events: Array<{ sequence: number; event_type: string; message: string; elapsed_seconds: number }> }
 interface ResidentPreview {
   residents: Person[]; can_apply: boolean; notice: string; at_seconds: number; expected_sequence: number
   planned_duration_seconds?: number | null
@@ -23,7 +23,11 @@ const draft = ref<ResidentPreview | null>(null)
 const action = ref<'evacuate' | 'priority_assist'>('evacuate')
 const confirmPanel = ref<HTMLElement|null>(null)
 const people = computed(() => props.drill.simulation.residents)
-const floors = computed(() => [...new Set(people.value.map(p => p.floor ?? 1))].sort((a,b) => b-a))
+const buildingId = ref('')
+const buildings = computed(() => [...new Set(people.value.map(p => p.building_id).filter(Boolean))])
+const buildingPeople = computed(() => people.value.filter(p => !buildingId.value || p.building_id === buildingId.value))
+const buildingName = (id: string | undefined) => props.drill.simulation.world?.objects.find(o=>o.id===id)?.name ?? `楼栋 ${buildings.value.indexOf(id)+1}`
+const floors = computed(() => [...new Set(buildingPeople.value.map(p => p.floor ?? 1))].sort((a,b) => b-a))
 const arrived = computed(() => people.value.filter(p => p.status === 'evacuated' && !p.counted))
 const missing = computed(() => people.value.filter(p => p.status !== 'evacuated'))
 const decisions = computed(() => props.drill.events.filter(e => ['inject.channel_blocked','resident.command'].includes(e.event_type)))
@@ -33,7 +37,7 @@ async function request(path: string, body: unknown): Promise<any> {
   return api.post(`/drills/${props.drill.id}${path}`,body)
 }
 function selectIds(ids: string[]) { generation++; selected.value = ids; draft.value = null; emit('preview', []); emit('select', ids) }
-function selectFloor(floor: number) { selectIds(people.value.filter(p => p.status !== 'evacuated' && p.indoor_stage !== 'outdoor' && Math.max(1,Math.ceil(p.current_floor ?? p.floor ?? 1)) === floor).map(p => p.id)) }
+function selectFloor(floor: number) { selectIds(buildingPeople.value.filter(p => p.status !== 'evacuated' && p.indoor_stage !== 'outdoor' && Math.max(1,Math.ceil(p.current_floor ?? p.floor ?? 1)) === floor).map(p => p.id)) }
 async function previewCommand(command: { residentIds: string[]; exit: 'north' | 'south'; action: 'evacuate' | 'priority_assist' }) {
   selectIds(command.residentIds); exit.value = command.exit; action.value = command.action; tab.value = 'command'
   if (!selected.value.length) return
@@ -62,7 +66,7 @@ async function fork(at: number, sequence?: number) {
   catch (cause) { error.value = String(cause instanceof Error ? cause.message : cause) }
   finally { pending.value = false }
 }
-watch(() => props.drill.id, () => { selectIds([]); error.value = ''; notice.value = '' })
+watch(() => props.drill.id, () => { selectIds([]); buildingId.value=''; error.value = ''; notice.value = '' })
 watch(() => props.replay, () => selectIds([]))
 function openTab(value: 'command' | 'rollcall' | 'branch') { tab.value = value }
 defineExpose({ previewCommand, selectIds, openTab })
@@ -74,6 +78,7 @@ defineExpose({ previewCommand, selectIds, openTab })
     <p v-if="error" class="lab-error" role="alert">{{ error }}</p><p v-if="notice" class="lab-notice" role="status">{{ notice }}</p><p v-if="pending" role="status">正在校验场次与路线…</p>
     <template v-if="tab==='command'">
       <h2>选人 → 预览 → 确认</h2><p>点选一层，或切到三维「居民」工具拖动框选。点击北／南出口也能预览路线。</p>
+      <label v-if="buildings.length>1">选择楼栋<select v-model="buildingId" @change="selectIds([])"><option value="">全部楼栋（同层一起选择）</option><option v-for="id in buildings" :key="id" :value="id">{{ buildingName(id) }} · {{ people.filter(p=>p.building_id===id).length }} 人</option></select></label>
       <div class="floor-select"><button v-for="floor in floors" :key="floor" :disabled="pending" @click="selectFloor(floor)">{{ floor }}F</button></div>
       <div class="selection-count"><strong>已选 {{ selected.length }} 人</strong><button @click="selectIds([])">清除选择</button></div>
       <button :disabled="!canAct" @click="selectIds(selected); notice='已切换框选：在三维画面中按住并拖动，再点击出口预览路线。'">三维框选</button>

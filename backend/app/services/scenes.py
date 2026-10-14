@@ -3,6 +3,7 @@ from sqlalchemy.orm import Session, selectinload
 
 from app.models.domain import Community, DecisionOption, DecisionPoint, MapObject, MapObjectType, Scene, SceneStatus, SceneTemplate, SceneVersion
 from app.services.map_objects import current_version
+from app.models.tasks import DecisionTask
 
 
 TEMPLATES = [
@@ -84,6 +85,13 @@ def update_charging_shed_parameters(session: Session, *, scene: Scene, parameter
                     consequence=option.consequence,
                     next_decision_point_id=next_point.id if next_point else None,
                 ))
+        # Tasks belong to a version AND a decision point. Copy both references;
+        # otherwise editing a published scene silently removes its drill tasks.
+        for task in session.scalars(select(DecisionTask).where(DecisionTask.scene_version_id == version.id)):
+            point = cloned_points.get(task.decision_point_id)
+            if point is not None:
+                session.add(DecisionTask(scene_version_id=draft.id, decision_point_id=point.id,
+                    title=task.title, target=task.target, deadline_seconds=task.deadline_seconds, status='pending'))
         scene.status = SceneStatus.DRAFT
     else:
         version.parameters = merged_parameters

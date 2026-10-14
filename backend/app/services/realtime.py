@@ -1,6 +1,7 @@
 """Versioned, read-only transport. Simulation ownership stays with the engine."""
 from collections import OrderedDict
 from threading import RLock
+from concurrent.futures import Future
 
 
 def state_version(sequence: int, elapsed: int, presence_revision: int = 0) -> str:
@@ -31,21 +32,38 @@ class SnapshotCache:
         self.capacity = capacity
         self._entries = OrderedDict()
         self._lock = RLock()
+        self._pending = {}
 
     def get(self, drill_id, version, factory):
-        # Serialize cache misses so a burst of viewers doesn't replay N worlds.
-        # Database/command locks are never acquired from inside this lock.
+        key = (drill_id, version)
         with self._lock:
             found = self._entries.get(drill_id)
             if found and found[0] == version:
                 self._entries.move_to_end(drill_id)
                 return found[1]
+            pending = self._pending.get(key)
+            owner = pending is None
+            if owner:
+                pending = self._pending[key] = Future()
+        if not owner:
+            return pending.result()
+        try:
+            # Expensive simulation never holds the global cache mutex. Unrelated
+            # drills can progress concurrently; same-version observers share work.
             result = factory()
-            self._entries[drill_id] = (result["state_version"], result)
-            self._entries.move_to_end(drill_id)
-            while len(self._entries) > self.capacity:
-                self._entries.popitem(last=False)
+            with self._lock:
+                self._entries[drill_id] = (result["state_version"], result)
+                self._entries.move_to_end(drill_id)
+                while len(self._entries) > self.capacity:
+                    self._entries.popitem(last=False)
+            pending.set_result(result)
             return result
+        except BaseException as error:
+            pending.set_exception(error)
+            raise
+        finally:
+            with self._lock:
+                self._pending.pop(key, None)
 
 
 live_snapshots = SnapshotCache()

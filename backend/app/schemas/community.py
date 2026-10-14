@@ -6,9 +6,14 @@ from app.models.domain import CommunityStatus, CommunityVersionStatus
 
 
 class CommunityCreate(BaseModel):
+    model_config = ConfigDict(str_strip_whitespace=True)
     name: str = Field(min_length=2, max_length=120)
     address: str | None = Field(default=None, max_length=255)
     description: str | None = Field(default=None, max_length=2000)
+
+
+class CommunityUpdate(CommunityCreate):
+    expected_updated_at: datetime
 
 
 class CommunityVersionSummary(BaseModel):

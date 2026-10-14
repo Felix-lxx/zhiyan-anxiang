@@ -81,10 +81,18 @@ def ledger_feedback(session: Session, drill: DrillSession, derived: list[dict[st
         select(DrillCommand)
         .where(DrillCommand.drill_session_id == drill.id)
         .order_by(DrillCommand.created_at.desc())
-        .limit(24)
     ))
     derived_by_id = {item["id"]: item for item in derived}
     output = [record_payload(record, derived_by_id.get(record.command_id)) for record in records]
     recorded_ids = {record.command_id for record in records}
     output.extend(item for item in derived if item["id"] not in recorded_ids)
-    return sorted(output, key=lambda item: (item.get("submitted_at", item.get("accepted_at", 0)), item.get("accepted_at", 0)), reverse=True)[:24]
+    ordered = sorted(output, key=lambda item: (item.get("submitted_at", item.get("accepted_at", 0)), item.get("accepted_at", 0)), reverse=True)
+    retained_terminal = 0
+    result = []
+    for item in ordered:
+        if item["status"] in TERMINAL_STATUSES:
+            retained_terminal += 1
+            if retained_terminal > 24:
+                continue
+        result.append(item)
+    return result

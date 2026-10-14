@@ -13,8 +13,14 @@ def command_feedback(events, simulation, robot, elapsed, drill_status):
     receipts = [e for e in events if e.event_type == "command.accepted"]
     people = {p["id"]: p for p in simulation["residents"]}
     queue = {t["id"]: t for t in (robot or {}).get("task_queue", [])}
+    latest_assignment = {}
+    for receipt in receipts:
+        if receipt.payload["kind"] == "residents.assign":
+            for resident_id in receipt.payload["arguments"].get("resident_ids", []):
+                latest_assignment[resident_id] = max(receipt.sequence, latest_assignment.get(resident_id, -1))
     output = []
-    for event in receipts[-24:]:
+    # Reconcile every receipt: display limits must never freeze an old live task.
+    for event in receipts:
         data = event.payload
         kind, payload = data["kind"], data["arguments"]
         status, progress, reason, remaining = "completed", 1., "现场状态已更新，关联事件已留存。", 0
@@ -24,7 +30,7 @@ def command_feedback(events, simulation, robot, elapsed, drill_status):
         if selected:
             progress = sum(1 if p["status"] == "evacuated" else min(.99, p.get("progress", 0)) for p in selected) / len(selected)
             remaining = max((p.get("remaining_seconds", 0) or 0 for p in selected if p["status"] != "evacuated"), default=0)
-            later_ids = {p for later in receipts if later.sequence > event.sequence and later.payload["kind"] == "residents.assign" for p in later.payload["arguments"].get("resident_ids", [])}
+            later_ids = {p["id"] for p in selected if latest_assignment.get(p["id"], -1) > event.sequence}
             blocked = [p for p in selected if p["status"] != "evacuated" and (p.get("route_reachable") is False or p["status"] == "missing")]
             if completed == len(selected):
                 reason = f"{completed} 名居民已到集合点，请在清点区核验到场。"
@@ -36,9 +42,18 @@ def command_feedback(events, simulation, robot, elapsed, drill_status):
                 status = "executing"
                 waiting = next((p for p in selected if p["status"] != "evacuated"), selected[0])
                 reason = f"已到 {completed}/{len(selected)} 人；{waiting['label']} · {waiting.get('behavior', '沿通道移动')}。"
+            if status in {'executing','blocked'}:
+                approaching = [h for h in simulation.get('helpers', []) if h.get('resident_id') in resident_ids and h['state'] in {'approaching','blocked'}]
+                obstructed = next((h for h in approaching if h['state']=='blocked' or h.get('route_reachable') is False), None)
+                if obstructed:
+                    status, remaining = 'blocked', None
+                    reason = f"{obstructed.get('responsible','护送员')}：{obstructed.get('behavior','前往会合的路线不可达')}。居民尚未完成会合。"
+                elif approaching:
+                    remaining = None  # Resident walking ETA excludes the helper's approach and queues.
+                    reason = f"已到 {completed}/{len(selected)} 人；{approaching[0].get('responsible','护送员')}：{approaching[0].get('behavior','正前往目标会合')}。会合后共同撤离。"
             if kind == "search.assign" and status == "blocked":
                 helper = next((h for h in simulation.get("helpers", []) if h["resident_id"] == payload["resident_id"]), None)
-                if helper and helper["state"] == "approaching":
+                if helper and helper["state"] == "approaching" and helper.get('route_reachable') is not False:
                     status, reason = "executing", "搜索员正在沿通道寻找目标，会合后共同撤离。"
         elif kind == "robot.command" and payload.get("command") == "move":
             task = next((queue[i] for i in data.get("event_ids", []) if i in queue), None)

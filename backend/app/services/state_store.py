@@ -36,12 +36,19 @@ def persist_snapshot(
     elapsed = int(payload.get("elapsed_seconds", 0))
     if not force and latest and elapsed - latest.elapsed_seconds < SNAPSHOT_INTERVAL_SECONDS:
         return None
+    stored_payload = deepcopy(payload)
+    world = payload.get("simulation", {}).get("world")
+    if world and world.get("schema_version", 0) >= 3:
+        from app.services.simulation_checkpoints import recall
+        checkpoint = recall(world, elapsed)
+        if checkpoint and checkpoint["now"] == elapsed:
+            stored_payload["_engine_checkpoint"] = checkpoint
     record = DrillStateSnapshot(
         drill_session_id=drill.id,
         state_version=version,
         event_sequence=int(payload.get("latest_event_sequence", 0)),
         elapsed_seconds=elapsed,
-        payload=deepcopy(payload),
+        payload=stored_payload,
     )
     try:
         with session.begin_nested():
@@ -68,4 +75,21 @@ def load_snapshot(session: Session, drill_id: str, version: str | None = None) -
     if version:
         query = query.where(DrillStateSnapshot.state_version == version)
     record = session.scalar(query.order_by(DrillStateSnapshot.elapsed_seconds.desc(), DrillStateSnapshot.created_at.desc()).limit(1))
-    return deepcopy(record.payload) if record else None
+    if not record:
+        return None
+    payload = deepcopy(record.payload)
+    payload.pop("_engine_checkpoint", None)
+    return payload
+
+
+def restore_engine_checkpoint(session: Session, drill_id: str, world: dict, elapsed: int):
+    """GET remains read-only; only existing engine snapshots seed the process cache."""
+    from app.services.simulation_checkpoints import recall, remember
+    if recall(world, elapsed) is not None:
+        return
+    record = session.scalar(select(DrillStateSnapshot).where(
+        DrillStateSnapshot.drill_session_id == drill_id,
+        DrillStateSnapshot.elapsed_seconds <= elapsed,
+    ).order_by(DrillStateSnapshot.elapsed_seconds.desc(), DrillStateSnapshot.created_at.desc()).limit(1))
+    if record:
+        remember(world, record.payload.get("_engine_checkpoint"))

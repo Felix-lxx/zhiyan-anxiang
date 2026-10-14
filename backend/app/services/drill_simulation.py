@@ -110,8 +110,8 @@ def sample_route(points: list[dict], distance: float) -> tuple[float, float, int
 def simulate_residents(network: dict, events: list[dict], elapsed: int, strategy: str | None = None, branch_at: int | None = None, world: dict | None = None) -> dict:
     """Replay commands at their timestamps; rerouting never rewinds or teleports people."""
     if world and world.get("schema_version", 2) >= 3:
-        from app.services.spatial_simulation import simulate
-        return simulate(world, events, elapsed, strategy, branch_at)
+        from app.services.simulation_checkpoints import simulate_incrementally
+        return simulate_incrementally(world, events, elapsed, strategy, branch_at)
     network = {**network, "nodes": [dict(node) for node in network["nodes"]], "edges": [dict(edge) for edge in network["edges"]]}
     origin = world["fire_origin"] if world else {"x": 66, "y": 43}
     network["fire_origin"] = origin

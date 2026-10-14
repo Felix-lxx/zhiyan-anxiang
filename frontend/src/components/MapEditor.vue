@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import type { MapObjectType, RoadEdgeStatus, MapObject, RoadNode, RoadEdge, ReachabilityResult } from '../domain/map'
 import { computed, nextTick, onMounted, ref, watch } from 'vue'
+import { useRoute } from 'vue-router'
 import type { Community } from '../domain/models'
 import AppIcon from './AppIcon.vue'
 import UiConfirmDialog from './ui/UiConfirmDialog.vue'
@@ -22,6 +23,7 @@ interface PlanningIssue { id: string; tone: 'warning' | 'danger'; title: string;
 const props = defineProps<{ apiBaseUrl: string; accessToken: string; community: Community }>()
 const emit = defineEmits<{ back: []; openScenes: [] }>()
 const api = createApiClient(props.apiBaseUrl, () => props.accessToken)
+const route = useRoute()
 const objectTypes: Array<{ value: MapObjectType; label: string }> = [
   { value: 'building', label: '楼栋' }, { value: 'road', label: '道路' }, { value: 'fire_lane', label: '消防通道' },
   { value: 'exit', label: '安全出口' }, { value: 'assembly_point', label: '集合点' }, { value: 'fire_hydrant', label: '消火栓' },
@@ -264,7 +266,33 @@ async function deleteSelectedObject(): Promise<void> {
 }
 
 watch(placementType, (type) => { if (!selectedObject.value) form.value.object_type = type })
-onMounted(() => { void loadObjects(); void loadNetwork() })
+async function locatePreparationIssue() {
+  if(isLoading.value || isNetworkLoading.value)return
+  const query=route.query
+  if(query.node){
+    setLayer('network')
+    const node=nodes.value.find(item=>item.id===query.node)
+    if(node){selectNode(node);networkNotice.value=`已定位 ${node.name}，请检查相邻道路与出口连通。`}
+    else networkNotice.value='目标节点已不存在，请重新运行准备检查。'
+  }else if(query.object){
+    setLayer('objects')
+    const object=objects.value.find(item=>item.id===query.object)
+    if(object){selectObject(object);actionNotice.value=`已定位 ${object.name}，修改后点击保存。`}
+    else actionNotice.value='目标对象已不存在，请重新运行准备检查。'
+  }else if(query.layer==='network'){
+    setLayer('network');setTool(query.tool==='connect'?'connect':'place-node')
+    if(query.tool==='place-node'){resetNodeForm();nodeForm.value.is_exit=true;networkNotice.value='请在图上放置出口节点，保存后连接到现有道路。'}
+  }else if(objectTypes.some(type=>type.value===query.object_type)){
+    setLayer('objects');placementType.value=query.object_type as MapObjectType
+    resetObjectForm();setTool('place-object')
+  }else return
+  await nextTick()
+  const marker=canvasRef.value?.querySelector<HTMLElement>('[data-selected="true"]')
+  if(marker){marker.scrollIntoView({block:'nearest',inline:'nearest'});marker.focus({preventScroll:true})}
+  else canvasRef.value?.scrollIntoView({block:'center'})
+}
+watch(()=>route.query,()=>void locatePreparationIssue())
+onMounted(async () => { await Promise.all([loadObjects(),loadNetwork()]);await locatePreparationIssue() })
 </script>
 
 <template>

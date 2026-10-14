@@ -79,6 +79,10 @@ def test_helper_really_enters_and_meets_before_resident_moves(road_graph):
     assert xyz(first["residents"][2]) == xyz(world["residents"][2])
     midway = simulate(world, [command], 35)
     assert midway["helpers"][0]["height"] > 0
+    helper = midway["helpers"][0]
+    assert helper["route_reachable"]
+    assert len(helper["route_points"]) > 1
+    assert xyz(helper["route_points"][0]) == xyz(helper)
     final = simulate(world, [command], 230)
     assert final["helpers"][0]["met_at_seconds"] > 1
     assert final["helpers"][0]["state"] == "completed"

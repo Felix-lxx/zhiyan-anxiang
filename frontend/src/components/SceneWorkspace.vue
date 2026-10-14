@@ -1,5 +1,6 @@
 <script setup lang="ts">
-import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import type { ConfigurationIssue, ConfigurationValidation } from '../domain/validation'
 import { onBeforeRouteLeave, useRoute, useRouter } from 'vue-router'
 import type { Community, MapObjectSummary, Scene } from '../domain/models'
 import AppIcon from './AppIcon.vue'
@@ -40,7 +41,18 @@ const parametersDirty = ref(false)
 const parameterForm = ref({ fire_source_object_id: '', start_time: '20:15', wind_direction: '微风', resident_count: 60, hydrant_status: 'faulty', south_lane_status: 'restricted', stair_width: 1.2 })
 const previewMinute = ref(0)
 const preparationStep = ref(1)
-const validation = ref<{ passed: boolean; issues: string[]; message?: string } | null>(null)
+const validation = ref<ConfigurationValidation | null>(null)
+const locationNotice = ref('')
+const fieldSteps:Record<string,number>={'fire-source':2,'start-time':2,'wind-direction':2,'resident-count':1,'stair-width':1,'hydrant-status':1,'south-lane-status':1}
+async function focusParameter(field:string){
+  if(!(field in fieldSteps))return
+  preparationStep.value=fieldSteps[field];activeStep.value='parameters'
+  await nextTick()
+  const input=document.getElementById(field)
+  input?.scrollIntoView({block:'center'});input?.focus({preventScroll:true})
+  locationNotice.value='已定位待完善参数。修改后保存，再运行校验；不会改动已创建场次的冻结数据。'
+}
+function locateIssue(issue:ConfigurationIssue){guardUnsaved(()=>void focusParameter(issue.query.field))}
 const validating = ref(false)
 const preparationSteps = [
   ['社区底图', '楼栋、道路与基础设施'],
@@ -137,6 +149,7 @@ async function load() {
     const saved = scenes.value.find(scene => scene.id === route.query.scene) ?? scenes.value[0]
     if (saved) { selectScene(saved, workflowSteps.some(step => step.id === route.query.step) ? route.query.step as WorkflowStep : 'parameters'); const tab=Number(route.query.preparation); if(route.query.preparation!==undefined&&Number.isInteger(tab)&&tab>=0&&tab<=4)preparationStep.value=tab }
   } catch (caught) { error.value = caught instanceof Error ? caught.message : '场景工作台加载失败。' } finally { isLoading.value = false }
+  if(activeScene.value && typeof route.query.field==='string')await focusParameter(route.query.field)
 }
 async function createScene() {
   error.value = ''; notice.value = ''; isSaving.value = true
@@ -213,17 +226,22 @@ onBeforeUnmount(() => { window.removeEventListener('beforeunload', handleBeforeU
       <nav class="atlas-preparation__steps" aria-label="场景配置步骤"><button v-for="(step,i) in preparationSteps" :key="step[0]" :aria-current="preparationStep===i?'step':undefined" @click="openPreparationStep(i)"><b>{{i+1}}</b><span><strong>{{step[0]}}</strong><small>{{step[1]}}</small></span></button><label>当前场景<select :value="selectedSceneId" @change="selectScene(scenes.find(s=>s.id===($event.target as HTMLSelectElement).value)!)"><option v-for="s in scenes" :key="s.id" :value="s.id">{{s.name}}</option></select></label></nav>
       <div class="atlas-preparation__canvas"><SceneLivePreview :simulation="preview?.simulation ?? null" :loading="isPreviewing" :error="previewError" :minute="previewMinute" :draft="previewIsDraft" :fire-level="preview?.fire_level" :smoke-level="preview?.smoke_level" :risk-level="preview?.risk_level"/><div class="atlas-preparation__preview-time"><AppIcon name="clock" :size="17"/><label for="preview-minute">推演时刻 {{previewMinute}} 分钟</label><input id="preview-minute" v-model.number="previewMinute" type="range" min="0" max="10" @input="handlePreviewMinuteChange"/><button :disabled="isPreviewing" aria-label="重新计算预览" @click="loadPreview(activeScene.id)"><AppIcon name="refresh" :size="17"/></button></div></div>
       <aside class="atlas-preparation__inspector">
+       <p v-if="locationNotice" class="configuration-location" role="status">{{locationNotice}}</p>
        <template v-if="preparationStep===0"><h2>社区底图</h2><p>楼栋、道路、消防设施与集合点</p><div class="atlas-property-group"><h3>当前社区</h3><strong>{{community.name}}</strong><p>{{community.address || '尚未填写地址'}}</p><button class="primary-button" @click="openMapEditor">打开地图编辑器</button></div><div class="atlas-property-group"><h3>场景关联</h3><p>保存后的社区坐标和路网进入当前三维预览；发布时冻结为运行版本。</p><button class="secondary-button" @click="toggleComparison(activeScene)">方案对比</button><TrainingComparison v-if="comparisonScene" :key="comparisonScene.id" :api-base-url="apiBaseUrl" :access-token="accessToken" :scene-id="comparisonScene.id" :scene-name="comparisonScene.name" @close="comparisonSceneId=''" @open-drill="id=>emit('openDrill',activeScene!.id,id)"/></div></template>
        <form v-else-if="preparationStep===1 || preparationStep===2" class="atlas-properties" @submit.prevent="saveParameters" @input="handleParameterChange" @change="handleParameterChange"><h2>{{preparationStep===1?'人员与南侧通道':'火源与烟气'}}</h2><p>{{preparationStep===1?'配置居民规模、楼梯容量与疏散条件':'配置起火点、时刻和环境条件'}}</p>
         <div v-if="preparationStep===1" class="atlas-property-group"><h3>基本信息</h3><label for="resident-count">参演居民数 <span>人</span></label><input id="resident-count" v-model.number="parameterForm.resident_count" type="number" min="1" max="1000" required/><label for="stair-width">楼梯净宽 <span>米</span></label><input id="stair-width" v-model.number="parameterForm.stair_width" type="number" min=".6" max="3" step=".1" required/><label for="south-lane-status">当前通道状态</label><select id="south-lane-status" v-model="parameterForm.south_lane_status"><option value="open">畅通</option><option value="restricted">受限</option><option value="blocked">阻断</option></select><label for="hydrant-status">东侧消火栓</label><select id="hydrant-status" v-model="parameterForm.hydrant_status"><option value="available">可用</option><option value="faulty">故障待替代</option></select></div>
         <div v-else class="atlas-property-group"><h3>基本信息</h3><label for="fire-source">起火点</label><select id="fire-source" v-model="parameterForm.fire_source_object_id" required><option v-for="shed in chargingSheds" :key="shed.id" :value="shed.id">{{shed.name}}</option></select><label for="start-time">起火时间</label><input id="start-time" v-model="parameterForm.start_time" type="time" required/><label for="wind-direction">风向与风力</label><select id="wind-direction" v-model="parameterForm.wind_direction"><option>微风</option><option>东北微风</option><option>北风</option><option>东风</option></select></div>
-        <div class="atlas-property-group"><h3>关联与影响</h3><p>{{preview?.route_advice || '正在计算通道与人员影响…'}}</p><dl><div><dt>风险等级</dt><dd>{{preview?.risk_level || '—'}}</dd></div><div><dt>烟气等级</dt><dd>{{preview?.smoke_level || '—'}}</dd></div></dl><small>{{preview?.explanation}}</small></div><button class="primary-button" :disabled="isSaving || !validPreviewParameters()">保存场景参数</button>
+        <div class="atlas-property-group"><h3>关联与影响</h3><p>{{previewError ? '预览失败，请修复参数后重新计算；暂不显示旧的路径建议。' : preview?.route_advice || '正在计算通道与人员影响…'}}</p><dl><div><dt>风险等级</dt><dd>{{previewError ? '待重新计算' : preview?.risk_level || '—'}}</dd></div><div><dt>烟气等级</dt><dd>{{previewError ? '待重新计算' : preview?.smoke_level || '—'}}</dd></div></dl><small>{{preview?.explanation}}</small></div><button class="primary-button" :disabled="isSaving || !validPreviewParameters()">保存场景参数</button>
        </form>
        <template v-else-if="preparationStep===3"><h2>机器人与任务</h2><p>沿冻结路网巡检，发现火情后触发处置任务。</p><DecisionEditor :api-base-url="apiBaseUrl" :access-token="accessToken" :key="activeScene.id" :scene-id="activeScene.id" @close="openPreparationStep(1)"/></template>
-       <ScenePublishPanel v-else :api-base-url="apiBaseUrl" :access-token="accessToken" :key="activeScene.id+'-'+activeVersion?.version_number" :scene-id="activeScene.id" :scene-status="activeScene.status" :version-number="activeVersion?.version_number ?? 0" @published="handlePublished"/>
+       <ScenePublishPanel v-else :api-base-url="apiBaseUrl" :access-token="accessToken" :key="activeScene.id+'-'+activeVersion?.version_number" :scene-id="activeScene.id" :scene-status="activeScene.status" :version-number="activeVersion?.version_number ?? 0" @published="handlePublished" @locate="locateIssue"/>
       </aside>
     </section>
     <footer v-if="activeScene" class="atlas-preparation__validation"><AppIcon :name="validation?.passed?'check':'inspect'" :size="23"/><strong>场景校验：</strong><span>{{parametersDirty?'参数未保存，请先保存后校验':validation?validation.passed?'校验通过，可以冻结':validation.issues.length+' 项需处理':'尚未校验当前版本'}}</span><p>{{validation?.issues[0] || (parametersDirty?'三维正在试算，尚未写入场景版本。':'预览与正式演练使用同一份场景数据。')}}</p><button :disabled="validating || parametersDirty" @click="validateCurrent">{{validating?'正在校验…':'运行校验'}}<AppIcon name="arrowRight" :size="17"/></button></footer>
+    <ul v-if="validation && !validation.passed" class="configuration-issues"><li v-for="issue in validation.issue_details" :key="issue.key"><span>{{issue.message}}</span><button type="button" @click="locateIssue(issue)">定位修改<AppIcon name="arrowRight" :size="18"/></button></li></ul>
     <UiConfirmDialog :open="discardConfirmationOpen" title="放弃未保存参数" description="当前三维试算尚未写入场景版本。继续离开将丢弃这些参数修改。" confirm-label="放弃修改" danger @cancel="cancelDiscard" @confirm="confirmDiscard"/>
   </main>
 </template>
+<style scoped>
+.configuration-location{padding:12px;border:1px solid var(--border-default);color:var(--text-secondary);font-size:16px;line-height:1.6}.configuration-issues{padding:16px 28px;list-style:none;margin:0}.configuration-issues li{display:flex;align-items:center;justify-content:space-between;gap:16px;flex-wrap:wrap;padding:12px 0;border-bottom:1px solid var(--border-default);font-size:16px}.configuration-issues button{display:flex;align-items:center;gap:8px;min-height:44px;padding:8px 12px;font:inherit;color:var(--text-primary);background:var(--surface-panel);border:1px solid var(--border-default);border-radius:var(--radius-sm)}
+</style>

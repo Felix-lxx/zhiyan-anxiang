@@ -10,7 +10,7 @@ export interface AssemblyResident {
 
 /** Arrival is authoritative, never inferred from proximity or a route assignment. */
 export function assemblyAttendance(residents: AssemblyResident[], nodeId: string) {
-  const arrived = residents.filter(person => person.status === 'evacuated' && person.node_id === nodeId)
+  const arrived = residents.filter(person => person.status === 'evacuated' && (person.node_id === nodeId || person.node_id?.startsWith(`${nodeId}:`)))
   const counted = arrived.filter(person => person.counted).length
   const side = nodeId === 'assembly:north' ? 'north' : nodeId === 'assembly:south' ? 'south' : null
   const inbound = side ? residents.filter(person => person.exit === side && person.status !== 'evacuated').length : 0

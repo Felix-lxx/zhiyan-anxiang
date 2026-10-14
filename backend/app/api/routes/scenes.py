@@ -110,16 +110,16 @@ def post_preview(scene_id: str, payload: ChargingShedParametersUpdate, minute: i
 def validate_scene(scene_id:str,identity:AuthenticatedIdentity=Depends(get_current_identity),session:Session=Depends(get_db)):
     scene=session.get(Scene,scene_id)
     if scene is None: raise HTTPException(404,'未找到该场景草稿。')
-    owned_community(session,scene.community_id,identity.username);p=scene.versions[-1].parameters if scene.versions else {}
-    issues=[]
-    for key,label in [('fire_source_object_id','起火点'),('start_time','起火时间'),('wind_direction','风向'),('resident_count','参演居民数')]:
-        if not p.get(key): issues.append(f'缺少{label}')
-    return {'passed':not issues,'issues':issues,'message':'场景校验通过，可发布。' if not issues else '场景尚不能发布。'}
+    owned_community(session,scene.community_id,identity.username)
+    from app.services.scene_validation import validate_configuration
+    return validate_configuration(session, scene)
 @router.post('/scenes/{scene_id}/publish')
 def publish_scene(scene_id:str,identity:AuthenticatedIdentity=Depends(get_current_identity),session:Session=Depends(get_db)):
     scene=session.get(Scene,scene_id)
     if scene is None: raise HTTPException(404,'未找到该场景草稿。')
-    owned_community(session,scene.community_id,identity.username);p=scene.versions[-1].parameters if scene.versions else {}
-    if not all(p.get(k) for k in ['fire_source_object_id','start_time','wind_direction','resident_count']): raise HTTPException(422,'场景未通过完整性校验，不能发布。')
+    owned_community(session,scene.community_id,identity.username)
+    from app.services.scene_validation import validate_configuration
+    result = validate_configuration(session, scene)
+    if not result['passed']: raise HTTPException(422, '；'.join(result['issues']))
     from app.models.domain import SceneStatus
     scene.status=SceneStatus.PUBLISHED;scene.versions[-1].status=SceneStatus.PUBLISHED;session.commit();return {'status':'published','message':'场景已发布，可用于创建演练场次。'}

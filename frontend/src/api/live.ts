@@ -83,7 +83,7 @@ export function connectLive<T extends VersionedState>(options: {
         if (message.type !== 'drill.heartbeat') options.onState(stream)
       } catch { options.onStatus('stale'); current.close(4000, 'resync') }
     }
-    current.onerror = () => options.onStatus('stale')
+    current.onerror = () => { if (!stopped && socket === current) options.onStatus('stale') }
     current.onclose = event => {
       if (stopped || socket !== current) return
       options.onStatus('stale')

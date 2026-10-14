@@ -38,8 +38,9 @@ def capture_world(session: Session, version: SceneVersion, parameters_override: 
     # An explicitly schematic indoor model. Only newly created worlds opt in;
     # existing frozen worlds retain their original replay behaviour.
     for i, resident in enumerate(residents):
-        floor = i % home.get("floors", 1) + 1
-        resident.update(floor=floor, indoor_stage="room", current_floor=float(floor),
+        building = buildings[i % len(buildings)] if buildings else home
+        floor = (i // max(1, len(buildings))) % building.get("floors", 1) + 1
+        resident.update(building_id=building.get("id"), floor=floor, indoor_stage="room", current_floor=float(floor),
                         indoor_remaining=float(floor * 6), preparation_seconds=3 + i % 7)
     for task in session.scalars(select(DecisionTask).where(DecisionTask.scene_version_id == version.id).order_by(DecisionTask.created_at)):
         point = session.get(DecisionPoint, task.decision_point_id)

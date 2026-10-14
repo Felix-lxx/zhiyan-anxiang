@@ -8,6 +8,8 @@ from copy import deepcopy
 from collections import defaultdict
 import heapq
 import math
+from bisect import bisect_right
+from app.services.escort_motion import can_meet, follow_walked_path
 
 
 def xyz(p):
@@ -29,7 +31,7 @@ def environment(world, events, elapsed):
     return {"intensity": round(intensity, 1), "smoke_radius": round(min(48, 7+growth), 2), "temperature": round(34+intensity*3.8, 1)}, {"east_hydrant": "failed" if failed else "available", "resource_ready": resource, "power_off": power}
 
 
-def simulate(world, events, elapsed, strategy=None, branch_at=None):
+def simulate(world, events, elapsed, strategy=None, branch_at=None, *, checkpoint=None, checkpoint_out=None):
     graph = deepcopy(world["spatial_network"])
     nodes = {n["id"]: n for n in graph["nodes"]}
     edges = {e["id"]: e for e in graph["edges"]}
@@ -44,15 +46,68 @@ def simulate(world, events, elapsed, strategy=None, branch_at=None):
         at = elapsed if branch_at is None else branch_at
         history += [{"elapsed_seconds": at, "sequence": 10**9+i, "event_type": "resident.command", "payload": {"resident_ids": [p["id"]], "exit": "south" if strategy == "south_standard" else "north" if strategy == "north_priority" or i % 2 == 0 else "south", "action": "priority_assist" if strategy == "north_priority" and p["vulnerable"] else "evacuate"}} for i, p in enumerate(world["residents"])]
         history.sort(key=lambda e: (e["elapsed_seconds"], e["sequence"]))
+    # Build environmental change points once, rather than sorting the complete
+    # event ledger for every half-second of every resident update.
+    knots, times = [], []
+    failed = world["parameters"].get("hydrant_status") in {"faulty", "failed"}
+    resource, power, intensity, growth, previous = False, False, 18., 0., 0.
+    def add_knot(at):
+        rate = (1.15 if failed else .82)*(.55 if resource else 1)*(.35 if power else 1)
+        times.append(at); knots.append((intensity, growth, rate, failed, resource, power))
+    add_knot(0.)
+    for event in history:
+        if event["event_type"] not in {"inject.hydrant_failure", "participant.resource_ready", "task.completed"}: continue
+        at = event["elapsed_seconds"]
+        rate = knots[-1][2]
+        intensity = min(100., intensity+(at-previous)*rate)
+        growth += (at-previous)*.34*rate/.82
+        previous = at
+        if event["event_type"] == "inject.hydrant_failure": failed = True
+        if event["event_type"] == "participant.resource_ready": resource = True
+        if event["event_type"] == "task.completed" and event["payload"].get("kind") == "power_off": power = True
+        add_knot(at)
+    def environment_at(at):
+        k = bisect_right(times, at)-1
+        intensity, growth, rate, failed, resource, power = knots[k]
+        intensity = min(100., intensity+(at-times[k])*rate)
+        growth += (at-times[k])*.34*rate/.82
+        return {"intensity": round(intensity, 1), "smoke_radius": round(min(48, 7+growth), 2), "temperature": round(34+intensity*3.8, 1)}, {"east_hydrant": "failed" if failed else "available", "resource_ready": resource, "power_off": power}
     people = [{**deepcopy(p), "node_id": p["start_node_id"], "edge_id": None, "edge_progress": 0., "exit": "north" if i % 2 == 0 else "south", "status": "waiting", "release_at": 10**9, "assisted": False, "smoke_exposure": 0., "congestion": 0., "travelled": 0., "queue_seconds": 0., "counted": False, "forced_exit": False} for i, p in enumerate(world["residents"])]
     by_id = {p["id"]: p for p in people}
     helpers = {}
     now, index, revision, flow_revision = 0., 0, 0, 0
     route_cache = {}
+    restored = False
+    # Restore raw walkers, not the presentation snapshot (which contains derived routes).
+    # Appended same-tick events are allowed; retroactive edits invalidate the prefix.
+    from app.services.simulation_checkpoints import digest, ENGINE_REVISION
+    if checkpoint and not strategy:
+        saved_index = checkpoint.get("index", -1)
+        saved_time = checkpoint.get("now", -1)
+        valid = (
+            checkpoint.get("revision_id") == ENGINE_REVISION
+            and 0 <= saved_time <= elapsed and saved_time * 2 == int(saved_time * 2)
+            and 0 <= saved_index <= len(history)
+            and checkpoint.get("world_digest") == digest(world)
+            and checkpoint.get("history_digest") == digest(history[:saved_index])
+            and (saved_index == len(history) or history[saved_index]["elapsed_seconds"] >= saved_time)
+        )
+        if valid:
+            restored = True
+            people, helpers = deepcopy(checkpoint["people"]), deepcopy(checkpoint["helpers"])
+            by_id = {p["id"]: p for p in people}
+            now, index = saved_time, saved_index
+            revision, flow_revision = checkpoint["revision"], checkpoint["flow_revision"]
+            route_cache = {tuple(key): deepcopy(value) for key, value in checkpoint["routes"]}
+            for eid, status in checkpoint["edge_statuses"].items(): edges[eid]["status"] = status
     origin = world["fire_origin"]
-    fire, env = environment(world, history, 0)
+    fire, env = environment_at(now)
     occupied = defaultdict(list)
     waiting_counts = defaultdict(int)
+    if restored:
+        actors_by_id = {a["id"]: a for a in [*people, *helpers.values()]}
+        occupied.update({eid: [actors_by_id[aid] for aid in ids] for eid, ids in checkpoint.get("occupied", {}).items()})
+        waiting_counts.update(checkpoint.get("waiting_counts", {}))
 
     def lane_count(edge):
         return 1 if edge["status"] == "restricted" else max(1, int(edge["width_meters"]/.8))
@@ -62,9 +117,13 @@ def simulate(world, events, elapsed, strategy=None, branch_at=None):
         # multiplied by 0.8 m pedestrian headway along the segment.
         return max(1, lane_count(edge) * max(1, int(edge["length"]/.8)))
 
+    def footprint(actor):
+        return 1.5 if actor.get('assisted') else .8
+
     def pressure(eid):
         edge = edges[eid]
-        load = len(occupied.get(eid, ())) + waiting_counts.get(eid, 0) * .72
+        # A walking escort pair reserves more longitudinal space than one actor.
+        load = sum(footprint(actor)/.8 for actor in occupied.get(eid, ())) + waiting_counts.get(eid, 0) * .72
         return min(2., load / edge_capacity(edge))
 
     def invalidate_flow():
@@ -73,6 +132,16 @@ def simulate(world, events, elapsed, strategy=None, branch_at=None):
         route_cache.clear()
 
     def route(start, goal):
+        # Each person's private assembly berth is a leaf, not a distinct A* goal.
+        # Share the road-to-hub search; preserve their unique final walking segment.
+        if start != goal and nodes[goal]["kind"] == "assembly" and len(adjacent[goal]) == 1:
+            hub, eid = adjacent[goal][0]
+            if edges[eid]["status"] == "blocked": return None
+            path = route_core(start, hub)
+            return None if path is None else [*path, (eid, goal)]
+        return route_core(start, goal)
+
+    def route_core(start, goal):
         if start == goal: return []
         key = (revision, flow_revision, int(now//4), start, goal)
         if key in route_cache: return route_cache[key]
@@ -81,6 +150,8 @@ def simulate(world, events, elapsed, strategy=None, branch_at=None):
             _, current = heapq.heappop(frontier)
             if current == goal: break
             for other, eid in adjacent[current]:
+                # Rooms and private berths cannot be transit shortcuts.
+                if other != goal and len(adjacent[other]) == 1: continue
                 edge = edges[eid]
                 if edge["status"] == "blocked": continue
                 mid = ((nodes[current]["x"]+nodes[other]["x"])/2, (nodes[current]["y"]+nodes[other]["y"])/2)
@@ -108,7 +179,7 @@ def simulate(world, events, elapsed, strategy=None, branch_at=None):
     def helper_for(person, responsible):
         if person["id"] in helpers and helpers[person["id"]]["state"] != "completed": return
         outdoor = [n for n in nodes.values() if n["kind"] == "outdoor"]
-        start = min(outdoor, key=lambda n: math.dist(xyz(n), xyz(world["robot_origin"]))) if outdoor else nodes["home:door"]
+        start = min(outdoor, key=lambda n: math.dist(xyz(n), xyz(world["robot_origin"]))) if outdoor else next(n for n in nodes.values() if n["kind"] == "door" and n.get("building_id") == person.get("building_id"))
         helpers[person["id"]] = dict(id="helper-"+person["id"], resident_id=person["id"], node_id=start["id"], x=start["x"], y=start["y"], height=0., edge_id=None, edge_progress=0., state="approaching", responsible=responsible, travelled=0., queue_seconds=0., congestion=0.)
         person["search_responsible"] = responsible
 
@@ -150,7 +221,7 @@ def simulate(world, events, elapsed, strategy=None, branch_at=None):
             index += 1
         if now >= elapsed: break
         dt = min(.5, elapsed-now, history[index]["elapsed_seconds"]-now if index < len(history) else .5)
-        fire, env = environment(world, history, now)
+        fire, env = environment_at(now)
         # Dormant sessions can be days old. Once smoke has saturated, waiting
         # actors have constant exposure and no positional changes. Integrate that
         # interval directly, stopping BEFORE the next event or preparation end.
@@ -195,12 +266,21 @@ def simulate(world, events, elapsed, strategy=None, branch_at=None):
                 density = max(0., 1-math.dist(xyz(person), (origin["x"], origin["y"], 0))/fire["smoke_radius"])
                 person["smoke_exposure"] += density*dt*(1.2 if person["vulnerable"] else .85)
                 helper = helpers.get(person["id"])
-                if person["status"] == "missing" or (helper and helper["state"] in {"approaching", "blocked"}) or now < person["release_at"]+person.get("preparation_seconds", 3): continue
+                # Finish (or retreat out of) the occupied segment before waiting
+                # for assistance; freezing inside it can block the approaching helper.
+                if person["status"] == "missing" or (helper and helper["state"] in {"approaching", "blocked"} and not person.get('edge_id')) or now < person["release_at"]+person.get("preparation_seconds", 3): continue
                 goal = destination(person)
             else:
                 goal = person.get("edge_from") if person.get("edge_id") else person["node_id"]
-                if math.dist(xyz(actor), xyz(person)) <= .85:
-                    actor.update(state="escorting", met_at_seconds=now)
+                if can_meet(actor, person, edges):
+                    if actor.get('edge_id') and actor in occupied[actor['edge_id']]:
+                        occupied[actor['edge_id']].remove(actor)
+                    actor.update(state="escorting", met_at_seconds=now, edge_id=None)
+                    previous_wait = actor.pop('waiting_for_edge', None)
+                    if previous_wait:
+                        waiting_counts[previous_wait] = max(0, waiting_counts[previous_wait]-1)
+                    invalidate_flow()
+                    follow_walked_path(actor, person)
                     person.update(assisted=True, status="waiting", found_at_seconds=now, release_at=min(person["release_at"], now))
                     continue
             if not goal: continue
@@ -208,9 +288,17 @@ def simulate(world, events, elapsed, strategy=None, branch_at=None):
                 path = route(actor["node_id"], goal)
                 if path is None:
                     if is_helper: actor["state"] = "blocked"
+                    previous_wait = actor.pop('waiting_for_edge', None)
+                    if previous_wait:
+                        waiting_counts[previous_wait] = max(0, waiting_counts[previous_wait]-1)
+                        invalidate_flow()
                     continue
+                if is_helper: actor['state'] = 'approaching'
                 if not path:
                     if is_helper and person.get("edge_id"):
+                        if edges[person['edge_id']]['status']=='blocked':
+                            actor['state']='blocked'
+                            continue
                         path = [(person["edge_id"], person["edge_to"])]
                     elif not is_helper:
                         person.update(status="evacuated", evacuated_at_seconds=now, assembly_arrived_at_seconds=now)
@@ -220,7 +308,7 @@ def simulate(world, events, elapsed, strategy=None, branch_at=None):
                 eid, to = path[0]; edge = edges[eid]
                 lanes = lane_count(edge)
                 occupants = occupied[eid]
-                lane = next((i for i in sorted(range(lanes), key=lambda lane: abs(lane-(lanes-1)/2)) if not any(a.get("lane") == i and (a["edge_from"] != actor["node_id"] or a["edge_progress"] < .8) for a in occupants)), None)
+                lane = next((i for i in sorted(range(lanes), key=lambda lane: abs(lane-(lanes-1)/2)) if not any(a.get("lane") == i and (a["edge_from"] != actor["node_id"] or a["edge_progress"] < footprint(a)) for a in occupants)), None)
                 if lane is None:
                     previous_wait = actor.get("waiting_for_edge")
                     if previous_wait != eid:
@@ -251,8 +339,8 @@ def simulate(world, events, elapsed, strategy=None, branch_at=None):
             for other in occupied[actor["edge_id"]]:
                 if other is actor or other.get("lane") != actor.get("lane"): continue
                 if other["edge_from"] == actor["edge_from"]:
-                    if not retreat and other["edge_progress"] > actor["edge_progress"]: progress = min(progress, max(actor["edge_progress"], other["edge_progress"]-.8))
-                    if retreat and other["edge_progress"] < actor["edge_progress"]: progress = max(progress, min(actor["edge_progress"], other["edge_progress"]+.8))
+                    if not retreat and other["edge_progress"] > actor["edge_progress"]: progress = min(progress, max(actor["edge_progress"], other["edge_progress"]-footprint(other)))
+                    if retreat and other["edge_progress"] < actor["edge_progress"]: progress = max(progress, min(actor["edge_progress"], other["edge_progress"]+footprint(actor)))
             if is_helper and person.get("edge_id") == actor["edge_id"] and person["edge_from"] == actor["edge_from"]:
                 progress = min(progress, person["edge_progress"])
             moved = abs(progress-actor["edge_progress"])
@@ -278,12 +366,19 @@ def simulate(world, events, elapsed, strategy=None, branch_at=None):
                 actor["node_id"] = actor["edge_from"] if retreat else actor["edge_to"]
                 occupied[actor["edge_id"]].remove(actor); actor["edge_id"] = None
                 invalidate_flow()
-                if not is_helper and actor["node_id"] == "home:door": actor.setdefault("building_exited_at_seconds", now+dt)
+                if not is_helper and nodes[actor["node_id"]]["kind"] == "door": actor.setdefault("building_exited_at_seconds", now+dt)
                 if not is_helper and nodes[actor["node_id"]].get("is_exit"): actor.setdefault("exit_reached_at_seconds", now+dt)
             if not is_helper and person["id"] in helpers and helpers[person["id"]]["state"] == "escorting":
-                for key in ("x", "y", "height"): helpers[person["id"]][key] = person[key]
+                follow_walked_path(helpers[person['id']], person)
         now += dt
-    fire, env = environment(world, history, elapsed)
+    if checkpoint_out is not None and not strategy and now * 2 == int(now * 2):
+        checkpoint_out.update(revision_id=ENGINE_REVISION, world_digest=digest(world),
+            history_digest=digest(history[:index]), now=now, index=index,
+            people=deepcopy(people), helpers=deepcopy(helpers), revision=revision,
+            flow_revision=flow_revision, routes=[(list(key), deepcopy(value)) for key, value in route_cache.items()],
+            occupied={eid: [a["id"] for a in actors] for eid, actors in occupied.items()}, waiting_counts=dict(waiting_counts),
+            edge_statuses={eid: edge["status"] for eid, edge in edges.items()})
+    fire, env = environment_at(elapsed)
     for person in people:
         path = suffix(person, destination(person))
         points = [{k: person[k] for k in ("x", "y", "height")}]
@@ -298,6 +393,29 @@ def simulate(world, events, elapsed, strategy=None, branch_at=None):
         person["last_location"] = nodes[person.get("edge_from") if person.get("edge_id") else person["node_id"]]["name"] + (" → "+nodes[person["edge_to"]]["name"] if person.get("edge_id") else "")
         helper = helpers.get(person["id"])
         person["behavior"] = "集合点已核验" if person["counted"] else "已到集合点，等待清点" if person["status"] == "evacuated" else "失联，等待搜索会合" if person["status"] == "missing" else "等待护送员入楼会合" if helper and helper["state"] in {"approaching", "blocked"} else "通道排队，前人通过后前进" if person["congestion"] else "所选集合点不可达，请改道" if not person["route_reachable"] else "等待通知" if now < person["release_at"] else "准备离开房间" if now < person["release_at"]+person.get("preparation_seconds", 3) else "护送同行" if person["assisted"] else "沿连续通道撤离"
+    for helper in helpers.values():
+        person = by_id[helper["resident_id"]]
+        if helper["state"] in {"escorting", "completed"}:
+            helper["route_points"] = [dict(zip(('x','y','height'),point)) for point in helper.get('escort_trail', [xyz(helper)])] + person["route_points"][1:]
+            helper["route_reachable"] = person["route_reachable"]
+            helper['behavior'] = '已护送到集合区域' if helper['state']=='completed' else '已会合，沿实际通道护送同行'
+            continue
+        goal = person.get("edge_from") if person.get("edge_id") else person["node_id"]
+        path = suffix(helper, goal)
+        if person.get('edge_id') and edges[person['edge_id']]['status']=='blocked' and not can_meet(helper, person, edges):
+            path = None
+        points = [{key: helper[key] for key in ("x", "y", "height")}]
+        if helper.get("edge_id"):
+            end = helper["edge_from"] if edges[helper["edge_id"]]["status"] == "blocked" else helper["edge_to"]
+            points.append(nodes[end])
+        if path:
+            points.extend(nodes[to] for _, to in path)
+        if path is not None:
+            points.append({key: person[key] for key in ("x", "y", "height")})
+        helper["route_points"] = points
+        helper["route_reachable"] = path is not None
+        helper['behavior'] = '前往会合的通道不可达，请恢复道路或安排其他出口' if path is None else '通道排队，等待前方人员通过' if helper.get('congestion',0)>55 else '正在沿通道前往居民所在位置'
+        if path is None: helper['state'] = 'blocked'
     final_actors = [*people, *(h for h in helpers.values() if h["state"] in {"approaching", "blocked"})]
     occupied = defaultdict(list)
     waiting_counts = defaultdict(int)
@@ -311,7 +429,8 @@ def simulate(world, events, elapsed, strategy=None, branch_at=None):
         smoke_risk = round(max(0, 1-math.dist(mid, (origin["x"], origin["y"]))/fire["smoke_radius"])*100)
         capacity = edge_capacity(source)
         occupancy, waiting = len(occupied[source["id"]]), waiting_counts[source["id"]]
-        density = min(100, round((occupancy+waiting*.72)/capacity*100))
+        reserved_space = sum(footprint(actor)/.8 for actor in occupied[source['id']])
+        density = min(100, round((reserved_space+waiting*.72)/capacity*100))
         status_penalty = 100 if source["status"] == "blocked" else 12 if source["status"] == "restricted" else 0
         risk_score = 100 if source["status"] == "blocked" else min(99, round(smoke_risk*.68+density*.32+status_penalty))
         flow_modifier = .58 if source["status"] == "restricted" else .72 if source.get("kind") == "stairs" else .82 if source.get("kind") in {"room", "door"} else 1.

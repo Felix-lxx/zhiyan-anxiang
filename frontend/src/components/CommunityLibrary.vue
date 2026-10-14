@@ -1,8 +1,9 @@
 <script setup lang="ts">
-import { computed, nextTick, onMounted, ref } from 'vue'
-import { useRoute, useRouter } from 'vue-router'
+import { computed, nextTick, onBeforeUnmount, onMounted, ref } from 'vue'
+import { onBeforeRouteLeave, onBeforeRouteUpdate, useRoute, useRouter } from 'vue-router'
 import AppIcon from './AppIcon.vue'
-import { createApiClient } from '../api/client'
+import { ApiError, createApiClient } from '../api/client'
+import CommunityReadiness from './CommunityReadiness.vue'
 import type { Community } from '../domain/models'
 
 const props = defineProps<{
@@ -25,6 +26,14 @@ const isCreating = ref(false)
 const isCreatingDemo = ref(false)
 const isLaunchingThreeDemo = ref(false)
 const isCreateFormOpen = ref(false)
+const editing = ref<Community|null>(null), inspectingId = ref(''), savedNotice=ref(''), conflict=ref(false)
+const baseline=ref('')
+const dirty=computed(()=>isCreateFormOpen.value && JSON.stringify(form.value)!==baseline.value)
+function allowLeave(){return !isCreating.value && (!dirty.value || window.confirm('社区资料尚未保存，确定放弃修改？'))}
+function beforeUnload(event:BeforeUnloadEvent){if(dirty.value)event.preventDefault()}
+onBeforeRouteLeave(allowLeave)
+onBeforeRouteUpdate((to,from)=>to.query.section===from.query.section || allowLeave())
+onBeforeUnmount(()=>window.removeEventListener('beforeunload',beforeUnload))
 const listError = ref('')
 const createError = ref('')
 const demoError = ref('')
@@ -45,7 +54,7 @@ const activeSection = computed<HomeSection>(() => {
 })
 const activeSectionName = computed(() => sectionNames[activeSection.value])
 async function openSection(section: HomeSection): Promise<void> {
-  if (isCreating.value) return
+  if (!allowLeave()) return
   isCreateFormOpen.value = false
   createError.value = ''
   form.value = { name: '', address: '', description: '' }
@@ -81,6 +90,8 @@ async function loadCommunities(): Promise<void> {
 }
 
 function openCreateForm(): void {
+  if(!allowLeave())return
+  editing.value=null;conflict.value=false;form.value={name:'',address:'',description:''};baseline.value=JSON.stringify(form.value)
   createError.value = ''
   isCreateFormOpen.value = true
   void nextTick(() => { document.getElementById('community-name')?.focus() })
@@ -88,31 +99,51 @@ function openCreateForm(): void {
 
 function closeCreateForm(): void {
   if (isCreating.value) return
+  if(!allowLeave())return
   form.value = { name: '', address: '', description: '' }
   createError.value = ''
   isCreateFormOpen.value = false
+  editing.value=null
   void nextTick(() => { document.getElementById('new-community-trigger')?.focus({ preventScroll: true }) })
 }
 
 async function createCommunity(): Promise<void> {
+  if(isCreating.value || conflict.value)return
   createError.value = ''
   isCreating.value = true
 
   try {
-    const payload = await api.post<Community>('/communities', {
+    const values = {
       name: form.value.name.trim(),
       address: form.value.address.trim() || null,
       description: form.value.description.trim() || null,
-    })
-    communities.value = [payload, ...communities.value]
+    }
+    const payload = editing.value ? await api.patch<Community>(`/communities/${editing.value.id}`, {...values,expected_updated_at:editing.value.updated_at}) : await api.post<Community>('/communities',values)
+    communities.value = [payload, ...communities.value.filter(c=>c.id!==payload.id)]
+    savedNotice.value=editing.value?'社区资料已保存。现有演练中的冻结地图和人员配置不会改变。':'社区已创建，接下来请检查楼栋与道路配置。'
+    inspectingId.value=payload.id;baseline.value=JSON.stringify(form.value)
     isCreating.value = false
     resetFilters()
     closeCreateForm()
   } catch (error) {
-    createError.value = error instanceof Error ? error.message : '创建社区项目失败，请稍后重试。'
+    createError.value = error instanceof Error ? error.message : '保存失败，输入已保留，请重试。'
+    conflict.value=error instanceof ApiError && error.status===409
   } finally {
     isCreating.value = false
   }
+}
+
+function editCommunity(community:Community){
+  if(!allowLeave())return
+  editing.value=community;conflict.value=false;createError.value='';savedNotice.value=''
+  form.value={name:community.name,address:community.address??'',description:community.description??''}
+  baseline.value=JSON.stringify(form.value);isCreateFormOpen.value=true
+  void nextTick(()=>{document.getElementById('create-community-panel')?.scrollIntoView({block:'start'});document.getElementById('community-name')?.focus({preventScroll:true})})
+}
+async function reloadEdited(){
+  if(!editing.value || isCreating.value || !window.confirm('载入最新资料将替换当前未保存的输入，是否继续？'))return
+  try{const current=await api.get<Community>(`/communities/${editing.value.id}`);baseline.value=JSON.stringify(form.value);editCommunity(current)}
+  catch(cause){createError.value=cause instanceof Error?cause.message:'读取失败，请重试。'}
 }
 
 async function createDemoCommunity(): Promise<void> {
@@ -148,12 +179,13 @@ async function launchThreeDemo(): Promise<void> {
 }
 
 onMounted(() => {
+  window.addEventListener('beforeunload',beforeUnload)
   void loadCommunities()
 })
 </script>
 
 <template>
-  <main id="main-content" class="project-home">
+  <section class="project-home">
     <header class="home-header">
       <button class="entry-brand home-brand-button" type="button" aria-label="打开社区项目首页" @click="openSection('projects')"><span class="entry-brand__symbol"><AppIcon name="compass" :size="26" /></span><span>智演安巷<small>社区消防演练平台</small></span></button>
       <nav class="home-nav" aria-label="工作空间导航">
@@ -172,19 +204,20 @@ onMounted(() => {
     <div id="home-top" class="home-workspace">
       <div class="home-topbar">
         <span>工作空间 <AppIcon name="chevron" :size="14" /> {{ activeSectionName }}</span>
-        <button v-if="activeSection === 'projects'" id="new-community-trigger" class="entry-button entry-button--primary" type="button" :aria-expanded="isCreateFormOpen" aria-controls="create-community-panel" @click="openCreateForm"><AppIcon name="plus" :size="18" />新建社区项目</button>
+        <button v-if="activeSection === 'projects'" class="entry-button entry-button--primary" type="button" :aria-expanded="isCreateFormOpen" aria-controls="create-community-panel" @click="openCreateForm"><AppIcon name="plus" :size="18" />新建社区项目</button>
       </div>
       <div class="home-content">
       <section v-if="activeSection === 'projects'" class="home-view" aria-labelledby="projects-view-title">
-      <div class="home-view-heading"><h1 id="projects-view-title" tabindex="-1">社区项目</h1><p>配置社区，组织演练，回看每一次现场决策。</p></div>
+      <div class="home-view-heading"><h1 id="projects-view-title" tabindex="-1">社区项目</h1><p>维护社区资料，检查准备条件，再进入地图与场景配置。</p><button id="new-community-trigger" class="entry-button entry-button--primary" type="button" :disabled="isCreating" :aria-expanded="isCreateFormOpen" aria-controls="create-community-panel" @click="openCreateForm"><AppIcon name="plus" :size="18"/>新建社区项目</button></div>
+      <p v-if="savedNotice" class="message" role="status">{{savedNotice}}</p>
       <section v-if="isCreateFormOpen" id="create-community-panel" class="home-create" aria-labelledby="create-title">
-        <div class="home-section-heading"><div><h2 id="create-title">创建社区项目</h2><p>先记录社区信息，再配置楼栋、道路与演练场景。</p></div><button class="entry-icon-button" type="button" aria-label="取消创建" :disabled="isCreating" @click="closeCreateForm"><AppIcon name="close" /></button></div>
+        <div class="home-section-heading"><div><h2 id="create-title">{{editing?'编辑社区资料':'创建社区项目'}}</h2><p>维护名称、地址与项目说明，不改写已创建演练的历史数据。</p></div><button class="entry-icon-button" type="button" aria-label="取消编辑" :disabled="isCreating" @click="closeCreateForm"><AppIcon name="close" /></button></div>
         <form class="home-create-form" @submit.prevent="createCommunity">
           <div class="entry-field"><label for="community-name">社区名称</label><input id="community-name" v-model="form.name" maxlength="120" minlength="2" required placeholder="例如：安巷社区" :disabled="isCreating" /></div>
           <div class="entry-field"><label for="community-address">地址 <span>选填</span></label><input id="community-address" v-model="form.address" maxlength="255" placeholder="例如：示例路 18 号" :disabled="isCreating" /></div>
           <div class="entry-field home-create-form__wide"><label for="community-description">项目说明 <span>选填</span></label><textarea id="community-description" v-model="form.description" maxlength="2000" rows="3" placeholder="记录社区特点、演练范围或已知消防隐患。" :disabled="isCreating"></textarea></div>
           <p v-if="createError" class="message message--error home-create-form__wide" role="alert">{{ createError }}</p>
-          <div class="home-create-form__actions"><button class="entry-button entry-button--outline" type="button" :disabled="isCreating" @click="closeCreateForm">暂不创建</button><button class="entry-button entry-button--primary" type="submit" :disabled="isCreating">{{ isCreating ? '正在创建…' : '创建社区项目' }}</button></div>
+          <div class="home-create-form__actions"><button v-if="conflict" class="entry-button entry-button--outline" type="button" @click="reloadEdited">载入最新资料</button><button class="entry-button entry-button--outline" type="button" :disabled="isCreating" @click="closeCreateForm">取消</button><button class="entry-button entry-button--primary" type="submit" :disabled="isCreating||conflict||!dirty">{{ isCreating ? '正在保存…' : editing?'保存资料':'创建社区项目' }}</button></div>
         </form>
       </section>
       <section id="project-library" class="home-library" aria-labelledby="projects-title">
@@ -202,9 +235,10 @@ onMounted(() => {
             <div class="home-project-mark" aria-hidden="true"><AppIcon name="building" :size="27" /></div>
             <div class="home-project-info"><div><h3>{{ community.name }}</h3><span class="home-status" :data-status="community.status">{{ statusNames[community.status] }}</span></div><p>{{ community.address || '尚未填写社区地址' }}</p><span class="home-project-version">{{ latestVersion(community) }}</span></div>
             <div class="home-project-date"><span>最近更新</span><time :datetime="community.updated_at">{{ formatDate(community.updated_at) }}</time></div>
-            <div class="home-project-actions"><button class="entry-link" type="button" @click="emit('openMap', community)">编辑地图</button><button class="entry-button entry-button--outline" type="button" @click="emit('openOperations', community)">演练中心<AppIcon name="arrowRight" :size="17" /></button></div>
+            <div class="home-project-actions"><button class="entry-link" type="button" :disabled="isCreating" @click="editCommunity(community)">编辑资料</button><button class="entry-link" type="button" :aria-expanded="inspectingId===community.id" @click="inspectingId=inspectingId===community.id?'':community.id">准备检查</button><button class="entry-link" type="button" @click="emit('openMap', community)">编辑地图</button><button class="entry-button entry-button--outline" type="button" @click="emit('openOperations', community)">演练中心<AppIcon name="arrowRight" :size="17" /></button></div>
           </article>
           <p class="home-list-summary" role="status">显示 {{ filteredCommunities.length }} / {{ projectCountLabel }}</p>
+          <CommunityReadiness v-if="inspectingId" :key="inspectingId" :community-id="inspectingId" :community-name="communities.find(c=>c.id===inspectingId)?.name" :api-base-url="apiBaseUrl" :access-token="accessToken"/>
         </div>
       </section>
       </section>
@@ -266,5 +300,13 @@ onMounted(() => {
       <footer class="home-footer"><AppIcon name="inspect" :size="16" /><p>训练模拟，不替代现场消防专业判断。</p></footer>
       </div>
     </div>
-  </main>
+  </section>
 </template>
+
+<style scoped>
+.home-view-heading{display:flex;align-items:center;flex-wrap:wrap;gap:12px 24px}.home-view-heading h1{margin:0}.home-view-heading p{flex:1 1 280px;margin:0}.home-view-heading>button{margin-left:auto;min-height:44px}
+.home-project-actions{display:flex;flex-wrap:wrap;gap:12px 16px;justify-content:flex-end;max-width:440px}.home-project-actions button{min-height:44px;font-size:var(--ui-body-size,16px)}
+.home-create{scroll-margin-top:20px}.home-create-form input,.home-create-form textarea{font-size:var(--ui-body-size,16px)}.home-create-form__actions{display:flex;align-items:center;justify-content:flex-end;flex-wrap:wrap;gap:12px}
+@media(max-width:1100px){.home-project-row{grid-template-columns:auto minmax(0,1fr)}.home-project-actions{grid-column:2;max-width:none;justify-content:flex-start}.home-project-date{grid-column:2}}
+@media(max-width:600px){.home-project-row{grid-template-columns:minmax(0,1fr)}.home-project-mark{display:none}.home-project-info,.home-project-date,.home-project-actions{grid-column:1}.home-view-heading>button{margin-left:0}.home-project-actions{gap:8px 16px}}
+</style>

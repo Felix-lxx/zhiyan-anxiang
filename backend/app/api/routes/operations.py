@@ -596,7 +596,11 @@ def simulation_state(
     elapsed = effective_elapsed(drill) if elapsed_override is None else elapsed_override
     network = road_network_state(session, drill, []) if session is not None else {"nodes": [], "edges": []}
     evidence = [{"sequence": event.sequence, "elapsed_seconds": event.elapsed_seconds, "event_type": event.event_type, "payload": event.payload} for event in events]
-    return simulate_residents(network, evidence, elapsed, strategy, branch_at if branch_at is not None else effective_elapsed(drill) if strategy else None, frozen_world(session, drill) if session else None)
+    world = frozen_world(session, drill) if session else None
+    if session and world and world.get("schema_version", 0) >= 3 and not strategy:
+        from app.services.state_store import restore_engine_checkpoint
+        restore_engine_checkpoint(session, drill.id, world, elapsed)
+    return simulate_residents(network, evidence, elapsed, strategy, branch_at if branch_at is not None else effective_elapsed(drill) if strategy else None, world)
 
 
 def robot_runtime(robot: RobotAgent | None, events: list[DrillEvent], elapsed: int, replay: bool = False) -> dict | None:
@@ -745,6 +749,10 @@ def create_drill(scene_id: str, payload: DrillCreate, identity: AuthenticatedIde
     owned_community(session, scene.community_id, identity.username)
     if scene.status != SceneStatus.PUBLISHED:
         raise HTTPException(status_code=422, detail="只有已发布场景才能创建演练场次。")
+    from app.services.scene_validation import validate_configuration
+    validation = validate_configuration(session, scene)
+    if not validation['passed']:
+        raise HTTPException(422, '场景配置已失效，请返回场景准备修复：' + '；'.join(validation['issues']))
     version = scene.versions[-1]
     drill = DrillSession(scene_id=scene.id, scene_version_id=version.id, name=payload.name, time_scale=payload.time_scale, participants=PARTICIPANTS, status="ready")
     session.add(drill); session.flush()
