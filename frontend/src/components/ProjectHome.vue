@@ -112,12 +112,12 @@ onMounted(load)
 <template>
 <main id="main-content" class="atlas-home">
  <aside class="atlas-sidebar">
-  <button class="atlas-sidebar__brand" @click="navigate('home')"><AppIcon name="building" :size="44"/><strong>智演安巷</strong><small>老旧小区消防应急演练平台</small></button>
+  <button class="atlas-sidebar__brand" title="智演安巷——面向老旧小区消防治理的数字孪生与智能决策平台" @click="navigate('home')"><AppIcon name="building" :size="44"/><strong>智演安巷</strong><small>消防治理智能决策平台</small></button>
   <nav aria-label="工作空间导航"><button :aria-current="section==='home'?'page':undefined" @click="navigate('home')"><AppIcon name="compass"/>演练首页</button><button @click="prepare"><AppIcon name="tasks"/>场景准备</button><button :aria-current="section==='history'?'page':undefined" @click="navigate('history')"><AppIcon name="clock"/>复盘记录</button><button :aria-current="section==='communities'?'page':undefined" @click="navigate('communities')"><AppIcon name="building"/>社区管理</button><button :aria-current="section==='guide'?'page':undefined" @click="navigate('guide')"><AppIcon name="help"/>使用说明</button></nav>
   <div class="atlas-sidebar__foot"><p>演练于平时<br/>平安在万家</p><button :aria-current="section==='account'?'page':undefined" @click="navigate('account')"><AppIcon name="person" :size="18"/>个人中心</button></div>
  </aside>
  <div class="atlas-home__body">
-  <header class="atlas-home__bar"><div><strong>{{community?.name.split(' · ')[0]||'安巷社区'}}</strong><span>老旧社区消防应急演练平台</span></div><div><span class="atlas-online"><i :data-error="Boolean(error)"></i>{{error?'连接待恢复':loading?'正在连接':'系统在线'}}</span><button aria-label="打开个人中心" @click="navigate('account')"><AppIcon name="person"/><span class="atlas-account-name">{{accountName}}</span><AppIcon name="chevron" :size="16"/></button></div></header>
+  <header class="atlas-home__bar"><div><strong>{{community?.name.split(' · ')[0]||'安巷社区'}}</strong><span>老旧小区消防治理数字孪生与智能决策</span></div><div><span class="atlas-online"><i :data-error="Boolean(error)"></i>{{error?'连接待恢复':loading?'正在连接':'系统在线'}}</span><button aria-label="打开个人中心" @click="navigate('account')"><AppIcon name="person"/><span class="atlas-account-name">{{accountName}}</span><AppIcon name="chevron" :size="16"/></button></div></header>
   <section v-if="section==='home'||section==='history'||section==='training'" class="atlas-home__content">
    <header class="atlas-home__title"><h1>{{section==='history'?'复盘记录':'演练工作台'}}</h1><p>以真实场景锻炼应急能力，让社区更安全</p><label v-if="communities.length>1" class="atlas-community-switch"><span>社区</span><select v-model="communityId" @change="loadScenes"><option v-for="c in communities" :key="c.id" :value="c.id">{{c.name}}</option></select></label></header>
    <p v-if="error" class="atlas-home__error" role="alert">{{error}}<button @click="load">重新加载</button></p>

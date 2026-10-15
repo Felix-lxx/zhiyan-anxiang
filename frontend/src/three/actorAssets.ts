@@ -31,6 +31,8 @@ export class ActorAssets {
   private disposed = false
   private pending = 0
   private failed = false
+  private retryJobs = new Map<THREE.Group, () => Promise<void>>()
+  private attaching = new Set<THREE.Group>()
   private quality: 'high' | 'medium' | 'low' = 'high'
 
   constructor(private changed: (status: ActorAssetStatus) => void = () => {}) {}
@@ -64,13 +66,15 @@ export class ActorAssets {
         if (this.disposed) this.releaseResources()
         return asset
       })
-      .catch(error => { this.failed = true; if (!this.disposed) console.warn(`模型 ${name} 加载失败，保留轻量模型。`, error); throw error })
+      .catch(error => { this.requests.delete(name); this.failed = true; if (!this.disposed) console.warn(`模型 ${name} 加载失败，保留轻量模型。`, error); throw error })
       .finally(() => { window.clearTimeout(timeout); this.transfers.delete(controller); this.pending--; if (!this.disposed) this.changed(this.pending ? 'loading' : this.failed ? 'fallback' : 'ready') })
     this.requests.set(name, request)
     return request
   }
 
   async person(root: THREE.Group, id: string, vulnerable = false, helper = false): Promise<void> {
+    if (this.disposed || this.people.has(root) || this.attaching.has(root)) return
+    this.attaching.add(root)
     root.userData.assetModelStatus = 'loading'
     try {
       const asset = await this.load(helper ? 'helper-worker' : 'resident-casual')
@@ -140,7 +144,9 @@ export class ActorAssets {
       this.mountPerson(root, model)
       this.track(model); root.userData.assetModelStatus = 'ready'
       this.changed(this.pending ? 'loading' : this.failed ? 'fallback' : 'ready')
-    } catch { root.userData.assetModelStatus = 'fallback'; this.failed = true; if (!this.disposed) this.changed('fallback') }
+    } catch {
+      if (!this.disposed) { root.userData.assetModelStatus = 'fallback'; this.failed = true; this.retryJobs.set(root, () => this.person(root, id, vulnerable, helper)); this.changed('fallback') }
+    } finally { this.attaching.delete(root); if (this.people.has(root)) this.retryJobs.delete(root) }
   }
 
   private mountPerson(root: THREE.Group, model: THREE.Group) {
@@ -194,6 +200,8 @@ export class ActorAssets {
   }
 
   async robot(root: THREE.Group): Promise<void> {
+    if (this.disposed || this.robots.has(root) || this.attaching.has(root)) return
+    this.attaching.add(root)
     root.userData.assetModelStatus = 'loading'
     try {
       const asset = await this.load('husky-parts')
@@ -260,7 +268,18 @@ export class ActorAssets {
       this.robots.set(root, { model, wheels, head, lidar, beacon, lamps, heading: root.rotation.y, wheelAngles: [0, 0, 0, 0], batteryBars })
       this.mounted.add(model); this.track(model); root.userData.assetModelStatus = 'ready'
       this.changed(this.pending ? 'loading' : this.failed ? 'fallback' : 'ready')
-    } catch { root.userData.assetModelStatus = 'fallback'; this.failed = true; if (!this.disposed) this.changed('fallback') }
+    } catch {
+      if (!this.disposed) { root.userData.assetModelStatus = 'fallback'; this.failed = true; this.retryJobs.set(root, () => this.robot(root)); this.changed('fallback') }
+    } finally { this.attaching.delete(root); if (this.robots.has(root)) this.retryJobs.delete(root) }
+  }
+
+  /** Replace only failed visual assets; positions and running tasks stay intact. */
+  async retryFailed(): Promise<void> {
+    if (this.disposed || this.attaching.size || this.pending) return
+    this.failed = false
+    this.changed('loading')
+    await Promise.allSettled([...this.retryJobs.values()].map(retry => retry()))
+    if (!this.disposed) this.changed(this.retryJobs.size ? 'fallback' : 'ready')
   }
 
   updateRobot(root: THREE.Group, delta: number, distance: number, state: string, active: boolean, seconds: number, battery = 100) {
@@ -311,6 +330,6 @@ export class ActorAssets {
     this.transfers.clear()
     for (const rig of this.people.values()) { rig.mixer.stopAllAction(); rig.mixer.uncacheRoot(rig.mixer.getRoot()) }
     for (const model of this.mounted) model.removeFromParent()
-    this.releaseResources(); this.people.clear(); this.robots.clear(); this.mounted.clear(); this.requests.clear()
+    this.releaseResources(); this.people.clear(); this.robots.clear(); this.mounted.clear(); this.requests.clear(); this.retryJobs.clear(); this.attaching.clear()
   }
 }

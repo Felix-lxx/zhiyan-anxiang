@@ -11,7 +11,7 @@ function submit() { if (mode.value === 'participant' || code.value.trim()) emit(
   <main id="main-content" class="atlas-login">
     <section class="atlas-login__scene" aria-label="社区消防演练">
       <img class="atlas-login__image" src="/assets/atlas-community-night.png" alt="夜间社区消防演练场景效果图" fetchpriority="high" />
-      <div class="atlas-login__brand"><AppIcon name="building" :size="76" /><div><strong>智演安巷</strong><span>老旧小区消防应急演练平台</span></div></div>
+      <div class="atlas-login__brand"><AppIcon name="building" :size="76" /><div><strong>智演安巷</strong><span>面向老旧小区消防治理的数字孪生与智能决策平台</span></div></div>
       <button class="atlas-health" type="button" :disabled="checking" @click="emit('check')" :title="detail"><i :data-healthy="healthy"></i><span>{{ healthy ? '系统正常' : status }}<small>{{ checking ? '连接服务中' : '点击重新检查' }}</small></span></button>
       <div class="atlas-login__features"><div><AppIcon name="rescue" :size="30" /><p><strong>贴近真实场景的应急演练</strong><span>还原老旧小区典型风险，提升协同处置能力</span></p></div><div><AppIcon name="users" :size="30" /><p><strong>两端联动的全流程推演</strong><span>从发现、上报到处置、复盘，每一步都有依据</span></p></div></div>
       <footer>社区更安全 <span>居民更安心</span> 城市更有温度</footer>

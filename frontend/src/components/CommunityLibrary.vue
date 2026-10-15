@@ -187,7 +187,7 @@ onMounted(() => {
 <template>
   <section class="project-home">
     <header class="home-header">
-      <button class="entry-brand home-brand-button" type="button" aria-label="打开社区项目首页" @click="openSection('projects')"><span class="entry-brand__symbol"><AppIcon name="compass" :size="26" /></span><span>智演安巷<small>社区消防演练平台</small></span></button>
+      <button class="entry-brand home-brand-button" type="button" aria-label="打开社区项目首页" title="智演安巷——面向老旧小区消防治理的数字孪生与智能决策平台" @click="openSection('projects')"><span class="entry-brand__symbol"><AppIcon name="compass" :size="26" /></span><span>智演安巷<small>消防治理智能决策平台</small></span></button>
       <nav class="home-nav" aria-label="工作空间导航">
         <button type="button" :aria-current="activeSection === 'projects' ? 'page' : undefined" @click="openSection('projects')"><AppIcon name="building" :size="19" />社区项目<span v-if="!isLoading && !listError">{{ communities.length }}</span></button>
         <button type="button" :aria-current="activeSection === 'training' ? 'page' : undefined" @click="openSection('training')"><AppIcon name="play" :size="19" />示例训练</button>

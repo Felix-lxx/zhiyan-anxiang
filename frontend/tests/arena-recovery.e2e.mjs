@@ -1,0 +1,45 @@
+import assert from 'node:assert/strict'
+import { mkdirSync } from 'node:fs'
+import { resolve } from 'node:path'
+const { default: playwright } = await import(process.env.PLAYWRIGHT_MODULE || 'playwright')
+const browser = await playwright.chromium.launch({ headless: true, ...(process.env.QA_BROWSER_PATH ? { executablePath: process.env.QA_BROWSER_PATH } : {}) })
+const output = resolve('../output/playwright/drill-recovery')
+mkdirSync(output, { recursive: true })
+try {
+  const page = await browser.newPage({ viewport: { width: 1440, height: 900 } })
+  const errors = [], checks = []
+  page.on('pageerror', error => errors.push(error.message))
+  await page.route('**/assets/actors/*.glb', route => route.fulfill({ status: 503, body: '' }))
+  await page.goto((process.env.QA_BASE_URL || 'http://127.0.0.1:5181') + '/tests/arena-recovery.html')
+  const retry = page.getByRole('button', { name: '重试人物与机器人精细模型' })
+  await retry.waitFor({ timeout: 30000 })
+  assert.ok(await page.locator('canvas').count(), 'Fallback retains a usable scene')
+  await page.unroute('**/assets/actors/*.glb')
+  await retry.click()
+  await retry.waitFor({ state: 'hidden', timeout: 45000 })
+  checks.push('模型请求失败保留现场，原地重试真实 GLB 成功')
+  await page.evaluate(() => window.arenaQA.focus())
+  await page.getByRole('button', { name: '总控鸟瞰', exact: true }).click()
+  await page.locator('.twin-inspector').waitFor()
+  await page.evaluate(() => window.arenaQA.move())
+  await page.locator('.twin-inspector').getByText(/楼门外道路/).waitFor()
+  checks.push('已选择居民的详情随新位置、排队、暴露状态更新')
+  await page.evaluate(() => window.arenaQA.preview(true))
+  for (const width of [1440, 1024, 390]) {
+    await page.setViewportSize({ width, height: width === 390 ? 844 : 900 })
+    const panel = page.locator('.spatial-action-preview')
+    await panel.waitFor()
+    const box = await panel.boundingBox(), timeline = await page.locator('.exercise-timeline').boundingBox(), rail = await page.locator('.director-rail').boundingBox()
+    assert.ok(box.x >= 0 && box.x + box.width <= width + 1)
+    assert.ok(box.y >= 0 && box.y + box.height <= Math.min(timeline.y, rail.y) + 1, `Preview overlaps timeline/rail at ${width}`)
+    assert.equal(await page.locator('.spatial-tool-rack').isVisible(), false)
+    assert.equal(await page.locator('.twin-inspector').isVisible(), false)
+    await panel.getByRole('button', { name: '确认执行', exact: true }).scrollIntoViewIfNeeded()
+    await page.screenshot({ path: resolve(output, `preview-${width}.png`) })
+  }
+  await page.getByRole('button', { name: '取消本次预演' }).click()
+  await page.locator('.spatial-action-preview').waitFor({ state: 'hidden' })
+  checks.push('1440/1024/390 预演不覆盖底栏，可滚动到确认键，可取消')
+  assert.deepEqual(errors, [])
+  console.log(JSON.stringify({ checks, errors, output }, null, 2))
+} finally { await browser.close() }

@@ -20,6 +20,20 @@ const provider = ref<{ configured: boolean; model: string | null } | null>(null)
 const statusError = ref(''), useModel = ref(false), log = ref<HTMLElement | null>(null), input = ref<HTMLTextAreaElement | null>(null)
 const panel = ref<HTMLElement | null>(null), confirmClear = ref(false), questionsOpen = ref(false)
 const settingsOpen = ref(false)
+// A mobile sheet owns focus; desktop remains a non-modal scene companion.
+const inertSiblings = new Map<HTMLElement, boolean>()
+let previousFocus: HTMLElement | null = null
+function syncModalBackground() {
+  for (const [element, wasInert] of inertSiblings) element.inert = wasInert
+  inertSiblings.clear()
+  if (!props.open || !mobile.value || !panel.value) return
+  for (const sibling of panel.value.parentElement?.children ?? []) {
+    if (sibling instanceof HTMLElement && sibling !== panel.value) {
+      inertSiblings.set(sibling, sibling.inert)
+      sibling.inert = true
+    }
+  }
+}
 const mobile = ref(window.matchMedia('(max-width: 760px)').matches)
 const lastQuestion = ref(''), configurationLoading = ref(false)
 const lastReply = computed(() => [...messages.value].reverse().find(m => m.reply)?.reply)
@@ -53,10 +67,14 @@ async function loadStatus() {
 }
 async function scrollLog() { await nextTick(); log.value?.scrollTo({ top: log.value.scrollHeight, behavior: 'instant' }) }
 async function toggleHelp(kind: 'settings' | 'questions') {
+  confirmClear.value = false
   if (kind === 'settings') { settingsOpen.value = !settingsOpen.value; questionsOpen.value = false }
   else { questionsOpen.value = !questionsOpen.value; settingsOpen.value = false }
-  await nextTick(); log.value?.scrollTo({ top: 0, behavior: 'instant' })
+  await nextTick()
+  const target = log.value?.querySelector<HTMLElement>(kind === 'settings' ? '.scene-assistant__settings' : '.scene-assistant__questions')
+  if (target) target.scrollIntoView({ block: 'start', behavior: 'instant' })
 }
+async function toggleClear() { confirmClear.value = !confirmClear.value; settingsOpen.value = false; await nextTick(); log.value?.querySelector('.scene-assistant__confirm')?.scrollIntoView({ block: 'nearest' }) }
 async function revealReply() { await nextTick(); const node = log.value?.querySelector<HTMLElement>('.scene-assistant__message:last-of-type'); if (node && log.value) log.value.scrollTop += node.getBoundingClientRect().top - log.value.getBoundingClientRect().top - 12 }
 function fragments(message: Message) { return message.content.split(/(\[S\d+\])/g).map(text => ({ text, source: message.reply?.sources.some(s => `[${s.id}]` === text) ? text.slice(1, -1) : null })) }
 function revealSource(index: number, id: string) { const section = log.value?.querySelectorAll<HTMLElement>('.scene-assistant__message')[index]; const details = section?.querySelector('details'); if (details) details.open = true; const source = section?.querySelector<HTMLElement>(`[data-source="${id}"]`); source?.scrollIntoView({ block: 'nearest', behavior: 'instant' }); source?.focus({ preventScroll: true }) }
@@ -78,21 +96,39 @@ async function send(text = question.value) {
     messages.value.push({ role: 'assistant', content: reply.answer, reply }); await revealReply()
   } catch (cause) {
     if (request === generation) { question.value = content; error.value = cause instanceof DOMException && cause.name === 'AbortError' ? '等待已超时，请重试或切换离线解读。' : cause instanceof TypeError ? '暂时无法连接助手服务，请检查后端后重试。' : cause instanceof Error ? cause.message : '发送失败，请重试。' }
-  } finally { window.clearTimeout(timeout); if (request === generation) { pending.value = false; controller = null; if (!mobile.value) void nextTick(() => input.value?.focus({ preventScroll: true })) } }
+  } finally { window.clearTimeout(timeout); if (request === generation) { pending.value = false; controller = null; if (!mobile.value && props.open) void nextTick(() => input.value?.focus({ preventScroll: true })) } }
 }
 function stop() { const last = messages.value[messages.value.length - 1]; cancel(); if (last?.role === 'user') question.value = last.content; error.value = '已停止等待。模型端可能仍在处理，稍后可重试。' }
 function onKey(event: KeyboardEvent) { if (event.key === 'Enter' && !event.shiftKey && !event.isComposing) { event.preventDefault(); void send() } }
-watch(() => props.open, open => { confirmClear.value = false; if (open) { updateViewport(); void nextTick(() => input.value?.focus({ preventScroll: true })); if (!pending.value) void loadStatus() } })
+function actionLabel(action: AssistantAction) {
+  if (props.atSeconds === null) return action.label
+  if (action.kind === 'branch') return '定位历史分支入口（需确认）'
+  if (['command', 'rollcall', 'missions'].includes(action.kind)) return '返回实时现场 · ' + action.label
+  return action.label
+}
+function navigate(action: AssistantAction) {
+  // The destination owns focus; only an ordinary close restores the opener.
+  previousFocus = null
+  emit('navigate', action)
+}
+watch(() => props.open, open => {
+  confirmClear.value = false
+  if (open) { previousFocus = document.activeElement instanceof HTMLElement ? document.activeElement : null; updateViewport(); void nextTick(() => input.value?.focus({ preventScroll: true })); if (!pending.value) void loadStatus() }
+  else void nextTick(() => { if (previousFocus?.isConnected && !previousFocus.closest('[inert]') && previousFocus.getClientRects().length) previousFocus.focus({ preventScroll: true }) })
+})
+watch([() => props.open, mobile], syncModalBackground, { flush: 'post' })
+watch(error, async value => { if (value && props.open) { await nextTick(); log.value?.querySelector('.scene-assistant__error')?.scrollIntoView({ block: 'nearest' }) } })
 watch(() => props.atSeconds, () => { if (pending.value) stop() })
-onMounted(() => { void loadStatus(); updateViewport(); media.addEventListener('change', updateViewport); window.visualViewport?.addEventListener('resize', updateViewport); window.visualViewport?.addEventListener('scroll', updateViewport) })
-onBeforeUnmount(() => { cancel(); statusController?.abort(); statusController = null; media.removeEventListener('change', updateViewport); window.visualViewport?.removeEventListener('resize', updateViewport); window.visualViewport?.removeEventListener('scroll', updateViewport) })
+onMounted(() => { void loadStatus(); updateViewport(); syncModalBackground(); media.addEventListener('change', updateViewport); window.visualViewport?.addEventListener('resize', updateViewport); window.visualViewport?.addEventListener('scroll', updateViewport) })
+onBeforeUnmount(() => { for (const [element, wasInert] of inertSiblings) element.inert = wasInert; inertSiblings.clear(); cancel(); statusController?.abort(); statusController = null; media.removeEventListener('change', updateViewport); window.visualViewport?.removeEventListener('resize', updateViewport); window.visualViewport?.removeEventListener('scroll', updateViewport) })
 </script>
 
 <template>
   <aside v-show="open" ref="panel" class="scene-assistant" :class="{ 'is-compact': compact }" :style="viewportStyle" :role="mobile ? 'dialog' : undefined" :aria-modal="mobile ? true : undefined" aria-label="场景 AI 助手" @keydown="trapFocus" @keydown.esc.stop="confirmClear ? confirmClear = false : emit('close')">
-    <header class="scene-assistant__header"><div class="scene-assistant__identity"><AppIcon name="brain" :size="25" /><div><h2>安巷教练</h2><p>专属场景 AI 助手</p></div></div><div><button type="button" :disabled="!messages.length" aria-label="清空本场对话" title="清空本场对话" @click="confirmClear = !confirmClear"><AppIcon name="refresh" :size="18" /></button><button type="button" aria-label="关闭 AI 助手" @click="emit('close')"><AppIcon name="close" /></button></div></header>
+    <header class="scene-assistant__header"><div class="scene-assistant__identity"><AppIcon name="brain" :size="25" /><div><h2>安巷教练</h2><p>{{ atSeconds === null ? '实时现场' : '历史 ' + clock(atSeconds) }} · {{ useModel && provider?.configured ? '模型问答' : '离线解读' }}</p></div></div><div><button type="button" aria-label="模型设置" title="模型设置" :aria-expanded="settingsOpen" aria-controls="scene-assistant-settings" @click="toggleHelp('settings')"><AppIcon name="settings" :size="18" /></button><button type="button" :disabled="!messages.length" aria-label="清空本场对话" title="清空本场对话" @click="toggleClear"><AppIcon name="refresh" :size="18" /></button><button type="button" aria-label="关闭 AI 助手" @click="emit('close')"><AppIcon name="close" /></button></div></header>
+    <div ref="log" class="scene-assistant__log" aria-label="场景上下文与对话">
     <div class="scene-assistant__context"><AppIcon name="compass" :size="17" /><div><strong>{{ drillName }}</strong><span>{{ atSeconds === null ? '每次提问读取本场最新快照' : '正在解读历史时刻 ' + clock(atSeconds) }}</span></div><span class="scene-assistant__mode">{{ useModel && provider?.configured ? '模型问答' : '离线解读' }}</span></div>
-    <div v-if="focusContext" class="scene-assistant__focus"><AppIcon name="target" :size="17" /><div><span>当前关注</span><strong>{{ focusContext.label }}</strong><small>{{ focusContext.detail || focusContext.type }}</small></div></div>
+    <details v-if="focusContext" :key="focusKey(focusContext)" class="scene-assistant__focus"><summary><AppIcon name="target" :size="17" /><span>当前关注<strong>{{ focusContext.label }}</strong></span><AppIcon name="chevron" :size="16" /></summary><p>{{ focusContext.detail || focusContext.type || '本轮提问将结合此对象的现场状态。' }}</p></details>
     <section class="scene-assistant__connection" aria-label="模型连接与授权">
       <div class="scene-assistant__connection-heading">
         <label v-if="provider?.configured" class="scene-assistant__consent"><input v-model="useModel" type="checkbox" :disabled="pending || configurationLoading" aria-describedby="scene-assistant-consent-note" />启用大模型问答</label>
@@ -104,7 +140,6 @@ onBeforeUnmount(() => { cancel(); statusController?.abort(); statusController = 
     </section>
     <div v-if="confirmClear" class="scene-assistant__confirm" role="group" aria-label="确认清空对话"><p>清空本场对话？此操作无法撤销，不影响演练数据。</p><div><button type="button" @click="confirmClear = false">保留对话</button><button type="button" @click="clear">确认清空</button></div></div>
     <div v-if="contextChanged" class="scene-assistant__stale"><span>{{ focusChanged ? '当前关注对象已切换，旧回答仍保留供对照。' : '现场或回放时刻已变化，旧回答不会自动更新。' }}</span><button type="button" :disabled="pending" @click="refreshContext">{{ focusChanged ? '解读当前对象' : '按新快照重答' }}</button></div>
-    <div ref="log" class="scene-assistant__log" role="log" aria-label="场景对话记录" aria-live="polite" :aria-busy="pending">
       <section v-if="settingsOpen" id="scene-assistant-settings" class="scene-assistant__settings" aria-label="模型设置详情">
         <h3>模型设置</h3>
         <p>{{ provider?.configured ? '当前模型：' + provider.model : '管理员需在根目录 .env 配置模型地址、模型名称与密钥，然后重启后端。' }}</p>
@@ -117,16 +152,18 @@ onBeforeUnmount(() => { cancel(); statusController?.abort(); statusController = 
         <h3>可以这样问</h3>
         <div class="scene-assistant__suggestions"><button v-for="item in suggestions" :key="item" type="button" :disabled="pending || configurationLoading" @click="send(item)">{{ item }}<AppIcon name="arrowRight" :size="14" /></button></div>
       </section>
+      <div role="log" aria-label="场景对话记录" aria-live="polite" :aria-busy="pending">
       <article v-for="(message, index) in messages" :key="index" class="scene-assistant__message" :data-role="message.role">
         <div class="scene-assistant__speaker"><strong>{{ message.role === 'user' ? '你' : '安巷教练' }}</strong><span v-if="message.reply">{{ message.reply.mode === 'model' ? message.reply.model : '离线规则' }} · {{ clock(message.reply.context.at_seconds) }}{{ message.reply.context.historical ? ' 回放' : ' 快照' }}</span></div>
         <p class="scene-assistant__text"><template v-for="(fragment, part) in fragments(message)" :key="part"><button v-if="fragment.source" type="button" class="scene-assistant__citation" :aria-label="'查看依据 ' + fragment.source" @click="revealSource(index, fragment.source)">{{ fragment.text }}</button><template v-else>{{ fragment.text }}</template></template></p>
-        <template v-if="message.reply"><p class="scene-assistant__notice">{{ message.reply.notice }}</p><details class="scene-assistant__sources"><summary>查看本轮数据依据 · {{ message.reply.sources.length }} 项</summary><dl><div v-for="source in message.reply.sources" :key="source.id" :data-source="source.id" tabindex="-1"><dt>[{{ source.id }}] {{ source.title }}</dt><dd>{{ source.detail }}</dd></div></dl></details><div v-if="message.reply.actions.length" class="scene-assistant__actions"><button v-for="action in message.reply.actions" :key="action.kind + (action.resident_id || '')" type="button" @click="emit('navigate', action)">{{ action.label }}<AppIcon name="arrowRight" :size="15" /></button></div></template>
+        <template v-if="message.reply"><p class="scene-assistant__notice">{{ message.reply.notice }}</p><details class="scene-assistant__sources"><summary>查看本轮数据依据 · {{ message.reply.sources.length }} 项</summary><dl><div v-for="source in message.reply.sources" :key="source.id" :data-source="source.id" tabindex="-1"><dt>[{{ source.id }}] {{ source.title }}</dt><dd>{{ source.detail }}</dd></div></dl></details><div v-if="message.reply.actions.length" class="scene-assistant__actions"><button v-for="action in message.reply.actions" :key="action.kind + (action.resident_id || '')" type="button" @click="navigate(action)">{{ actionLabel(action) }}<AppIcon name="arrowRight" :size="15" /></button></div></template>
       </article>
       <p v-if="pending" class="scene-assistant__pending" role="status">{{ useModel ? '正在请模型解读本场快照…' : '正在读取场景依据…' }}</p>
+      </div>
+      <div v-if="error" class="scene-assistant__error" role="alert"><p>{{ error }}</p><button type="button" :disabled="pending" @click="send(lastQuestion)">重试本次问题</button></div>
     </div>
     <div class="scene-assistant__compose">
       <div class="scene-assistant__question-heading"><button type="button" :aria-expanded="questionsOpen || !messages.length" aria-controls="scene-assistant-questions" @click="toggleHelp('questions')">常见问题<AppIcon name="chevron" :size="14" /></button><span>{{ useModel && provider?.configured ? '本次发送给模型' : '本次为离线解读' }}</span></div>
-      <div v-if="error" class="scene-assistant__error" role="alert"><p>{{ error }}</p><button type="button" :disabled="pending" @click="send(lastQuestion)">重试本次问题</button></div>
       <form @submit.prevent="send()"><label class="sr-only" for="scene-assistant-question">向场景助手提问</label><textarea id="scene-assistant-question" ref="input" v-model="question" rows="2" maxlength="2000" placeholder="问问当前现场，例如：谁还没有到集合点？" :disabled="pending" aria-describedby="scene-assistant-input-hint" @keydown="onKey"></textarea><div class="scene-assistant__send"><span id="scene-assistant-input-hint">{{ question.length }}/2000 · Shift+Enter 换行</span><button v-if="pending" type="button" @click="stop">停止等待</button><button v-else type="submit" :disabled="!question.trim() || configurationLoading"><AppIcon name="send" :size="16" />{{ useModel && provider?.configured ? '发送给模型' : '离线解读' }}</button></div></form>
       <p class="scene-assistant__disclaimer">训练解读，不替代真实火场专业判断。对话仅在本场页面内保留。</p>
     </div>
