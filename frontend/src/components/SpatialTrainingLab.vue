@@ -1,8 +1,9 @@
 <script setup lang="ts">
 import { createApiClient } from '../api/client'
 import { sendCommand } from '../api/commands'
+import { useDrillPreview } from '../composables/useDrillPreview'
 
-import { computed, nextTick, ref, watch } from 'vue'
+import { computed, nextTick, onBeforeUnmount, ref, watch } from 'vue'
 import AppIcon from './AppIcon.vue'
 
 type Point = { x: number; y: number; height?: number }
@@ -18,8 +19,10 @@ const props = defineProps<{ drill: State; apiBaseUrl: string; accessToken: strin
 const api = createApiClient(props.apiBaseUrl, () => props.accessToken)
 const emit = defineEmits<{ updated: [value: unknown]; forked: [value: unknown]; select: [ids: string[]]; preview: [people: Person[]]; focus: [id: string]; compare: [] }>()
 const tab = ref<'command' | 'rollcall' | 'branch'>('command'), selected = ref<string[]>([]), exit = ref<'north' | 'south'>('north')
-const pending = ref(false), error = ref(''), notice = ref(''), searchId = ref(''), responsible = ref('物业搜索员甲')
-const draft = ref<ResidentPreview | null>(null)
+const commandPending = ref(false), error = ref(''), notice = ref(''), searchId = ref(''), responsible = ref('物业搜索员甲')
+const previewRequest = useDrillPreview<ResidentPreview>(() => props.drill.id, () => !props.replay && props.drill.status === 'running')
+const draft = previewRequest.data
+const pending = computed(() => commandPending.value || previewRequest.pending.value)
 const action = ref<'evacuate' | 'priority_assist'>('evacuate')
 const confirmPanel = ref<HTMLElement|null>(null)
 const people = computed(() => props.drill.simulation.residents)
@@ -32,42 +35,49 @@ const arrived = computed(() => people.value.filter(p => p.status === 'evacuated'
 const missing = computed(() => people.value.filter(p => p.status !== 'evacuated'))
 const decisions = computed(() => props.drill.events.filter(e => ['inject.channel_blocked','resident.command'].includes(e.event_type)))
 const canAct = computed(() => !pending.value && !props.replay && props.drill.status === 'running')
-let generation = 0
-async function request(path: string, body: unknown): Promise<any> {
-  return api.post(`/drills/${props.drill.id}${path}`,body)
-}
-function selectIds(ids: string[]) { generation++; selected.value = ids; draft.value = null; emit('preview', []); emit('select', ids) }
+let alive = true
+onBeforeUnmount(() => { alive = false; emit('preview', []) })
+function cancelPreview() { previewRequest.cancel(); emit('preview', []) }
+function selectIds(ids: string[]) { cancelPreview(); selected.value = ids.filter(id => people.value.some(person => person.id === id)); emit('select', selected.value) }
 function selectFloor(floor: number) { selectIds(buildingPeople.value.filter(p => p.status !== 'evacuated' && p.indoor_stage !== 'outdoor' && Math.max(1,Math.ceil(p.current_floor ?? p.floor ?? 1)) === floor).map(p => p.id)) }
 async function previewCommand(command: { residentIds: string[]; exit: 'north' | 'south'; action: 'evacuate' | 'priority_assist' }) {
+  if (commandPending.value || props.replay || props.drill.status !== 'running') return
   selectIds(command.residentIds); exit.value = command.exit; action.value = command.action; tab.value = 'command'
   if (!selected.value.length) return
-  const current = generation; pending.value = true; error.value = ''; notice.value = ''
-  try { const value = await request('/residents/preview', { resident_ids: selected.value, exit: exit.value, action: action.value }); if (current === generation) { draft.value = value; emit('preview', value.residents); await nextTick(); confirmPanel.value?.scrollIntoView({block:'nearest',behavior:'instant'}) } }
+  error.value = ''; notice.value = ''
+  const drillId = props.drill.id
+  try { const value = await previewRequest.run(signal => api.post(`/drills/${drillId}/residents/preview`, { resident_ids: [...selected.value], exit: exit.value, action: action.value }, { signal })); if (value) { emit('preview', value.residents); await nextTick(); confirmPanel.value?.scrollIntoView({block:'nearest',behavior:'instant'}) } }
   catch (cause) { error.value = String(cause instanceof Error ? cause.message : cause) }
-  finally { pending.value = false }
 }
 async function run(path: string, body: unknown, message: string, expectedSequence?: number) {
-  pending.value = true; error.value = ''; notice.value = ''
-  try { emit('updated', await sendCommand(api, props.drill.id, path, body, 'POST', expectedSequence)); notice.value = message; draft.value = null; emit('preview', []) }
+  if (!canAct.value) return
+  const drillId = props.drill.id
+  commandPending.value = true; error.value = ''; notice.value = ''
+  try { const result = await sendCommand(api, drillId, path, body, 'POST', expectedSequence); if (!alive || props.drill.id !== drillId || props.replay) return; emit('updated', result); notice.value = message; cancelPreview() }
   catch (cause) {
+    if (!alive || props.drill.id !== drillId || props.replay) return
     const message = String(cause instanceof Error ? cause.message : cause)
     error.value = message
     if (path === '/residents' && expectedSequence !== undefined && message.includes('重新预览')) {
       const command = body as { resident_ids: string[]; exit: 'north' | 'south'; action: 'evacuate' | 'priority_assist' }
+      commandPending.value = false
       await previewCommand({ residentIds: command.resident_ids, exit: command.exit, action: command.action })
-      notice.value = '现场状态已变化，已按最新人员、道路和烟气状态重新生成预览，请再次确认。'
+      if (draft.value) notice.value = '现场状态已变化，已按最新人员、道路和烟气状态重新生成预览，请再次确认。'
     }
   }
-  finally { pending.value = false }
+  finally { commandPending.value = false }
 }
 async function fork(at: number, sequence?: number) {
-  pending.value = true; error.value = ''
-  try { emit('forked', await request('/branches', { at_seconds: at, before_sequence: sequence, name: `另一种选择 · ${at}秒` })) }
-  catch (cause) { error.value = String(cause instanceof Error ? cause.message : cause) }
-  finally { pending.value = false }
+  if (pending.value) return
+  const drillId = props.drill.id
+  commandPending.value = true; error.value = ''
+  try { const result = await api.post(`/drills/${drillId}/branches`, { at_seconds: at, before_sequence: sequence, name: `另一种选择 · ${at}秒` }); if (alive && props.drill.id === drillId) emit('forked', result) }
+  catch (cause) { if (alive && props.drill.id === drillId) error.value = String(cause instanceof Error ? cause.message : cause) }
+  finally { commandPending.value = false }
 }
 watch(() => props.drill.id, () => { selectIds([]); buildingId.value=''; error.value = ''; notice.value = '' })
 watch(() => props.replay, () => selectIds([]))
+watch(() => props.drill.status, () => { cancelPreview() })
 function openTab(value: 'command' | 'rollcall' | 'branch') { tab.value = value }
 defineExpose({ previewCommand, selectIds, openTab })
 </script>
@@ -75,7 +85,9 @@ defineExpose({ previewCommand, selectIds, openTab })
 <template>
   <section class="spatial-lab" aria-label="连续空间训练">
     <nav aria-label="训练操作"><button :aria-pressed="tab==='command'" @click="tab='command'"><AppIcon name="route"/>指挥</button><button :aria-pressed="tab==='rollcall'" @click="tab='rollcall'"><AppIcon name="users"/>清点</button><button :aria-pressed="tab==='branch'" @click="tab='branch'"><AppIcon name="split"/>重做</button></nav>
-    <p v-if="error" class="lab-error" role="alert">{{ error }}</p><p v-if="notice" class="lab-notice" role="status">{{ notice }}</p><p v-if="pending" role="status">正在校验场次与路线…</p>
+    <p v-if="error" class="lab-error" role="alert">{{ error }}</p><p v-if="notice" class="lab-notice" role="status">{{ notice }}</p><p v-if="pending" role="status">{{ commandPending ? '指令正在提交，请勿重复操作…' : '正在校验场次与路线…' }}</p>
+    <button v-if="previewRequest.pending.value" type="button" @click="cancelPreview">取消预演</button>
+    <p v-if="!replay && drill.status !== 'running'">{{ drill.status === 'paused' ? '演练已暂停，继续运行后可预览和下令。' : '请先开始演练，再选择居民和路线。' }}</p>
     <template v-if="tab==='command'">
       <h2>选人 → 预览 → 确认</h2><p>点选一层，或切到三维「居民」工具拖动框选。点击北／南出口也能预览路线。</p>
       <label v-if="buildings.length>1">选择楼栋<select v-model="buildingId" @change="selectIds([])"><option value="">全部楼栋（同层一起选择）</option><option v-for="id in buildings" :key="id" :value="id">{{ buildingName(id) }} · {{ people.filter(p=>p.building_id===id).length }} 人</option></select></label>
@@ -83,8 +95,8 @@ defineExpose({ previewCommand, selectIds, openTab })
       <div class="selection-count"><strong>已选 {{ selected.length }} 人</strong><button @click="selectIds([])">清除选择</button></div>
       <button :disabled="!canAct" @click="selectIds(selected); notice='已切换框选：在三维画面中按住并拖动，再点击出口预览路线。'">三维框选</button>
       <label>逐人选择<select aria-label="逐人选择" @change="selectIds([( $event.target as HTMLSelectElement).value]); emit('focus', ($event.target as HTMLSelectElement).value)"><option value="">请选择</option><option v-for="p in people.filter(p=>p.status!=='evacuated')" :key="p.id" :value="p.id">{{ p.label }} · {{ p.last_location }}</option></select></label>
-      <div class="exit-actions"><button :disabled="!selected.length || pending || replay" @click="previewCommand({residentIds:selected,exit:'north',action:'evacuate'})">预览北侧路线</button><button :disabled="!selected.length || pending || replay" @click="previewCommand({residentIds:selected,exit:'south',action:'evacuate'})">预览南侧路线</button></div>
-      <button :disabled="!selected.length || pending || replay || selected.some(id=>!people.find(p=>p.id===id)?.vulnerable)" @click="previewCommand({residentIds:selected,exit,action:'priority_assist'})">为所选重点居民预览护送</button>
+      <div class="exit-actions"><button :disabled="!selected.length || !canAct" @click="previewCommand({residentIds:selected,exit:'north',action:'evacuate'})">预览北侧路线</button><button :disabled="!selected.length || !canAct" @click="previewCommand({residentIds:selected,exit:'south',action:'evacuate'})">预览南侧路线</button></div>
+      <button :disabled="!selected.length || !canAct || selected.some(id=>!people.find(p=>p.id===id)?.vulnerable)" @click="previewCommand({residentIds:selected,exit,action:'priority_assist'})">为所选重点居民预览护送</button>
       <section v-if="draft" ref="confirmPanel" class="route-confirm" aria-label="路线预览确认">
         <h3>{{ exit==='north'?'北':'南' }}侧集合点 · {{ draft.residents.length }} 人</h3>
         <p>虚线为拟执行路线，尚未下令。{{ draft.can_apply ? '所选人员可达。' : '含不可达或已到达人员，请重新选择。' }}</p>

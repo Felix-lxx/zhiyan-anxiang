@@ -29,6 +29,12 @@ class RobotCommand(BaseModel):
     task_id: str | None = Field(default=None, max_length=36)
 
 
+class VehicleCommand(BaseModel):
+    command: Literal["dispatch", "cancel", "replan"] = "dispatch"
+    vehicle_id: Literal["firetruck-1", "ambulance-1"]
+    target_node_id: str | None = Field(default=None, max_length=64)
+
+
 class ResidentCommand(BaseModel):
     resident_ids: list[str] = Field(min_length=1, max_length=1000)
     exit: str = Field(pattern=r"^(north|south)$")
@@ -86,7 +92,7 @@ class SearchAssignment(BaseModel):
 
 class LiveCommand(BaseModel):
     command_id: str = Field(min_length=8, max_length=80, pattern=r"^[a-zA-Z0-9_-]+$")
-    kind: Literal["state", "event.inject", "road.reopen", "residents.assign", "robot.command", "search.assign", "participant.feedback", "task.assign", "task.action", "director.configure"]
+    kind: Literal["state", "event.inject", "road.reopen", "residents.assign", "robot.command", "vehicle.command", "search.assign", "participant.feedback", "task.assign", "task.action", "director.configure"]
     arguments: dict[str, Any] = Field(default_factory=dict)
     target_id: str | None = Field(default=None, max_length=64)
     expected_sequence: int | None = Field(default=None, ge=0)

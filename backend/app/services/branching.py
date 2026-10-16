@@ -11,6 +11,8 @@ def fork_events(events, username):
         payload = deepcopy(e.payload)
         for key in ("participant_token", "token_hash"): payload.pop(key, None)
         if payload.get("target_event_id") in ids: payload["target_event_id"] = ids[payload["target_event_id"]]
+        if payload.get("mission_id") in ids: payload["mission_id"] = ids[payload["mission_id"]]
+        if isinstance(payload.get("event_ids"), list): payload["event_ids"] = [ids.get(key, key) for key in payload["event_ids"]]
         # Historical evidence stays intact, but pending tasks are actionable by
         # the branch director; old mobile credentials never authorize this fork.
         if e.event_type.startswith("task.") and "participant_id" in payload:

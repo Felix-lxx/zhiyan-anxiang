@@ -1,6 +1,33 @@
 export interface VersionedState { id: string; state_version?: string; latest_event_sequence?: number }
 export type ConnectionState = 'connecting' | 'live' | 'stale'
-export interface StatePatch { path: string[]; value?: unknown; remove?: boolean }
+interface EntityDelta { added: Array<Record<string, unknown> & { id: string }>; removed: string[]; updated: Array<{ id: string; set: Record<string, unknown>; unset: string[] }>; order?: string[] }
+export interface StatePatch { path: string[]; value?: unknown; remove?: boolean; entities?: EntityDelta }
+const unsafeKey = (key: string) => ['__proto__', 'prototype', 'constructor'].includes(key)
+function patchEntities(source: unknown, delta: EntityDelta): unknown[] {
+  if (!Array.isArray(source)) throw new Error('实体列表已变化')
+  const items = new Map<string, Record<string, unknown>>()
+  for (const item of source) {
+    if (!item || typeof item.id !== 'string' || items.has(item.id)) throw new Error('实体编号不唯一')
+    items.set(item.id, item)
+  }
+  for (const id of delta.removed) { if (!items.delete(id)) throw new Error('待移除实体不存在') }
+  for (const update of delta.updated) {
+    const item = items.get(update.id)
+    if (!item || Object.keys(update.set).some(key => unsafeKey(key) || key === 'id') || update.unset.some(key => unsafeKey(key) || key === 'id')) throw new Error('实体更新无效')
+    const next = { ...item, ...update.set }
+    for (const key of update.unset) delete next[key]
+    items.set(update.id, next)
+  }
+  for (const item of delta.added) {
+    if (!item || typeof item.id !== 'string' || items.has(item.id) || Object.keys(item).some(unsafeKey)) throw new Error('新增实体无效')
+    items.set(item.id, item)
+  }
+  if (delta.order) {
+    if (delta.order.length !== items.size || new Set(delta.order).size !== items.size || delta.order.some(id => !items.has(id))) throw new Error('实体顺序不连续')
+    return delta.order.map(id => items.get(id)!)
+  }
+  return [...items.values()]
+}
 export type LiveMessage<T> =
   | { type: 'drill.snapshot'; data: T }
   | { type: 'drill.delta'; drill_id: string; base_version: string; state_version: string; patch: StatePatch[] }
@@ -34,7 +61,7 @@ export function applyLiveMessage<T extends VersionedState>(previous: T | null, m
   if (previous.state_version !== message.base_version) throw new Error('现场更新不连续，正在重新同步。')
   const next = { ...previous } as T & Record<string, unknown>
   for (const change of message.patch) {
-    if (!change.path.length || change.path.some(key => ['__proto__', 'prototype', 'constructor'].includes(key))) throw new Error('无效现场更新')
+    if (!change.path.length || change.path.some(unsafeKey)) throw new Error('无效现场更新')
     let target: Record<string, unknown> = next
     for (const key of change.path.slice(0, -1)) {
       const child = target[key]
@@ -43,7 +70,8 @@ export function applyLiveMessage<T extends VersionedState>(previous: T | null, m
       target = target[key] as Record<string, unknown>
     }
     const key = change.path[change.path.length - 1]!
-    if (change.remove) delete target[key]
+    if (change.entities) target[key] = patchEntities(target[key], change.entities)
+    else if (change.remove) delete target[key]
     else target[key] = change.value
   }
   if (next.state_version !== message.state_version) throw new Error('现场版本校验失败')
@@ -64,7 +92,7 @@ export function connectLive<T extends VersionedState>(options: {
     options.onStatus(attempt ? 'stale' : 'connecting')
     stream = null
     const cursor = lastSequence === null ? '' : `&after_sequence=${lastSequence}`
-    const current = new WebSocket(options.url + '&protocol=2' + cursor)
+    const current = new WebSocket(options.url + '&protocol=3' + cursor)
     socket = current; lastMessageAt = Date.now()
     current.onmessage = event => {
       if (stopped || socket !== current) return

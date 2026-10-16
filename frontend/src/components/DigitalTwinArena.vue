@@ -7,6 +7,8 @@ import { createPerson, createPatrolRobot, posePerson } from '../three/actors'
 import { CrowdRenderer } from '../three/crowdRenderer'
 import { ActorAssets, type ActorAssetStatus } from '../three/actorAssets'
 import { ActorMotion } from '../three/actorMotion'
+import { VehicleVisuals } from '../three/vehicleVisuals'
+import type { Vehicle } from '../domain/drill'
 import { FireEffects } from '../three/fireEffects'
 import { RoadVisuals } from '../three/roadVisuals'
 import { assemblyAttendance, createAssemblyPoint, type AssemblyResident } from '../three/assemblyPoint'
@@ -17,6 +19,7 @@ interface Resident { height?: number; building_id?: string; floor?: number; curr
 interface SpatialEdgeState { id: string; kind: string; start: { x: number; y: number; height: number }; end: { x: number; y: number; height: number }; width_meters: number; density_percent?: number; live_occupancy?: number; waiting_count?: number; capacity_persons?: number }
 interface RoadEdgeState { id: string; name: string; start: { x: number; y: number }; end: { x: number; y: number }; width_meters: number; status: 'open' | 'restricted' | 'blocked'; blocked_by_event: boolean; risk_score: number; smoke_risk?: number; density_percent?: number; live_occupancy?: number; waiting_count?: number; capacity_persons?: number; flow_capacity_per_second?: number }
 interface Simulation {
+  vehicles?: Vehicle[]
   spatial_network?: { nodes: Array<{id:string;name:string;x:number;y:number;height:number;kind:string;floor:number;is_exit?:boolean;building_id?:string}>; edges: SpatialEdgeState[] }
   world?: { schema_version?: number; parameters?: { start_time?: string; wind_direction?: string }; objects: Array<{ id: string; name: string; type: string; x: number; y: number; width: number; depth: number; floors: number; entry: { x: number; y: number } }>; fire_origin: { x: number; y: number } } | null
   helpers?: Array<{ id: string; resident_id?: string; x: number; y: number; height?: number; edge_id?: string | null; state: string; behavior?: string; responsible?: string; met_at_seconds?: number; route_points?: Array<{ x: number; y: number; height?: number }> }>
@@ -30,13 +33,13 @@ interface Simulation {
 interface Robot { state: string; battery: number; x: number; y: number; route: string[]; reason: string; task_queue?: Array<{ id: string; label: string; status: string; progress?: number; ends_at_seconds?: number; route_points?: Array<{ x: number; y: number; height?: number }> }> }
 interface DrillEvent { sequence: number; event_type: string; message: string; payload?: { x?: number; y?: number; target?: string; route_points?: Array<{ x: number; y: number; height?: number }>; severity?: string } }
 export interface AssistantSceneContext { kind: 'resident' | 'road' | 'robot' | 'object'; id?: string; label: string; type?: string; detail?: string; x?: number; y?: number }
-type SelectedObject = { title: string; type: string; detail: string; action?: string; residentId?: string; roadEdgeId?: string; x?: number; y?: number }
+type SelectedObject = { title: string; type: string; detail: string; action?: string; residentId?: string; roadEdgeId?: string; vehicleId?: string; x?: number; y?: number }
 type SpatialIntent =
   | { kind: 'road'; edgeId: string }
   | { kind: 'robot'; x: number; y: number; target: string }
   | { kind: 'residents'; residentIds: string[]; exit: 'north' | 'south'; action: 'evacuate' | 'priority_assist' }
 interface OperationPreview {
-  kind: 'road' | 'robot' | 'residents'; can_apply: boolean; title?: string; notice: string
+  kind: 'road' | 'robot' | 'residents' | 'vehicle'; can_apply: boolean; title?: string; notice: string
   expected_sequence?: number
   route_points?: Array<{ x: number; y: number; height?: number }>; route_edge_ids?: string[]; route_distance?: number
   planned_duration_seconds?: number | null; queue_position?: number; risk_score?: number; width_meters?: number
@@ -74,6 +77,7 @@ const emit = defineEmits<{
   selection: [ids: string[]]
   contextSelection: [context: AssistantSceneContext | null]
   askAssistant: [context: AssistantSceneContext]
+  dispatchVehicle: [id: string]
 }>()
 
 const host = ref<HTMLDivElement | null>(null)
@@ -172,6 +176,7 @@ async function retryActorModels() {
   finally { retryingModels.value = false }
 }
 const actorMotion = new ActorMotion()
+let vehicleVisuals: VehicleVisuals | null = null
 const currentRobotTask = computed(() => props.robot?.task_queue?.find(task => ['executing', 'blocked'].includes(task.status)))
 const robotProgress = computed(() => Math.round(100 * Math.max(0, Math.min(1, currentRobotTask.value?.progress ?? (['arrived', 'completed'].includes(props.robot?.state ?? '') ? 1 : 0)))))
 const robotRemaining = computed(() => currentRobotTask.value?.ends_at_seconds === undefined || currentRobotTask.value.status === 'blocked' ? null : Math.max(0, Math.ceil(currentRobotTask.value.ends_at_seconds - props.elapsedSeconds)))
@@ -285,8 +290,10 @@ async function loadEnvironmentAssets(): Promise<void> {
     { url: base+'tree-large.glb', size: 5, positions: [[-43,-38],[-42,38],[-15,35],[13,40],[42,12],[39,-39],[-16,-43]] },
     { url: base+'planter.glb', size: 1.8, positions: [[-9,8],[8,8],[19,8]] },
     { url: assetBase+'kenney-car-kit/sedan.glb', size: 4.2, positions: [[-45,-19],[-45,-11],[-45,-3]] },
-    { url: assetBase+'kenney-car-kit/firetruck.glb', size: 6.2, positions: [[40,36]] },
-    { url: assetBase+'kenney-car-kit/ambulance.glb', size: 5.2, positions: [[40,44]] },
+    ...(!props.simulation?.vehicles?.length ? [
+      { url: assetBase+'kenney-car-kit/firetruck.glb', size: 6.2, positions: [[40,36]] },
+      { url: assetBase+'kenney-car-kit/ambulance.glb', size: 5.2, positions: [[40,44]] },
+    ] : []),
   ]
   const isClear = (x: number,z: number,radius:number) => {
     const px=x+50, py=z+50
@@ -639,6 +646,7 @@ function animate(time = 0): void {
   // Reduced motion removes decorative pulses and camera easing, not the drill's
   // essential spatial feedback. Positions still stop at the server's last sample.
   const activelyAnimating = props.status === 'running'
+  vehicleVisuals?.step(delta, activelyAnimating, time / 1000, !reducedMotion && props.effectsEnabled !== false)
   if (!activelyAnimating && !renderDirty) return
   const fireScale = .8 + (props.simulation?.fire.intensity ?? 20) / 115
   if(activelyAnimating)visualSeconds+=delta
@@ -770,6 +778,14 @@ function updateStairHeat(): void {
 }
 
 function updateEntities(): void {
+  if (scene && props.simulation) {
+    if (!vehicleVisuals) { vehicleVisuals = new VehicleVisuals(object => interactiveMeshes.push(object), () => { renderDirty = true }); scene.add(vehicleVisuals.layer) }
+    vehicleVisuals.update(props.simulation.vehicles ?? [], props.elapsedSeconds, props.status === 'running')
+    if (selected.value?.vehicleId) {
+      const vehicle = props.simulation.vehicles?.find(item => item.id === selected.value?.vehicleId)
+      if (vehicle) Object.assign(selected.value, { x: vehicle.x, y: vehicle.y, detail: `${vehicle.reason}${vehicle.remaining_seconds === null ? '' : ` 剩余 ${vehicle.remaining_seconds} 秒。`}` })
+    }
+  }
   if (!scene || destroyed) return
   // Refresh click-time details and assistant context from each authoritative snapshot.
   const focus = selected.value
@@ -1137,7 +1153,9 @@ function onContextLost(event: Event): void {
 }
 function onContextRestored(): void { recoveringContext.value = false; renderError.value = ''; resize(); updateEntities(); renderDirty = true }
 
-watch(() => [props.robot, props.simulation, props.highContrast, props.status, props.elapsedSeconds], () => { void nextTick(updateEntities) }, { deep: true })
+// Live messages replace the affected state branches; avoid traversing every route
+// and frozen model twice for each population tick.
+watch(() => [props.robot, props.simulation, props.highContrast, props.status, props.elapsedSeconds], () => { void nextTick(updateEntities) })
 watch(quality,applyQuality)
 watch(() => props.elapsedSeconds,value=>{visualSeconds=value;renderDirty=true},{immediate:true})
 watch(() => props.events?.[0]?.sequence, () => {
@@ -1155,6 +1173,7 @@ onMounted(() => {
   catch { renderError.value = '当前浏览器无法初始化三维渲染，请检查硬件加速设置后重新进入演练中心。' }
 })
 onBeforeUnmount(() => {
+  vehicleVisuals?.dispose(); vehicleVisuals = null
   destroyed = true
   clearTimeout(contextRestoreTimer)
   motionPreference.removeEventListener('change', updateMotionPreference); preferenceObserver.disconnect()
@@ -1278,7 +1297,7 @@ watch(() => [props.routePreview, props.robotRoutePreview], () => updateEntities(
       </div>
 
       <aside v-if="(operationBusy || operationPreview) && !compact" class="spatial-action-preview spatial-action-preview--immersive" data-ui-theme="immersive" aria-label="空间操作预演">
-        <header><div><span>{{ operationPreview?.kind === 'road' ? '道路影响预演' : operationPreview?.kind === 'robot' ? '机器人路径预演' : '居民疏散预演' }}<template v-if="operationPreview?.expected_sequence !== undefined"> · 现场版本 {{ operationPreview.expected_sequence }}</template></span><strong>{{ operationPreview?.title ?? (operationPreview?.kind === 'residents' ? `${operationPreview.residents?.length ?? 0} 名居民 → ${operationPreview.exit === 'north' ? '北侧' : '南侧'}集合点` : '正在计算空间影响') }}</strong></div><button type="button" aria-label="取消本次预演" @click="emit('cancelAction')"><AppIcon name="close" :size="17" /></button></header>
+        <header><div><span>{{ operationPreview?.kind === 'road' ? '道路影响预演' : operationPreview?.kind === 'robot' ? '机器人路径预演' : operationPreview?.kind === 'vehicle' ? '车辆到场预演' : '居民疏散预演' }}<template v-if="operationPreview?.expected_sequence !== undefined"> · 现场版本 {{ operationPreview.expected_sequence }}</template></span><strong>{{ operationPreview?.title ?? (operationPreview?.kind === 'residents' ? `${operationPreview.residents?.length ?? 0} 名居民 → ${operationPreview.exit === 'north' ? '北侧' : '南侧'}集合点` : '正在计算空间影响') }}</strong></div><button type="button" aria-label="取消本次预演" @click="emit('cancelAction')"><AppIcon name="close" :size="17" /></button></header>
         <div v-if="operationBusy" class="spatial-action-loading"><i></i><span>正在用当前路网和实时人员状态计算…</span></div>
         <template v-else-if="operationPreview">
           <div class="spatial-action-metrics">
@@ -1293,7 +1312,7 @@ watch(() => [props.routePreview, props.robotRoutePreview], () => updateEntities(
           <div v-if="operationPreview.impact" class="spatial-impact"><span>确认后 30 秒影响</span><div><p>拥堵人数<strong>{{ operationPreview.impact.congested_before }} → {{ operationPreview.impact.congested_after }}</strong></p><p>烟气暴露<strong>{{ operationPreview.impact.smoke_exposed_before }} → {{ operationPreview.impact.smoke_exposed_after }}</strong></p></div></div>
           <div v-if="operationPreview.score_impact" class="spatial-score-impact"><span>预计过程评分</span><strong>{{ operationPreview.score_impact.before }} → {{ operationPreview.score_impact.after }} <b>({{ operationPreview.score_impact.delta > 0 ? '+' : '' }}{{ operationPreview.score_impact.delta }})</b></strong><small>{{ operationPreview.score_impact.note }}</small></div>
           <p class="spatial-action-note">{{ operationPreview.notice }}</p>
-          <p class="spatial-evidence"><AppIcon name="award" :size="15" />确认后将同步写入事件流、过程评分和复盘证据</p>
+          <p class="spatial-evidence"><AppIcon name="award" :size="15" />{{ operationPreview.kind === 'vehicle' ? '到场后写入车辆到场证据；调度本身不额外加分' : '确认后将同步写入事件流、过程评分和复盘证据' }}</p>
           <div class="spatial-action-buttons"><button type="button" @click="emit('cancelAction')">重新选择</button><button type="button" :disabled="!operationPreview.can_apply || operationBusy" @click="emit('confirmAction')"><AppIcon name="check" :size="17" />{{ operationPreview.can_apply ? '确认执行' : '当前不可执行' }}</button></div>
         </template>
       </aside>
@@ -1311,6 +1330,7 @@ watch(() => [props.routePreview, props.robotRoutePreview], () => updateEntities(
           <span>后续排队 {{ robot.task_queue?.filter(task => task.status === 'queued').length ?? 0 }} 项</span>
         </section>
         <dl v-if="selected.residentId && activeResident" class="resident-vitals"><div><dt>行为</dt><dd>{{ activeResident.behavior ?? '等待指令' }}</dd></div><div><dt>烟气暴露</dt><dd>{{ activeResident.smoke_exposure ?? 0 }}</dd></div><div><dt>拥堵指数</dt><dd>{{ activeResident.congestion ?? 0 }}</dd></div></dl>
+        <button v-if="selected.vehicleId && interactive" type="button" @click="emit('dispatchVehicle', selected.vehicleId); selected = null">安排车辆 / 查看行程</button>
         <section v-if="assemblyCounts" class="assembly-attendance" aria-label="集合点到达与核验">
           <dl class="resident-vitals"><div><dt>真实到达</dt><dd>{{ assemblyCounts.arrived }} 人</dd></div><div><dt>已清点</dt><dd>{{ assemblyCounts.counted }} 人</dd></div><div><dt>分配此出口、尚未到达</dt><dd>{{ assemblyCounts.inbound }} 人</dd></div></dl>
           <p v-if="assemblyPending.length">待核验：{{ assemblyPending.map(person=>person.label).join('、') }}</p>

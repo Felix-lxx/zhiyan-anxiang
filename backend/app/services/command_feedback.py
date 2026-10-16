@@ -61,6 +61,13 @@ def command_feedback(events, simulation, robot, elapsed, drill_status):
                 status, progress = task["status"], task["progress"]
                 remaining = max(0, task["ends_at_seconds"] - elapsed) if status not in {"blocked", "cancelled"} else None
                 reason = {"queued": "前序任务尚未完成，到达后按队列继续。", "executing": "机器人正沿道路逐段前往目标。", "blocked": "当前目标不可达；恢复道路或取消该任务后重新指派。", "completed": "机器人已到达目标，可执行该点位的现场动作。", "cancelled": "任务已取消，后续队列已重新衔接。"}[status]
+        elif kind == "vehicle.command" and payload.get("command") in {"dispatch", "replan"}:
+            vehicle = next((v for v in simulation.get("vehicles", []) if v["id"] == payload.get("vehicle_id")), None)
+            mission_id = next((e.id if e.event_type == "vehicle.dispatched" else e.payload.get("mission_id") for e in events if e.id in data.get("event_ids", []) and e.event_type in {"vehicle.dispatched", "vehicle.replanned"}), None)
+            mission = next((m for m in (vehicle or {}).get("missions", []) if m["id"] == mission_id), None)
+            if mission:
+                status, progress, remaining = mission["status"], mission["progress"], mission["remaining_seconds"]
+                reason = vehicle["reason"] if vehicle["mission_id"] == mission_id else "历史行程已结束，当前车辆正在执行另一任务。"
         if drill_status == "ended" and status in {"executing", "queued", "blocked"}:
             status, reason, remaining = "unfinished", "演练已结束，该指令尚未完成；当前结果已冻结。", None
         elif drill_status == "paused" and status in {"executing", "queued"}:

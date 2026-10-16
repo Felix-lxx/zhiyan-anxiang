@@ -25,7 +25,8 @@ from app.schemas.operations import BranchCompareRequest, DrillAction, DrillCreat
 from app.services.drill_simulation import plan_route, simulate_residents
 from app.services.exercise_world import capture_world, frozen_world, projected_tasks
 from app.schemas.operations import EditableBranchCreate, SearchAssignment
-from app.schemas.operations import LiveCommand
+from app.schemas.operations import LiveCommand, VehicleCommand
+from app.services.vehicle_dispatch import vehicle_runtime, plan_vehicle
 from app.services.command_feedback import commit_changes, command_feedback
 from app.services.command_ledger import apply_feedback, ledger_feedback, safe_arguments, same_command, synchronize_records
 from app.services.realtime import live_snapshots, snapshot_patch, state_version
@@ -148,6 +149,7 @@ def advance_engine(session: Session, drill: DrillSession) -> None:
         community = session.get(Community, scene.community_id)
         username = session.get(User, community.owner_id).username
         advance_director(drill.id, SimpleNamespace(username=username), session)
+    record_vehicle_arrivals(session, drill)
     ledger_events = list(session.scalars(select(DrillEvent).where(DrillEvent.drill_session_id == drill.id).order_by(DrillEvent.sequence)))
     ledger_simulation = simulation_state(drill, ledger_events, effective_elapsed(drill), session=session)
     ledger_robot = robot_runtime(agent, ledger_events, effective_elapsed(drill))
@@ -315,6 +317,7 @@ def reopen_road(drill_id: str, edge_id: str, identity: AuthenticatedIdentity = D
         robot = session.scalar(select(RobotAgent).where(RobotAgent.drill_session_id == drill.id))
         if robot:
             replan_robot_queue(session, drill, robot, "道路恢复通行，重算未完成任务。")
+        replan_vehicle_fleet(session, drill)
         commit_changes(session)
     return snapshot(session, drill)
 
@@ -600,7 +603,81 @@ def simulation_state(
     if session and world and world.get("schema_version", 0) >= 3 and not strategy:
         from app.services.state_store import restore_engine_checkpoint
         restore_engine_checkpoint(session, drill.id, world, elapsed)
-    return simulate_residents(network, evidence, elapsed, strategy, branch_at if branch_at is not None else effective_elapsed(drill) if strategy else None, world)
+    simulation = simulate_residents(network, evidence, elapsed, strategy, branch_at if branch_at is not None else effective_elapsed(drill) if strategy else None, world)
+    return {**simulation, "vehicles": vehicle_runtime(world, events, elapsed)}
+
+
+def vehicle_state(session: Session, drill: DrillSession):
+    events = list(session.scalars(select(DrillEvent).where(DrillEvent.drill_session_id == drill.id).order_by(DrillEvent.sequence)))
+    return events, simulation_state(drill, events, session=session)
+
+
+def replan_vehicle_fleet(session: Session, drill: DrillSession):
+    _, state = vehicle_state(session, drill)
+    for vehicle in state["vehicles"]:
+        if vehicle["state"] not in {"moving", "blocked"}:
+            continue
+        plan = plan_vehicle(state["road_network"], vehicle, vehicle["target_node_id"])
+        append_event(session, drill, "vehicle.replanned", "演练引擎", f"{vehicle['name']}：道路变化后从当前位置重新规划。",
+                     {**plan, "vehicle_id": vehicle["id"], "mission_id": vehicle["mission_id"]})
+
+
+def record_vehicle_arrivals(session: Session, drill: DrillSession):
+    events = list(session.scalars(select(DrillEvent).where(DrillEvent.drill_session_id == drill.id)))
+    recorded = {e.payload.get("mission_id") for e in events if e.event_type == "vehicle.arrived"}
+    for vehicle in vehicle_runtime(frozen_world(session, drill), events, effective_elapsed(drill)):
+        if vehicle["state"] == "arrived" and vehicle["mission_id"] not in recorded:
+            append_event(session, drill, "vehicle.arrived", "演练引擎", f"{vehicle['name']}已到达{vehicle['target_name']}。",
+                         {"vehicle_id": vehicle["id"], "mission_id": vehicle["mission_id"], "target_node_id": vehicle["target_node_id"], "x": vehicle["x"], "y": vehicle["y"]})
+
+
+@router.post("/drills/{drill_id}/vehicles/preview")
+def preview_vehicle(drill_id: str, payload: VehicleCommand, identity: AuthenticatedIdentity = Depends(get_current_identity), session: Session = Depends(get_db)):
+    drill = require_drill(session, drill_id, identity.username)
+    if drill.status != "running":
+        raise HTTPException(409, "请先运行演练，再安排车辆。")
+    events, state = vehicle_state(session, drill)
+    vehicle = next((v for v in state["vehicles"] if v["id"] == payload.vehicle_id), None)
+    if vehicle is None:
+        raise HTTPException(404, "本场次尚无可调度车辆或路网。")
+    if payload.command != "dispatch" or not payload.target_node_id:
+        raise HTTPException(422, "请选择车辆到场的道路节点。")
+    plan = plan_vehicle(state["road_network"], vehicle, payload.target_node_id)
+    if vehicle["state"] in {"moving", "blocked"}:
+        plan.update(can_apply=False, notice="该车已有行程，请先取消或重新规划当前行程。")
+    return {**plan, "kind": "vehicle", "title": f"{vehicle['name']} → {plan['target_name']}", "vehicle_id": vehicle["id"],
+            "expected_sequence": max((e.sequence for e in events), default=0)}
+
+
+@router.post("/drills/{drill_id}/vehicles")
+@serialized_command
+def command_vehicle(drill_id: str, payload: VehicleCommand, identity: AuthenticatedIdentity = Depends(get_current_identity), session: Session = Depends(get_db)):
+    drill = require_drill(session, drill_id, identity.username)
+    if drill.status != "running":
+        raise HTTPException(409, "演练运行时才能调度车辆。")
+    record_vehicle_arrivals(session, drill)
+    _, state = vehicle_state(session, drill)
+    vehicle = next((v for v in state["vehicles"] if v["id"] == payload.vehicle_id), None)
+    if vehicle is None:
+        raise HTTPException(404, "没有找到本场次车辆。")
+    active = vehicle["state"] in {"moving", "blocked"}
+    if payload.command == "dispatch":
+        if active:
+            raise HTTPException(409, "该车正在执行行程，请先取消或重算当前路线。")
+        plan = plan_vehicle(state["road_network"], vehicle, payload.target_node_id or "")
+        if not plan["can_apply"]:
+            raise HTTPException(409, plan["notice"])
+        append_event(session, drill, "vehicle.dispatched", identity.username, f"{vehicle['name']}前往{plan['target_name']}。", {**plan, "vehicle_id": vehicle["id"]})
+    elif not active:
+        raise HTTPException(409, "车辆没有进行中的行程。")
+    elif payload.command == "cancel":
+        append_event(session, drill, "vehicle.cancelled", identity.username, f"{vehicle['name']}已取消行程并原地待命。", {"vehicle_id": vehicle["id"], "mission_id": vehicle["mission_id"]})
+    else:
+        plan = plan_vehicle(state["road_network"], vehicle, vehicle["target_node_id"])
+        append_event(session, drill, "vehicle.replanned", identity.username, f"{vehicle['name']}重新规划当前行程。", {**plan, "vehicle_id": vehicle["id"], "mission_id": vehicle["mission_id"]})
+    record_vehicle_arrivals(session, drill)
+    commit_changes(session)
+    return snapshot(session, drill)
 
 
 def robot_runtime(robot: RobotAgent | None, events: list[DrillEvent], elapsed: int, replay: bool = False) -> dict | None:
@@ -861,6 +938,8 @@ def inject_event(drill_id: str, payload: EventInject, identity: AuthenticatedIde
     robot = session.scalar(select(RobotAgent).where(RobotAgent.drill_session_id == drill.id))
     if robot and payload.event_type == "channel_blocked":
         replan_robot_queue(session, drill, robot, f"{location_payload.get('blocked_edge_name', '道路')}已封锁，所有待执行目标按新路网重新规划。")
+    if payload.event_type == "channel_blocked":
+        replan_vehicle_fleet(session, drill)
     commit_changes(session)
     return snapshot(session, drill)
 
@@ -1258,6 +1337,7 @@ def advance_director(drill_id: str, identity: AuthenticatedIdentity = Depends(ge
             robot = session.scalar(select(RobotAgent).where(RobotAgent.drill_session_id == drill.id))
             if robot:
                 replan_robot_queue(session, drill, robot, "自适应导演封锁道路，任务队列按新路网重新规划。")
+            replan_vehicle_fleet(session, drill)
         commit_changes(session)
         return snapshot(session, drill)
     append_event(session, drill, "director.cue", "自适应事件导演", "当前关键扰动均已注入，建议切换双世界比较验证决策。", {"severity": "info", "target": "平行推演"})
@@ -1654,12 +1734,14 @@ def execute_live_command(drill_id: str, payload: LiveCommand, identity: Authenti
     dispatch = {
         "state": (DrillAction, change_state), "event.inject": (EventInject, inject_event),
         "residents.assign": (ResidentCommand, command_residents), "robot.command": (RobotCommand, command_robot),
+        "vehicle.command": (VehicleCommand, command_vehicle),
         "search.assign": (SearchAssignment, assign_search), "participant.feedback": (ParticipantAction, participant_action),
         "task.assign": (TaskAssignment, assign_task), "task.action": (TaskAction, director_task_action), "director.configure": (DirectorConfig, configure_director),
     }
     if payload.kind in {"road.reopen", "task.assign", "task.action"} and not payload.target_id:
         raise HTTPException(422, "请选择本场道路或处置任务。")
     labels = {"state": "演练状态已更新", "event.inject": "现场扰动已生效", "road.reopen": "道路通行已恢复", "residents.assign": "居民撤离指令", "robot.command": "机器人指令", "search.assign": "搜索责任已指派", "participant.feedback": "参演反馈已记录", "task.assign": "处置任务已指派", "task.action": "处置任务已更新", "director.configure": "事件导演设置已更新"}
+    labels["vehicle.command"] = "应急车辆调度"
     command_record = DrillCommand(
         drill_session_id=drill.id,
         command_id=payload.command_id,
@@ -1748,7 +1830,7 @@ async def drill_socket(websocket: WebSocket, drill_id: str, token: str | None = 
 
     @serialized_command
     def read_catchup():
-        if protocol != 2 or after_sequence is None or after_sequence < 0:
+        if protocol not in {2, 3} or after_sequence is None or after_sequence < 0:
             return None
         with SessionLocal() as session:
             drill = require_drill(session, drill_id, username) if username else require_participant_drill(session, drill_id, code or "")
@@ -1786,13 +1868,18 @@ async def drill_socket(websocket: WebSocket, drill_id: str, token: str | None = 
         # Always acquire command lock before snapshot-cache lock.
         with SessionLocal() as session:
             drill = require_drill(session, drill_id, username) if username else require_participant_drill(session, drill_id, code or "")
-            if protocol != 2:
+            if protocol not in {2, 3}:
                 advance_engine(session, drill)
                 return snapshot(session, drill)
             # Only the scheduler advances v2 live sessions. Observers never tick it.
             sequence = session.scalar(select(func.max(DrillEvent.sequence)).where(DrillEvent.drill_session_id == drill_id)) or 0
             version = state_version(sequence, effective_elapsed(drill), participant_presence_revision(session, drill.id))
-            return live_snapshots.get(drill_id, version, lambda: load_snapshot(session, drill_id, version) or snapshot(session, drill))
+            def compatible_snapshot():
+                stored = load_snapshot(session, drill_id, version)
+                # Old persisted snapshots predate the fleet projection. Rebuild
+                # from frozen world/events without modifying the user's history.
+                return stored if stored and "vehicles" in stored.get("simulation", {}) else snapshot(session, drill)
+            return live_snapshots.get(drill_id, version, compatible_snapshot)
 
     try:
         catchup = await asyncio.to_thread(read_catchup)
@@ -1801,17 +1888,17 @@ async def drill_socket(websocket: WebSocket, drill_id: str, token: str | None = 
         while True:
             data = await asyncio.to_thread(read_live)
             now = asyncio.get_running_loop().time()
-            if protocol != 2 or previous is None:
+            if protocol not in {2, 3} or previous is None:
                 await websocket.send_json({"type": "drill.snapshot", "data": data})
                 heartbeat_at = now
             elif data["state_version"] != previous["state_version"]:
-                await websocket.send_json({"type": "drill.delta", "drill_id": drill_id, "base_version": previous["state_version"], "state_version": data["state_version"], "patch": snapshot_patch(previous, data)})
+                await websocket.send_json({"type": "drill.delta", "drill_id": drill_id, "base_version": previous["state_version"], "state_version": data["state_version"], "patch": snapshot_patch(previous, data, entities=protocol == 3)})
                 heartbeat_at = now
             elif now - heartbeat_at >= 5:
                 await websocket.send_json({"type": "drill.heartbeat", "drill_id": drill_id, "state_version": data["state_version"]})
                 heartbeat_at = now
             previous = data
-            await asyncio.sleep(.25 if protocol == 2 else 1)
+            await asyncio.sleep(.25 if protocol in {2, 3} else 1)
     except HTTPException:
         await websocket.close(code=4404)
     except (WebSocketDisconnect, RuntimeError):

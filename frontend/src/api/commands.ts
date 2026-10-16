@@ -3,6 +3,7 @@ import { ApiError, type ApiClient } from './client'
 export function commandForPath(path: string, arguments_: unknown) {
   const exact: Record<string, string> = { '/state': 'state', '/inject': 'event.inject', '/residents': 'residents.assign', '/robot': 'robot.command', '/searches': 'search.assign', '/participant-actions': 'participant.feedback', '/director/config': 'director.configure' }
   const road = path.match(/^\/roads\/([^/]+)\/reopen$/)
+  exact['/vehicles'] = 'vehicle.command'
   const taskAction = path.match(/^\/tasks\/([^/]+)\/actions$/)
   const taskAssignment = path.match(/^\/tasks\/([^/]+)\/assign$/)
   const kind = exact[path] ?? (road ? 'road.reopen' : taskAction ? 'task.action' : taskAssignment ? 'task.assign' : undefined)

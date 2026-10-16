@@ -31,12 +31,13 @@ export interface BranchPlan { strategy: string; name: string; evacuation_seconds
 export interface BranchComparison { at_seconds: number; projection_seconds: number; baseline: BranchPlan; alternative: BranchPlan; robots: { baseline: Robot | null; alternative: Robot | null }; worlds: { baseline: Simulation; alternative: Simulation }; improvement: { evacuation_seconds: number | null; vulnerable_rescue_seconds: number | null; smoke_exposed: number; score: number }; recommendation: string; disclaimer: string }
 
 export type SpatialIntent =
+  | { kind: 'vehicle'; vehicleId: string; targetNodeId: string }
   | { kind: 'road'; edgeId: string }
   | { kind: 'robot'; x: number; y: number; target: string }
   | { kind: 'residents'; residentIds: string[]; exit: 'north' | 'south'; action: 'evacuate' | 'priority_assist' }
 
 export interface SpatialPreview {
-  kind: 'road' | 'robot' | 'residents'; can_apply: boolean; title?: string; notice: string
+  kind: 'road' | 'robot' | 'residents' | 'vehicle'; can_apply: boolean; title?: string; notice: string
   expected_sequence: number
   context?: { x: number; y: number; target: string; road_edge_id?: string }
   route_points?: Array<{ x: number; y: number; height?: number }>; route_edge_ids?: string[]
@@ -47,3 +48,13 @@ export interface SpatialPreview {
   score_impact?: { before: number; after: number; delta: number; note: string }
   intent: SpatialIntent
 }
+
+export interface Vehicle {
+  id: string; name: string; kind: 'firetruck' | 'ambulance'; x: number; y: number
+  state: 'idle' | 'moving' | 'blocked' | 'arrived'; reason: string
+  minimum_width: number; target_name: string; target_node_id: string | null
+  mission_id: string | null; current_edge_id: string | null
+  progress: number; remaining_seconds: number | null
+  route_points: Array<{ x: number; y: number; edge_id?: string | null }>; route_edge_ids: string[]
+}
+export interface Simulation { vehicles?: Vehicle[] }

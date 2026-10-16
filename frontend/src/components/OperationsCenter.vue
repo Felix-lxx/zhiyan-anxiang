@@ -3,7 +3,9 @@ import type { DrillIndex, DrillEvent, DrillTask, Resident, Simulation, Robot, Dr
 import { createApiClient } from '../api/client'
 import { connectLive, isNewerState } from '../api/live'
 import { sendCommand } from '../api/commands'
+import { useDrillPreview } from '../composables/useDrillPreview'
 import ExecutionFeedback from './ExecutionFeedback.vue'
+import VehicleDispatchPanel from './VehicleDispatchPanel.vue'
 import { useRoute, useRouter } from 'vue-router'
 
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
@@ -96,10 +98,6 @@ const coachVisible = computed(() => coachOpen.value && !detailPanelOpen.value)
 const endConfirmationOpen = ref(false)
 const trainingLab = ref<InstanceType<typeof SpatialTrainingLab> | null>(null)
 const routePreview = ref<Array<Resident>>([])
-const spatialPreview = ref<SpatialPreview | null>(null)
-const spatialPreviewBusy = ref(false)
-let spatialPreviewRequest = 0
-let previewController: AbortController | null = null
 const branchEvidence = ref<{at_seconds:number;source_name:string;branch_name:string;notice:string;worlds:{baseline:Simulation;alternative:Simulation};residents:Array<{id:string;label:string;original_status:string;branch_status:string;exposure_delta:number;queue_delta:number}>}|null>(null)
 function applyCurrent(value: Drill) { if (value.id === current.value?.id && isNewerState(value, current.value)) current.value = value }
 function updateFromLab(value: unknown) { applyCurrent(value as Drill); notifyCommand('指令已受理，可在执行进度查看人员行程、等待原因和关联证据'); clearSpatialPreview() }
@@ -126,8 +124,12 @@ function notifyCommand(message: string) {
 const participantInvite = ref<{ drill_id: string; code: string; name: string; lan_addresses?: string[] } | null>(null)
 const participantOrigin = ref(location.origin)
 const arena = ref<InstanceType<typeof DigitalTwinArena> | null>(null)
+const selectedVehicleId = ref('')
+function openVehicleDispatch(id: string) { selectedVehicleId.value = id; closeFloatingPanels(); drawer.value = 'missions' }
 const highContrast = ref(localStorage.getItem('zhiyan_high_contrast') === '1'), cameraEnabled = ref(false)
 const replay = ref<{ simulation: Simulation; robot: Robot | null; events: DrillEvent[]; tasks: DrillTask[]; at_seconds: number } | null>(null)
+const previewRequest = useDrillPreview<SpatialPreview>(() => current.value?.id ?? '', () => current.value?.status === 'running' && !replay.value)
+const spatialPreview = previewRequest.data, spatialPreviewBusy = previewRequest.pending
 const replayAt = ref(0), replayPlaying = ref(false), replayLoading = ref(false)
 let replayTimer: number | null = null, replayRequest = 0
 const displayed = computed(() => current.value ? replay.value ? { ...current.value, ...replay.value, elapsed_seconds: replay.value.at_seconds } : current.value : null)
@@ -241,33 +243,30 @@ async function robot(command: 'step' | 'broadcast' | 'replan'): Promise<void> { 
 async function cancelRobotTask(taskId: string): Promise<void> { await requestDrill('/robot', 'POST', { command: 'cancel', task_id: taskId }, '所选任务已取消，机器人位置与后续队列已同步更新') }
 async function moveRobot(context: { x: number; y: number; target: string }): Promise<void> { await previewSpatialAction({ kind: 'robot', ...context }) }
 function clearSpatialPreview(): void {
-  spatialPreviewRequest += 1
-  previewController?.abort(); previewController = null
-  spatialPreview.value = null
+  previewRequest.cancel()
   routePreview.value = []
-  spatialPreviewBusy.value = false
 }
 async function previewSpatialAction(intent: SpatialIntent): Promise<void> {
   if (!current.value || current.value.status !== 'running' || replay.value) return
   closeFloatingPanels()
-  const request = ++spatialPreviewRequest
   const drillId = current.value.id
-  const controller = new AbortController(); previewController = controller
-  const timeout = window.setTimeout(() => controller.abort(new DOMException('预演超时', 'TimeoutError')), 15000)
-  spatialPreviewBusy.value = true; error.value = ''; spatialPreview.value = null; routePreview.value = []
+  error.value = ''; routePreview.value = []
   try {
+    const result = await previewRequest.run(async signal => {
     let value: Omit<SpatialPreview, 'intent'>
-    const options = { signal: controller.signal }
+    const options = { signal }
     if (intent.kind === 'road') value = await api.get(`/drills/${drillId}/roads/${intent.edgeId}/preview-block`, options)
     else if (intent.kind === 'robot') value = await api.post(`/drills/${drillId}/robot/preview`, { command: 'move', x: intent.x, y: intent.y, target: intent.target }, options)
+    else if (intent.kind === 'vehicle') value = await api.post(`/drills/${drillId}/vehicles/preview`, { vehicle_id: intent.vehicleId, target_node_id: intent.targetNodeId }, options)
     else value = await api.post(`/drills/${drillId}/residents/preview`, { resident_ids: intent.residentIds, exit: intent.exit, action: intent.action }, options)
-    if (request !== spatialPreviewRequest || current.value?.id !== drillId || current.value.status !== 'running' || replay.value) return
-    spatialPreview.value = { ...value, intent }
-    if (value.kind === 'residents') routePreview.value = value.residents ?? []
-    latestCue.value = value.can_apply ? '预演完成：虚线路线尚未执行，请核对影响后确认' : '预演发现目标不可达，请调整对象或解除封锁'
+    return { ...value, intent }
+    })
+    if (!result) return
+    if (result.kind === 'residents') routePreview.value = result.residents ?? []
+    latestCue.value = result.can_apply ? '预演完成：虚线路线尚未执行，请核对影响后确认' : '预演发现目标不可达，请调整对象或解除封锁'
   } catch (cause) {
-    if (request === spatialPreviewRequest) error.value = cause instanceof Error && ['TimeoutError', 'AbortError'].includes(cause.name) ? '路线预演超时，尚未下达指令。请重新选择目标后重试。' : cause instanceof Error ? cause.message : '空间操作预演失败。'
-  } finally { window.clearTimeout(timeout); if (request === spatialPreviewRequest) { spatialPreviewBusy.value = false; previewController = null } }
+    error.value = cause instanceof Error ? cause.message : '空间操作预演失败。'
+  }
 }
 async function confirmSpatialAction(): Promise<void> {
   const preview = spatialPreview.value
@@ -276,8 +275,10 @@ async function confirmSpatialAction(): Promise<void> {
   let applied = false
   if (intent.kind === 'road') applied = await requestDrill('/inject', 'POST', { event_type: 'channel_blocked', road_edge_id: intent.edgeId }, undefined, preview.expected_sequence)
   else if (intent.kind === 'robot') applied = await requestDrill('/robot', 'POST', { command: 'move', x: intent.x, y: intent.y, target: intent.target }, undefined, preview.expected_sequence)
+  else if (intent.kind === 'vehicle') applied = await requestDrill('/vehicles', 'POST', { command: 'dispatch', vehicle_id: intent.vehicleId, target_node_id: intent.targetNodeId }, undefined, preview.expected_sequence)
   else applied = await requestDrill('/residents', 'POST', { resident_ids: intent.residentIds, exit: intent.exit, action: intent.action }, undefined, preview.expected_sequence)
   if (applied) {
+    if (intent.kind === 'vehicle') { clearSpatialPreview(); notifyCommand('车辆已出发，可在处置任务中定位、查看进度或取消行程。'); return }
     notifyCommand(intent.kind === 'road' ? '道路封锁已写入证据，居民与机器人正在按新路网改道' : intent.kind === 'robot' ? '机器人任务已加入队列；执行进度会显示排队、移动或受阻原因' : '居民指令已生效，可查看准备、排队、移动和到达进度')
     clearSpatialPreview()
   } else if (error.value.includes('重新预览')) {
@@ -404,7 +405,7 @@ onBeforeUnmount(() => { desiredDrillId = ''; stopLive?.(); clearSpatialPreview()
       <section v-show="directorMode!=='replay'" class="director-stage">
         <nav class="atlas-director-modes" aria-label="导演台模式"><button :aria-pressed="directorMode==='observe'" @click="directorMode='observe';closeFloatingPanels()"><AppIcon name="eye"/>观察</button><button :aria-pressed="directorMode==='command'" @click="directorMode='command';closeFloatingPanels()"><AppIcon name="robot"/>指挥</button><button @click="openReplay"><AppIcon name="history"/>复盘</button></nav>
         <GuidedExercise v-if="coachOpen" :drill="displayed" :busy="busy" :replay="Boolean(replay)" @indoor="arena?.showIndoor()" @start="act('start')" @resume="act('resume')" @finish="act('end')" @retry="createDrill" @live="leaveReplay" @tasks="toggleDrawer('missions')" @compare="toggleDrawer('branches')" @dispatch="dispatchTask" @assign="assignTask" @locate="locateTask" @broadcast="robot('broadcast')" @assist="ids => commandResidents({ residentIds: ids, exit: 'north', action: 'priority_assist' })" @evacuate="(ids, exit) => commandResidents({ residentIds: ids, exit, action: 'evacuate' })" @focus="id => arena?.focusResident(id)" @task="taskAction" @block="id => inject('channel_blocked', { road_edge_id: id })" @reopen="reopenRoad" @seek="seekReplay"><SpatialTrainingLab v-if="(current.engine_version ?? 1) >= 3" ref="trainingLab" :drill="displayed" :api-base-url="apiBaseUrl" :access-token="accessToken" :replay="Boolean(replay)" @updated="updateFromLab" @forked="forkFromLab" @select="ids => arena?.selectResidents(ids)" @preview="people => routePreview = people as Resident[]" @focus="id => arena?.focusResident(id)" @compare="compareEditable" /><section v-else class="training-upgrade"><h2>当前场次使用历史模型</h2><p>新建连续空间训练，启用楼内行走、路线预览、集合核验与历史重做；原场次不会删除或改写。</p><button :disabled="busy" @click="createDrill">新建连续空间训练</button></section></GuidedExercise>
-        <DigitalTwinArena :key="current.id" ref="arena" :route-preview="routePreview" :robot-route-preview="spatialPreview?.kind === 'robot' ? spatialPreview.route_points : []" :operation-preview="spatialPreview" :operation-busy="spatialPreviewBusy || Boolean(spatialPreview && busy)" @selection="ids => trainingLab?.selectIds(ids)" @context-selection="updateAssistantContext" @ask-assistant="openAssistant" :status="replay ? 'paused' : current.status" :elapsed-seconds="displayed.elapsed_seconds" :robot="displayed.robot" :simulation="displayed.simulation" :events="displayed.events" :interactive="!replay && current.status === 'running' && !busy" :effects-enabled="effectsEnabled" :camera-enabled="cameraEnabled && !replay" :high-contrast="highContrast" @inject="inject" @robot-command="robot" @preview-action="previewSpatialAction" @confirm-action="confirmSpatialAction" @cancel-action="clearSpatialPreview" @reopen-road="reopenRoad" />
+<DigitalTwinArena :key="current.id" ref="arena" :route-preview="routePreview" :robot-route-preview="spatialPreview && ['robot', 'vehicle'].includes(spatialPreview.kind) ? spatialPreview.route_points : []" :operation-preview="spatialPreview" :operation-busy="spatialPreviewBusy || Boolean(spatialPreview && busy)" @selection="ids => trainingLab?.selectIds(ids)" @context-selection="updateAssistantContext" @ask-assistant="openAssistant" :status="replay ? 'paused' : current.status" :elapsed-seconds="displayed.elapsed_seconds" :robot="displayed.robot" :simulation="displayed.simulation" :events="displayed.events" :interactive="!replay && current.status === 'running' && !busy" :effects-enabled="effectsEnabled" :camera-enabled="cameraEnabled && !replay" :high-contrast="highContrast" @inject="inject" @robot-command="robot" @preview-action="previewSpatialAction" @confirm-action="confirmSpatialAction" @cancel-action="clearSpatialPreview" @reopen-road="reopenRoad" @dispatch-vehicle="openVehicleDispatch" />
         <aside class="director-metrics" aria-label="现场关键态势">
           <div><span>火势指数</span><strong>{{ displayed.simulation.fire.intensity }}</strong></div>
           <div><span>烟气暴露</span><strong>{{ displayed.simulation.summary.smoke_exposed ?? 0 }}<small>人</small></strong></div>
@@ -416,6 +417,7 @@ onBeforeUnmount(() => { desiredDrillId = ''; stopLive?.(); clearSpatialPreview()
         <KeepAlive :key="current.id" :max="7">
         <UiDrawer v-if="drawer !== 'none'" :key="drawer" :section="drawer" v-slot="{ section: drawer }" class="director-drawer" :title="drawerTitle" :subtitle="replay ? '历史时刻 ' + displayClock : '与当前场次实时联动'" @close="closeFloatingPanels">
           <div v-if="drawer === 'missions'" class="drawer-list">
+            <VehicleDispatchPanel :vehicles="displayed.simulation.vehicles ?? []" :nodes="displayed.simulation.road_network?.nodes ?? []" :selected-id="selectedVehicleId" :running="!replay && current.status === 'running'" :busy="busy || spatialPreviewBusy" @preview="previewSpatialAction" @command="(id, command) => requestDrill('/vehicles', 'POST', { vehicle_id: id, command }, '车辆行程已更新，现场位置与执行记录已同步')" @focus="vehicle => { closeFloatingPanels(); arena?.focusPoint(vehicle.x, vehicle.y) }" />
             <ExecutionFeedback v-if="!replay" :commands="current.commands ?? []" :score="current.score_preview" :paused="current.status === 'paused'" @focus="id => { closeFloatingPanels(); arena?.focusResident(id) }" @evidence="at => seekReplay(at)" @ask="askAboutCommand" />
             <article v-if="displayed.robot" class="robot-mission"><h3>巡检广播机器人</h3><p>{{ displayed.robot.reason }}</p><p>{{ displayed.robot.route.join(' → ') }}</p>
               <ol class="robot-task-queue"><li v-for="item in displayed.robot.task_queue" :key="item.id"><strong>{{ item.label }}</strong><span>{{ { executing: '移动中', queued: '排队等待', blocked: '无法到达', completed: '已到达', cancelled: '已取消' }[item.status] ?? item.status }}</span><progress :value="item.progress" max="1" :aria-label="item.label + '进度'"></progress><small>{{ item.route_edge_ids.length }} 个道路段 · {{ Math.round(item.progress * 100) }}%</small><button v-if="!replay && ['executing','queued','blocked'].includes(item.status)" type="button" :disabled="busy || current.status !== 'running'" @click="cancelRobotTask(item.id)">取消任务</button></li></ol>
