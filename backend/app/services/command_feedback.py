@@ -61,6 +61,14 @@ def command_feedback(events, simulation, robot, elapsed, drill_status):
                 status, progress = task["status"], task["progress"]
                 remaining = max(0, task["ends_at_seconds"] - elapsed) if status not in {"blocked", "cancelled"} else None
                 reason = {"queued": "前序任务尚未完成，到达后按队列继续。", "executing": "机器人正沿道路逐段前往目标。", "blocked": "当前目标不可达；恢复道路或取消该任务后重新指派。", "completed": "机器人已到达目标，可执行该点位的现场动作。", "cancelled": "任务已取消，后续队列已重新衔接。"}[status]
+        elif kind == "vehicle.command" and payload.get("command") in {"spray", "load", "handover"}:
+            action_id = next((e.payload.get("action_id") for e in events if e.id in data.get("event_ids", []) and e.event_type == "vehicle.action_started"), None)
+            action = next((a for a in simulation.get("rescue_actions", []) if a["action_id"] == action_id), None)
+            if action:
+                status, progress, remaining, reason = action["status"], action["progress"], action["remaining_seconds"], action["reason"]
+                resident_ids = [action["resident_id"]] if action.get("resident_id") else []
+            else:
+                status, progress, remaining, reason = "accepted", 0, None, "处置已受理，等待现场状态确认。"
         elif kind == "vehicle.command" and payload.get("command") in {"dispatch", "replan"}:
             vehicle = next((v for v in simulation.get("vehicles", []) if v["id"] == payload.get("vehicle_id")), None)
             mission_id = next((e.id if e.event_type == "vehicle.dispatched" else e.payload.get("mission_id") for e in events if e.id in data.get("event_ids", []) and e.event_type in {"vehicle.dispatched", "vehicle.replanned"}), None)

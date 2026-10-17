@@ -8,7 +8,6 @@ from copy import deepcopy
 from collections import defaultdict
 import heapq
 import math
-from bisect import bisect_right
 from app.services.escort_motion import can_meet, follow_walked_path
 
 
@@ -17,18 +16,8 @@ def xyz(p):
 
 
 def environment(world, events, elapsed):
-    failed = world["parameters"].get("hydrant_status") in {"faulty", "failed"}
-    resource, power, intensity, growth, previous = False, False, 18., 0., 0.
-    for event in [*sorted((e for e in events if e["elapsed_seconds"] <= elapsed), key=lambda e: (e["elapsed_seconds"], e["sequence"])), {"elapsed_seconds": elapsed, "event_type": "", "payload": {}}]:
-        rate = (1.15 if failed else .82)*(.55 if resource else 1)*(.35 if power else 1)
-        delta = max(0, event["elapsed_seconds"]-previous)
-        intensity = min(100., intensity+delta*rate)
-        growth += delta*.34*rate/.82
-        previous = event["elapsed_seconds"]
-        if event["event_type"] == "inject.hydrant_failure": failed = True
-        if event["event_type"] == "participant.resource_ready": resource = True
-        if event["event_type"] == "task.completed" and event["payload"].get("kind") == "power_off": power = True
-    return {"intensity": round(intensity, 1), "smoke_radius": round(min(48, 7+growth), 2), "temperature": round(34+intensity*3.8, 1)}, {"east_hydrant": "failed" if failed else "available", "resource_ready": resource, "power_off": power}
+    from app.services.fire_environment import EnvironmentTimeline
+    return EnvironmentTimeline(world, events).at(elapsed)
 
 
 def simulate(world, events, elapsed, strategy=None, branch_at=None, *, checkpoint=None, checkpoint_out=None):
@@ -46,32 +35,10 @@ def simulate(world, events, elapsed, strategy=None, branch_at=None, *, checkpoin
         at = elapsed if branch_at is None else branch_at
         history += [{"elapsed_seconds": at, "sequence": 10**9+i, "event_type": "resident.command", "payload": {"resident_ids": [p["id"]], "exit": "south" if strategy == "south_standard" else "north" if strategy == "north_priority" or i % 2 == 0 else "south", "action": "priority_assist" if strategy == "north_priority" and p["vulnerable"] else "evacuate"}} for i, p in enumerate(world["residents"])]
         history.sort(key=lambda e: (e["elapsed_seconds"], e["sequence"]))
-    # Build environmental change points once, rather than sorting the complete
-    # event ledger for every half-second of every resident update.
-    knots, times = [], []
-    failed = world["parameters"].get("hydrant_status") in {"faulty", "failed"}
-    resource, power, intensity, growth, previous = False, False, 18., 0., 0.
-    def add_knot(at):
-        rate = (1.15 if failed else .82)*(.55 if resource else 1)*(.35 if power else 1)
-        times.append(at); knots.append((intensity, growth, rate, failed, resource, power))
-    add_knot(0.)
-    for event in history:
-        if event["event_type"] not in {"inject.hydrant_failure", "participant.resource_ready", "task.completed"}: continue
-        at = event["elapsed_seconds"]
-        rate = knots[-1][2]
-        intensity = min(100., intensity+(at-previous)*rate)
-        growth += (at-previous)*.34*rate/.82
-        previous = at
-        if event["event_type"] == "inject.hydrant_failure": failed = True
-        if event["event_type"] == "participant.resource_ready": resource = True
-        if event["event_type"] == "task.completed" and event["payload"].get("kind") == "power_off": power = True
-        add_knot(at)
-    def environment_at(at):
-        k = bisect_right(times, at)-1
-        intensity, growth, rate, failed, resource, power = knots[k]
-        intensity = min(100., intensity+(at-times[k])*rate)
-        growth += (at-times[k])*.34*rate/.82
-        return {"intensity": round(intensity, 1), "smoke_radius": round(min(48, 7+growth), 2), "temperature": round(34+intensity*3.8, 1)}, {"east_hydrant": "failed" if failed else "available", "resource_ready": resource, "power_off": power}
+    from app.services.fire_environment import EnvironmentTimeline
+    environment_at = EnvironmentTimeline(world, history).at
+    from app.services.vehicle_traffic import TrafficTimeline
+    traffic_at = TrafficTimeline(history).at
     people = [{**deepcopy(p), "node_id": p["start_node_id"], "edge_id": None, "edge_progress": 0., "exit": "north" if i % 2 == 0 else "south", "status": "waiting", "release_at": 10**9, "assisted": False, "smoke_exposure": 0., "congestion": 0., "travelled": 0., "queue_seconds": 0., "counted": False, "forced_exit": False} for i, p in enumerate(world["residents"])]
     by_id = {p["id"]: p for p in people}
     helpers = {}
@@ -222,6 +189,7 @@ def simulate(world, events, elapsed, strategy=None, branch_at=None, *, checkpoin
         if now >= elapsed: break
         dt = min(.5, elapsed-now, history[index]["elapsed_seconds"]-now if index < len(history) else .5)
         fire, env = environment_at(now)
+        reserved_roads = traffic_at(now)
         # Dormant sessions can be days old. Once smoke has saturated, waiting
         # actors have constant exposure and no positional changes. Integrate that
         # interval directly, stopping BEFORE the next event or preparation end.
@@ -229,6 +197,7 @@ def simulate(world, events, elapsed, strategy=None, branch_at=None, *, checkpoin
         # environment; those retain the original half-second capacity rules.
         stationary = (
             fire["smoke_radius"] >= 48
+            and not env.get("water_suppression")
             and not any(h["state"] in {"approaching", "blocked"} for h in helpers.values())
             and all(not p.get("edge_id") and (
                 p["status"] in {"evacuated", "missing"}
@@ -263,7 +232,7 @@ def simulate(world, events, elapsed, strategy=None, branch_at=None, *, checkpoin
             actor["congestion"] = 0.
             if not is_helper:
                 if person["status"] == "evacuated": continue
-                density = max(0., 1-math.dist(xyz(person), (origin["x"], origin["y"], 0))/fire["smoke_radius"])
+                density = max(0., 1-math.dist(xyz(person), (origin["x"], origin["y"], 0))/max(.01, fire["smoke_radius"])) if fire["smoke_radius"] > 0 else 0
                 person["smoke_exposure"] += density*dt*(1.2 if person["vulnerable"] else .85)
                 helper = helpers.get(person["id"])
                 # Finish (or retreat out of) the occupied segment before waiting
@@ -306,6 +275,12 @@ def simulate(world, events, elapsed, strategy=None, branch_at=None, *, checkpoin
                         continue
                     else: continue
                 eid, to = path[0]; edge = edges[eid]
+                actor.pop("yielding_vehicle", None)
+                if eid in reserved_roads:
+                    actor.update(yielding_vehicle=reserved_roads[eid], waiting_for_edge=eid, congestion=100.)
+                    actor["queue_seconds"] += dt
+                    actor.setdefault("queued_at", now)
+                    continue
                 lanes = lane_count(edge)
                 occupants = occupied[eid]
                 lane = next((i for i in sorted(range(lanes), key=lambda lane: abs(lane-(lanes-1)/2)) if not any(a.get("lane") == i and (a["edge_from"] != actor["node_id"] or a["edge_progress"] < footprint(a)) for a in occupants)), None)
@@ -393,6 +368,7 @@ def simulate(world, events, elapsed, strategy=None, branch_at=None, *, checkpoin
         person["last_location"] = nodes[person.get("edge_from") if person.get("edge_id") else person["node_id"]]["name"] + (" → "+nodes[person["edge_to"]]["name"] if person.get("edge_id") else "")
         helper = helpers.get(person["id"])
         person["behavior"] = "集合点已核验" if person["counted"] else "已到集合点，等待清点" if person["status"] == "evacuated" else "失联，等待搜索会合" if person["status"] == "missing" else "等待护送员入楼会合" if helper and helper["state"] in {"approaching", "blocked"} else "通道排队，前人通过后前进" if person["congestion"] else "所选集合点不可达，请改道" if not person["route_reachable"] else "等待通知" if now < person["release_at"] else "准备离开房间" if now < person["release_at"]+person.get("preparation_seconds", 3) else "护送同行" if person["assisted"] else "沿连续通道撤离"
+        if person.get("yielding_vehicle") and person.get("waiting_for_edge") in traffic_at(elapsed): person["behavior"] = "应急车辆通行管控，在路段入口等待放行"
     for helper in helpers.values():
         person = by_id[helper["resident_id"]]
         if helper["state"] in {"escorting", "completed"}:
@@ -426,7 +402,7 @@ def simulate(world, events, elapsed, strategy=None, branch_at=None, *, checkpoin
     for live_edge in graph["edges"]:
         source = edges[live_edge["id"]]
         mid = ((source["start"]["x"]+source["end"]["x"])/2, (source["start"]["y"]+source["end"]["y"])/2)
-        smoke_risk = round(max(0, 1-math.dist(mid, (origin["x"], origin["y"]))/fire["smoke_radius"])*100)
+        smoke_risk = round(max(0, 1-math.dist(mid, (origin["x"], origin["y"]))/max(.01, fire["smoke_radius"]))*100) if fire["smoke_radius"] > 0 else 0
         capacity = edge_capacity(source)
         occupancy, waiting = len(occupied[source["id"]]), waiting_counts[source["id"]]
         reserved_space = sum(footprint(actor)/.8 for actor in occupied[source['id']])
@@ -440,6 +416,7 @@ def simulate(world, events, elapsed, strategy=None, branch_at=None, *, checkpoin
     for e in roads["edges"]:
         metrics = runtime_edges[e["id"]]
         e.update({key: metrics[key] for key in ("status", "lane_count", "capacity_persons", "live_occupancy", "waiting_count", "density_percent", "flow_capacity_per_second", "smoke_risk", "risk_score")})
+        e["reserved_by_vehicle"] = traffic_at(elapsed).get(e["id"])
     south = [e for e in roads["edges"] if "南" in e["name"]]
     env.update(south_lane="blocked" if any(e["status"] == "blocked" for e in south) else "restricted" if any(e["status"] == "restricted" for e in south) else "open", visibility=max(8, round(100-fire["smoke_radius"]*1.8)), blockages=[{"x": (e["start"]["x"]+e["end"]["x"])/2, "y": (e["start"]["y"]+e["end"]["y"])/2, "target": e["name"], "road_edge_id": e["id"]} for e in roads["edges"] if e["status"] == "blocked"])
     congested_edges = sorted((edge for edge in runtime_edges.values() if edge["density_percent"] >= 55), key=lambda edge: (-edge["density_percent"], -edge["waiting_count"], edge["id"]))

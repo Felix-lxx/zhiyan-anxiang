@@ -21,7 +21,7 @@ interface TrainingState {
 }
 const props = defineProps<{ drill: TrainingState; busy: boolean; replay: boolean }>()
 const emit = defineEmits<{
-  start: []; resume: []; finish: []; retry: []; live: []; tasks: []; compare: []; indoor: []
+  start: []; resume: []; finish: []; retry: []; live: []; tasks: []; compare: []; indoor: []; close: []
   dispatch: [task: ExerciseTask]; locate: [task: ExerciseTask]; broadcast: []; assist: [ids: string[]]
   assign: [taskId: string, participantId: string]
   evacuate: [ids: string[], exit: 'north' | 'south']; focus: [id: string]
@@ -101,8 +101,9 @@ function split() {
 </script>
 
 <template>
-  <aside ref="panel" class="training-panel" aria-label="引导演练">
-    <header><h1>社区消防引导演练</h1><p>你是指挥员。做一个决定，观察现场变化。</p></header>
+  <aside class="training-panel" aria-label="引导演练" @keydown.esc.stop="emit('close')">
+    <header class="training-panel__header"><div><h1>社区消防引导演练</h1><p>你是指挥员。做一个决定，观察现场变化。</p></div><button type="button" class="training-panel__close" aria-label="收起引导演练" title="收起引导演练" @click="emit('close')"><AppIcon name="close" /></button></header>
+    <div ref="panel" class="training-panel__body" tabindex="0" aria-label="引导演练内容">
     <section class="training-next" aria-label="现在该做什么">
       <h2 aria-live="polite">{{ stage.title }}</h2><p>{{ stage.why }}</p>
       <button v-if="stage.key === 'ready'" :disabled="busy" @click="emit('start')"><AppIcon name="play" />开始引导演练</button>
@@ -116,10 +117,10 @@ function split() {
       <p v-if="stage.key === 'perception'" role="status">已记录 {{ drill.events.filter(e => e.event_type === 'robot.sensor_sample').length }}/3 次近场采样。<button class="training-link" @click="emit('tasks')">查看机器人路线与任务</button></p>
       <TaskWorkflow v-if="workflow" :key="workflow.id" :task="workflow" :running="drill.status === 'running' && !replay" :busy="busy" :assignees="workflowAssignees" director @assign="participantId => emit('assign', workflow!.id, participantId)" @action="(action, evidence) => emit('task', workflow!.id, action, evidence)" @locate="emit('locate', workflow)" @dispatch="emit('dispatch', workflow)" />
       <button v-if="stage.key === 'complete'" :disabled="!canAct || uncounted > 0 || Boolean(remainingTask)" @click="emit('finish')">结束训练并查看结果</button>
-      <template v-if="stage.key === 'ended'"><button @click="emit('tasks')">检查任务与遗漏</button><button @click="emit('compare')">比较另一种出口选择</button><button :disabled="busy" @click="emit('retry')">重新训练一次</button></template>
+      <div v-if="stage.key === 'ended'" class="training-result-actions"><button @click="emit('tasks')">检查任务与遗漏</button><button @click="emit('compare')">比较另一种出口选择</button><button :disabled="busy" @click="emit('retry')">重新训练一次</button></div>
       <ul v-if="stage.key === 'ended'" class="training-omissions"><li v-for="t in drill.tasks.filter(t => t.status !== 'completed')" :key="t.id">未核验：{{ t.title }}</li><li v-if="people.some(p => p.status !== 'evacuated')">仍有 {{ people.filter(p => p.status !== 'evacuated').length }} 人未到出口；回看下楼、封路和疏散通知的时刻。</li><li v-if="!broadcastDone">本场没有广播证据，请检查是否只派出机器人却忘记通知居民。</li></ul>
       <div v-if="drill.status !== 'ready'" class="training-live-state" aria-live="polite">
-        <div class="training-live-state__command"><span>当前执行</span><strong v-if="activeRobotTask">{{ activeRobotTask.label }} · {{ robotProgress }}%</strong><strong v-else>{{ busy ? '正在写入指令…' : (drill.status === 'paused' ? '已暂停' : '现场持续推演中') }}</strong><small v-if="activeRobotTask">约 {{ robotRemaining }} 秒后到达；到达前不能执行目标点任务</small><small v-else>人员与车辆按演练时钟连续移动</small></div>
+        <div class="training-live-state__command"><span>{{ drill.status === 'ended' || replay ? '记录状态' : '当前执行' }}</span><strong v-if="drill.status === 'ended'">本场已结束，结果已冻结</strong><strong v-else-if="replay">正在查看历史时刻</strong><strong v-else-if="activeRobotTask">{{ activeRobotTask.label }} · {{ robotProgress }}%</strong><strong v-else>{{ busy ? '正在写入指令…' : (drill.status === 'paused' ? '已暂停' : '现场持续推演中') }}</strong><small v-if="drill.status === 'ended' || replay">此处显示已记录状态，不会继续执行指令</small><small v-else-if="drill.status === 'paused'">继续演练后，人员与车辆恢复移动</small><small v-else-if="activeRobotTask">约 {{ robotRemaining }} 秒后到达；到达前不能执行目标点任务</small><small v-else>人员与车辆按演练时钟连续移动</small></div>
         <div class="training-flow-live" aria-label="人员实时疏散进度"><span><b>{{ indoorWaiting }}</b> 楼内等待</span><span><b>{{ indoorMoving }}</b> 下楼排队</span><span><b>{{ outside.length }}</b> 室外移动</span><span><b>{{ drill.simulation.summary.evacuated }}</b> 到集合点</span></div>
         <div class="training-score-line"><span>过程分 <strong>{{ liveScore }}/100</strong></span><small>{{ nextScoreHint }}。过程分会随烟气暴露和处置结果实时升降。</small></div>
         <p v-if="weakestScore" class="training-score-gap">当前主要失分：{{ weakestScore.name }} {{ weakestScore.score }}/{{ weakestScore.max_score ?? '—' }} · {{ weakestScore.evidence }}</p>
@@ -146,5 +147,6 @@ function split() {
     </section>
     <details class="training-roads"><summary>试试封路与改道</summary><p>这是导演制造的训练扰动，不是现实中的处置建议。封锁后观察路线，再解除封锁。</p><label>选择道路<select v-model="selectedRoad" aria-label="选择道路"><option value="">请选择路段</option><option v-for="road in drill.simulation.road_network?.edges" :key="road.id" :value="road.id">{{ road.name }} · {{ road.status === 'blocked' ? '已封锁' : '可通行' }}</option></select></label><button :disabled="!canAct || !selectedRoad" @click="drill.simulation.road_network?.edges.find(e => e.id === selectedRoad)?.status === 'blocked' ? emit('reopen', selectedRoad) : emit('block', selectedRoad)">{{ drill.simulation.road_network?.edges.find(e => e.id === selectedRoad)?.status === 'blocked' ? '解除此路封锁' : '制造此路封锁' }}</button></details>
     <section v-if="lastDecision && (drill.engine_version ?? 2) < 3" class="training-feedback"><h2>刚才的决定</h2><p>{{ lastDecision.message }}</p><p>{{ consequence }}</p><button @click="emit('seek', Math.max(0, lastDecision.elapsed_seconds - 1))">回看决定之前</button><button @click="emit('compare')">比较其他出口方案</button><small>比较结果来自规则预测，不代表真实火场结果。</small></section>
+    </div>
   </aside>
 </template>

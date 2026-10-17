@@ -31,12 +31,13 @@ export interface BranchPlan { strategy: string; name: string; evacuation_seconds
 export interface BranchComparison { at_seconds: number; projection_seconds: number; baseline: BranchPlan; alternative: BranchPlan; robots: { baseline: Robot | null; alternative: Robot | null }; worlds: { baseline: Simulation; alternative: Simulation }; improvement: { evacuation_seconds: number | null; vulnerable_rescue_seconds: number | null; smoke_exposed: number; score: number }; recommendation: string; disclaimer: string }
 
 export type SpatialIntent =
-  | { kind: 'vehicle'; vehicleId: string; targetNodeId: string }
+  | { kind: 'vehicle'; vehicleId: string; targetNodeId?: string; command?: 'dispatch' | 'spray' | 'load' | 'handover'; residentId?: string }
   | { kind: 'road'; edgeId: string }
   | { kind: 'robot'; x: number; y: number; target: string }
   | { kind: 'residents'; residentIds: string[]; exit: 'north' | 'south'; action: 'evacuate' | 'priority_assist' }
 
 export interface SpatialPreview {
+  rescue_action?: 'spray' | 'load' | 'handover'
   kind: 'road' | 'robot' | 'residents' | 'vehicle'; can_apply: boolean; title?: string; notice: string
   expected_sequence: number
   context?: { x: number; y: number; target: string; road_edge_id?: string }
@@ -51,10 +52,25 @@ export interface SpatialPreview {
 
 export interface Vehicle {
   id: string; name: string; kind: 'firetruck' | 'ambulance'; x: number; y: number
-  state: 'idle' | 'moving' | 'blocked' | 'arrived'; reason: string
+  state: 'idle' | 'moving' | 'blocked' | 'arrived' | 'yielding'; reason: string
   minimum_width: number; target_name: string; target_node_id: string | null
   mission_id: string | null; current_edge_id: string | null
   progress: number; remaining_seconds: number | null
   route_points: Array<{ x: number; y: number; edge_id?: string | null }>; route_edge_ids: string[]
+  service?: RescueAction | null
+  passenger?: { id: string; label: string; pickup_node_id: string } | null
+  service_options?: Partial<Record<'spray' | 'handover', { can_apply: boolean; notice: string; duration_seconds: number }>>
+  rescue_actions?: RescueAction[]
+  rescue_action_count?: number
 }
-export interface Simulation { vehicles?: Vehicle[] }
+export interface RescueAction {
+  action_id: string; vehicle_id: string; action: 'spray' | 'load' | 'handover'; label: string
+  status: 'executing' | 'completed' | 'cancelled'; progress: number; reason: string
+  duration_seconds: number; remaining_seconds: number; starts_at_seconds: number; ends_at_seconds: number
+  resident_id?: string; resident_label?: string; pickup_points?: Array<{ x: number; y: number }>
+  approach_seconds?: number
+  position?: { x: number; y: number }
+  target?: { x: number; y: number }; water_source?: { id: string; name: string; x: number; y: number }
+}
+export interface TransferCandidate { id: string; label: string; exit: string; eligible: boolean; reason: string }
+export interface Simulation { vehicles?: Vehicle[]; rescue_actions?: RescueAction[]; transfer_candidates?: TransferCandidate[] }

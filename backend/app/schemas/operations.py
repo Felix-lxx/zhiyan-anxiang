@@ -30,9 +30,10 @@ class RobotCommand(BaseModel):
 
 
 class VehicleCommand(BaseModel):
-    command: Literal["dispatch", "cancel", "replan"] = "dispatch"
+    command: Literal["dispatch", "cancel", "replan", "spray", "load", "handover", "stop_action"] = "dispatch"
     vehicle_id: Literal["firetruck-1", "ambulance-1"]
     target_node_id: str | None = Field(default=None, max_length=64)
+    resident_id: str | None = Field(default=None, max_length=64)
 
 
 class ResidentCommand(BaseModel):

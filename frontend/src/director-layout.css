@@ -1,24 +1,34 @@
 /* Single owner of immersive overlay geometry. Skin: atlas-director.css; type: director-readability.css. */
+.scene-utilities { position:absolute; z-index:9; top:16px; left:16px; right:16px; display:flex; align-items:center; flex-wrap:wrap; gap:8px; padding:6px; border:1px solid #36594f; border-radius:8px; background:#092720; color:#e9f2ed; }
+.scene-utilities button,.scene-utilities select { min-height:44px; border:1px solid #51766a; border-radius:6px; background:#173e33; color:#e9f2ed; font:inherit; font-size:16px; padding:8px 12px; }
+.scene-utilities button { display:inline-flex; align-items:center; justify-content:center; gap:8px; cursor:pointer; }
+.scene-utilities button:disabled { opacity:.6; cursor:not-allowed; }
+.scene-utilities button[aria-pressed=true] { background:#245e4d; border-color:#9cd6bd; }
+.scene-utilities :is(button,select):focus-visible { outline:2px solid #a1e4c9; outline-offset:2px; }
+.scene-quality { display:flex; align-items:center; gap:8px; padding-inline:6px; font-size:16px; }
+.scene-quality select { width:auto; }
+.scene-quality small { font-size:14px; min-width:64px; color:#b9d5c8; font-variant-numeric:tabular-nums; }
+html .operations-center--immersive>.director-stage .scene-utilities { left:var(--scene-left); right:20px; flex-wrap:nowrap; width:max-content; max-width:calc(100% - var(--scene-left) - 20px); box-sizing:border-box; }
 html .operations-center--immersive {
   --director-topbar:76px; --director-timeline:176px; --scene-left:112px;
   --scene-bottom:calc(var(--director-timeline) + 14px); --scene-rail-space:20px;
-  --scene-inspector-width:380px; --scene-tools-top:232px;
+  --scene-inspector-width:380px; --scene-tools-top:calc(var(--scene-panel-top,84px) + 148px);
 }
 html .operations-center--immersive>.director-topbar { height:var(--director-topbar); min-height:var(--director-topbar); padding-inline:22px; gap:24px; box-sizing:border-box; }
 html .operations-center--immersive>.director-stage { overflow:hidden; min-height:0; height:calc(100dvh - var(--director-topbar)); }
 html .operations-center--immersive>.director-stage>.twin-stage,
 html .operations-center--immersive .twin-stage__viewport { inset:0; width:100%; height:100%; min-height:0; }
-html .atlas-director-modes { position:absolute; z-index:8; inset:18px auto auto 10px; width:82px; }
+html .atlas-director-modes { position:absolute; z-index:8; inset:18px auto auto 10px; width:82px; max-height:calc(100% - var(--scene-bottom) - 30px); overflow-y:auto; }
 html .atlas-director-modes button { width:100%; height:100px; }
 html .operations-center--immersive>.director-stage .twin-views {
-  inset:16px auto auto var(--scene-left); display:flex; flex-wrap:wrap; width:auto;
+  inset:var(--scene-panel-top,84px) auto auto var(--scene-left); display:flex; flex-wrap:nowrap; width:auto; overflow-x:auto;
   max-width:calc(100% - var(--scene-left) - 298px); padding:4px; gap:4px; translate:none;
 }
-html .operations-center--immersive>.director-stage .twin-views button { min-width:44px; min-height:44px; width:auto; justify-content:center; }
-html .operations-center--immersive>.director-stage .director-metrics { inset:142px auto auto var(--scene-left); width:430px; max-width:calc(100% - var(--scene-left) - 24px); translate:none; }
+html .operations-center--immersive>.director-stage .twin-views button { flex:0 0 auto; min-width:44px; min-height:44px; width:auto; justify-content:center; }
+html .operations-center--immersive>.director-stage .director-metrics { inset:calc(var(--scene-panel-top,84px) + 58px) auto auto var(--scene-left); width:430px; max-width:calc(100% - var(--scene-left) - 24px); translate:none; }
 html .operations-center--immersive>.director-stage .director-metrics>div { min-width:0; flex:1; padding:9px; }
 html .operations-center--immersive>.director-stage .director-metrics>button { min-width:0; max-width:132px; flex:1.4; padding:8px; }
-html .operations-center--immersive>.director-stage .twin-object-nav { inset:16px 20px auto auto; display:grid; width:240px; }
+html .operations-center--immersive>.director-stage .twin-object-nav { inset:var(--scene-panel-top,84px) 20px auto auto; display:grid; width:240px; }
 html .operations-center--immersive>.director-stage .twin-object-nav select { width:100%; min-width:0; min-height:44px; }
 /* One flow owns tools and the lower utilities: expansion consumes scroll space,
    never the cutaway button or the legend. The group itself passes scene clicks through. */
@@ -41,13 +51,14 @@ html .operations-center--immersive>.director-stage .indoor-toggle { position:rel
 html .operations-center--immersive>.director-stage .director-rail { position:absolute; inset:auto 20px var(--scene-bottom) auto; display:flex; width:auto; height:56px; max-height:none; }
 html .operations-center--immersive>.director-stage .director-rail>button { height:48px; min-height:44px; }
 html .operations-center--immersive>.director-stage :is(.twin-inspector,.resident-pov-hud) {
-  inset:120px 20px auto auto; width:var(--scene-inspector-width); max-width:calc(100% - var(--scene-left) - 24px);
+  inset:calc(var(--scene-panel-top,84px) + 82px) 20px auto auto; width:var(--scene-inspector-width); max-width:calc(100% - var(--scene-left) - 24px);
   max-height:calc(100% - var(--director-timeline) - 198px); overflow:auto; overscroll-behavior:contain;
 }
-html .operations-center--immersive>.director-stage :is(.training-panel,.experience-guide) { position:absolute; inset:12px auto var(--scene-bottom) 12px; width:var(--director-coach); min-height:0; max-height:none; overflow:auto; overscroll-behavior:contain; scrollbar-gutter:stable; }
-html .operations-center--immersive>.director-stage .director-drawer { inset:16px 20px calc(var(--director-timeline) + 82px) auto; width:min(440px,calc(100% - 116px)); max-height:none; }
+html .operations-center--immersive>.director-stage :is(.training-panel,.experience-guide) { position:absolute; inset:var(--scene-panel-top,84px) auto var(--scene-bottom) var(--scene-left); width:min(380px,calc(100% - var(--scene-left) - 20px)); min-height:0; max-height:none; overflow:auto; overscroll-behavior:contain; box-sizing:border-box; }
+html .operations-center--immersive>.director-stage .training-panel { display:flex; flex-direction:column; padding:0; overflow:hidden; }
+html .operations-center--immersive>.director-stage .director-drawer { inset:var(--scene-panel-top,84px) 20px calc(var(--director-timeline) + 82px) auto; width:min(440px,calc(100% - var(--scene-left) - 20px)); max-height:none; }
 html .operations-center--immersive>.director-stage .director-drawer>header { flex:0 0 auto; }
-html .operations-center--immersive>.scene-assistant { position:fixed; z-index:120; inset:calc(var(--director-topbar) + 12px) 20px calc(var(--director-timeline) + 82px) auto; width:min(480px,calc(100vw - 40px)); max-height:none; }
+html .operations-center--immersive>.scene-assistant { position:fixed; z-index:120; inset:calc(var(--director-topbar) + var(--scene-panel-top,84px)) 20px calc(var(--director-timeline) + 82px) auto; width:min(480px,calc(100vw - var(--scene-left) - 40px)); max-height:none; }
 html .operations-center--immersive[data-mode=replay]>.scene-assistant { inset:16px 16px 16px auto; }
 html .operations-center--immersive .exercise-timeline { height:var(--director-timeline); min-height:var(--director-timeline); display:flex; flex-wrap:wrap; padding:106px 24px 14px; align-content:flex-end; }
 html .operations-center--immersive .atlas-timeline-events { position:absolute; inset:9px 24px auto; display:flex; justify-content:flex-start; gap:12px; overflow-x:auto; padding-bottom:6px; scrollbar-gutter:stable; }
@@ -69,8 +80,8 @@ html .operations-center--immersive[data-mode=replay]>.director-stage>.ui-toast {
 
 /* Preview belongs to the scene viewport, never to a competing body-level overlay. */
 html .operations-center--immersive>.director-stage .spatial-action-preview.spatial-action-preview--immersive {
-  position:absolute; inset:16px 20px calc(var(--director-timeline) + 82px) auto;
-  width:min(440px,calc(100% - 116px)); max-height:none; min-height:0;
+  position:absolute; inset:var(--scene-panel-top,84px) 20px calc(var(--director-timeline) + 82px) auto;
+  width:min(440px,calc(100% - var(--scene-left) - 20px)); max-height:none; min-height:0;
   box-sizing:border-box; overflow:auto; overscroll-behavior:contain; scrollbar-gutter:stable;
   font-size:16px; line-height:1.6;
 }
@@ -107,24 +118,36 @@ html .operations-center--immersive.coach-open>.director-stage :is(.director-metr
   html .operations-center--immersive.assistant-open .atlas-replay__header small { display:none; }
 }
 @media(min-width:761px) and (max-width:1100px) {
-  html .operations-center--immersive { --scene-left:90px; --scene-inspector-width:320px; --scene-tools-top:268px; }
+  html .operations-center--immersive { --scene-left:90px; --scene-inspector-width:320px; --scene-tools-top:calc(var(--scene-panel-top,84px) + 184px); }
   html .atlas-director-modes { width:64px; }
   html .atlas-director-modes button { height:80px; }
-  html .operations-center--immersive .director-actions__coach { display:none; }
-  html .operations-center--immersive>.director-stage .director-metrics { top:174px; width:340px; }
+  html .operations-center--immersive .director-actions__coach { min-width:44px; width:44px; padding:8px; }
+  html .operations-center--immersive .director-actions__coach span { display:none; }
+  html .operations-center--immersive>.director-stage .director-metrics { top:calc(var(--scene-panel-top,84px) + 90px); width:340px; }
   html .operations-center--immersive>.director-stage .twin-stage__legend { display:none; }
+  /* Give the conversation reading room on short tablet/laptop screens.
+     The timeline returns unchanged when the assistant closes. */
+  html .operations-center--immersive>.scene-assistant { bottom:16px; }
+  html .operations-center--immersive.assistant-open>.director-stage :is(.exercise-timeline,.director-rail) { visibility:hidden; }
 }
 @media(max-width:760px) {
-  html .operations-center--immersive { --director-topbar:112px; --director-timeline:164px; --scene-left:66px; --scene-tools-top:222px; --scene-bottom:calc(var(--director-timeline) + 78px); }
-  html .operations-center--immersive>.director-topbar { padding:8px 12px; gap:6px; flex-wrap:wrap; }
-  html .operations-center--immersive .director-brand { flex:1; }
+  html .operations-center--immersive { --director-topbar:112px; --director-timeline:164px; --scene-left:66px; --scene-tools-top:calc(var(--scene-panel-top,122px) + 188px); --scene-bottom:calc(var(--director-timeline) + 78px); }
+  html .operations-center--immersive>.director-stage .scene-utilities { top:8px; right:8px; width:auto; max-width:none; display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:6px; padding:6px; }
+  .scene-quality { grid-column:1/-1; justify-content:space-between; padding:0; font-size:14px; gap:4px; }
+  .scene-quality small { min-width:0; font-size:14px; }
+  .scene-utilities button,.scene-utilities select { font-size:14px; padding:6px; }
+  html .operations-center--immersive>.director-topbar { padding:8px 12px; gap:6px; grid-template-columns:minmax(0,1fr) auto; grid-template-rows:44px 44px; grid-template-areas:'brand brand' 'status actions'; }
+  html .operations-center--immersive .director-brand { grid-area:brand; }
+  html .operations-center--immersive .director-status { grid-area:status; justify-self:start; gap:6px; padding:4px 8px; }
+  html .operations-center--immersive .director-status strong { font-size:24px; }
+  html .operations-center--immersive .director-actions { grid-area:actions; }
   html .operations-center--immersive .director-brand span { display:none; }
   html .operations-center--immersive .director-actions { width:100%; justify-content:flex-end; }
   html .atlas-director-modes { inset:12px auto auto 8px; width:48px; }
   html .atlas-director-modes button { height:62px; }
-  html .operations-center--immersive>.director-stage .twin-views { inset:8px 8px auto var(--scene-left); width:auto; max-width:none; gap:4px; }
+  html .operations-center--immersive>.director-stage .twin-views { inset:var(--scene-panel-top,122px) 8px auto var(--scene-left); width:auto; max-width:none; gap:4px; }
   html .operations-center--immersive>.director-stage .twin-views button { padding:7px; font-size:0; width:44px; }
-  html .operations-center--immersive>.director-stage .director-metrics { inset:86px 8px auto var(--scene-left); width:auto; max-width:none; display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); }
+  html .operations-center--immersive>.director-stage .director-metrics { inset:calc(var(--scene-panel-top,122px) + 58px) 8px auto var(--scene-left); width:auto; max-width:none; display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); }
   html .operations-center--immersive>.director-stage .director-metrics>div { padding:8px; }
   html .operations-center--immersive>.director-stage .director-metrics>button { grid-column:1/-1; max-width:none; min-height:44px; padding:6px; }
   html .operations-center--immersive>.director-stage .scene-spatial-controls { left:8px; width:calc(100% - 16px); }
@@ -132,12 +155,14 @@ html .operations-center--immersive.coach-open>.director-stage :is(.director-metr
   html .operations-center--immersive>.director-stage :is(.twin-object-nav,.twin-stage__legend) { display:none; }
   html .operations-center--immersive>.director-stage .director-rail { position:fixed; inset:auto 8px calc(var(--director-timeline) + 8px); width:auto; }
   html .operations-center--immersive>.director-stage .indoor-toggle { inset:auto; }
-  html .operations-center--immersive>.director-stage :is(.twin-inspector,.resident-pov-hud) { inset:8px 8px var(--scene-bottom) var(--scene-left); width:auto; max-width:none; max-height:none; }
+  html .operations-center--immersive>.director-stage :is(.twin-inspector,.resident-pov-hud) { inset:var(--scene-panel-top,122px) 8px var(--scene-bottom) var(--scene-left); width:auto; max-width:none; max-height:none; }
   html .operations-center--immersive>.director-stage:has(.twin-inspector,.resident-pov-hud) :is(.twin-views,.director-metrics,.indoor-toggle,.spatial-tool-rack) { display:none; }
-  html .operations-center--immersive>.director-stage :is(.training-panel,.director-drawer,.experience-guide) { position:fixed; inset:calc(var(--director-topbar) + 8px) 8px var(--scene-bottom); width:auto; min-height:0; max-height:none; overflow:auto; }
+  html .operations-center--immersive>.director-stage :is(.training-panel,.director-drawer,.experience-guide) { position:fixed; inset:calc(var(--director-topbar) + var(--scene-panel-top,122px)) 8px var(--scene-bottom) var(--scene-left); width:auto; min-height:0; max-height:none; overflow:auto; }
+  html .operations-center--immersive>.director-stage .training-panel { overflow:hidden; }
+  .training-panel__header,.training-panel__body { padding:16px; }
   html .operations-center--immersive.coach-open>.director-stage :is(.twin-inspector,.resident-pov-hud),
   html .operations-center--immersive.space-preview-open>.director-stage :is(.training-panel,.director-metrics,.twin-views,.spatial-tool-rack,.indoor-toggle,.resident-pov-hud) { display:none; }
-  html .operations-center--immersive>.director-stage .spatial-action-preview.spatial-action-preview--immersive { inset:8px 8px var(--scene-bottom); width:auto; max-height:none; }
+  html .operations-center--immersive>.director-stage .spatial-action-preview.spatial-action-preview--immersive { inset:var(--scene-panel-top,122px) 8px var(--scene-bottom) var(--scene-left); width:auto; max-height:none; }
   html .operations-center--immersive.assistant-open>.director-topbar,
   html .operations-center--immersive.assistant-open>.director-stage :is(.director-rail,.exercise-timeline) { visibility:hidden; }
   html .operations-center--immersive>.scene-assistant,
@@ -150,6 +175,6 @@ html .operations-center--immersive.coach-open>.director-stage :is(.director-metr
 }
 @media(max-height:620px) and (min-width:761px) {
   html .operations-center--immersive>.director-stage :is(.twin-stage__legend,.director-metrics) { display:none; }
-  html .operations-center--immersive { --scene-tools-top:116px; }
+  html .operations-center--immersive { --scene-tools-top:calc(var(--scene-panel-top,84px) + 68px); }
   html .operations-center--immersive>.director-stage .indoor-toggle { bottom:auto; }
 }

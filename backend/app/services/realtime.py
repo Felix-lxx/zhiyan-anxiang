@@ -50,6 +50,7 @@ def snapshot_patch(previous: dict, current: dict, path: list | None = None, *, e
         elif value != previous[key]:
             delta = entity_patch(previous[key], value) if entities and location in [
                 ["simulation", "residents"], ["simulation", "helpers"], ["simulation", "vehicles"],
+                ["simulation", "rescue_actions"],
             ] and isinstance(previous[key], list) and isinstance(value, list) else None
             changes.append({"path": location, **({"entities": delta} if delta is not None else {"value": value})})
     return changes

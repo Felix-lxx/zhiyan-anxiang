@@ -33,10 +33,10 @@ export class VehicleVisuals {
         void this.load(root, vehicle)
       }
       root.visible = true
-      const detail = `${vehicle.reason}${vehicle.remaining_seconds === null ? '' : ` 剩余 ${vehicle.remaining_seconds} 秒。`}`
+      const detail = vehicle.service ? `${vehicle.service.label} · 剩余 ${vehicle.service.remaining_seconds} 秒。${vehicle.service.reason}` : `${vehicle.reason}${vehicle.passenger ? ` 车内人员：${vehicle.passenger.label}。` : ''}${vehicle.remaining_seconds === null ? '' : ` 剩余 ${vehicle.remaining_seconds} 秒。`}`
       root.traverse(object => { object.userData.selection = { title: vehicle.name, type: '可调度应急车辆', detail, vehicleId: vehicle.id, x: vehicle.x, y: vehicle.y } })
       root.userData.moving = vehicle.state === 'moving'
-      root.userData.beacon.visible = running && vehicle.state === 'moving'
+      root.userData.beacon.visible = running && (vehicle.state === 'moving' || Boolean(vehicle.service))
       this.motion.accept(root, new THREE.Vector3(vehicle.x - 50, .04, vehicle.y - 50), vehicle.route_points.map(point => new THREE.Vector3(point.x - 50, .04, point.y - 50)), elapsed, running)
     }
   }

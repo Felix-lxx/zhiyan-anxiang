@@ -1,5 +1,8 @@
 <script setup lang="ts">
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import { useSceneOverlayLayout } from '../composables/useSceneOverlayLayout'
+
+const sceneUtilities = useSceneOverlayLayout()
 import * as THREE from 'three'
 import { createApartment, createChargingShed, createFireStation, createStreet, createStreetFurniture, createRoadBarrier } from '../three/communityModels'
 import { SceneMaterials, displayHeight } from '../three/sceneMaterials'
@@ -8,6 +11,7 @@ import { CrowdRenderer } from '../three/crowdRenderer'
 import { ActorAssets, type ActorAssetStatus } from '../three/actorAssets'
 import { ActorMotion } from '../three/actorMotion'
 import { VehicleVisuals } from '../three/vehicleVisuals'
+import { RescueVisuals, type RescueResident } from '../three/rescueVisuals'
 import type { Vehicle } from '../domain/drill'
 import { FireEffects } from '../three/fireEffects'
 import { RoadVisuals } from '../three/roadVisuals'
@@ -15,9 +19,9 @@ import { assemblyAttendance, createAssemblyPoint, type AssemblyResident } from '
 import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js'
 import AppIcon from './AppIcon.vue'
 
-interface Resident { height?: number; building_id?: string; floor?: number; current_floor?: number; indoor_stage?: string; current_edge_id?: string | null; id: string; label: string; vulnerable: boolean; status: string; x: number; y: number; progress: number; exit?: 'north' | 'south'; behavior?: string; smoke_exposure?: number; congestion?: number; queue_seconds?: number; last_location?: string; assisted?: boolean; search_responsible?: string; speed_factor?: number; route_points?: Array<{ x: number; y: number; height?: number }>; route_edge_ids?: string[]; route_reachable?: boolean; estimated_seconds?: number }
+interface Resident extends RescueResident { height?: number; building_id?: string; floor?: number; current_floor?: number; indoor_stage?: string; current_edge_id?: string | null; id: string; label: string; vulnerable: boolean; status: string; x: number; y: number; progress: number; exit?: 'north' | 'south'; behavior?: string; smoke_exposure?: number; congestion?: number; queue_seconds?: number; last_location?: string; assisted?: boolean; search_responsible?: string; speed_factor?: number; route_points?: Array<{ x: number; y: number; height?: number }>; route_edge_ids?: string[]; route_reachable?: boolean; estimated_seconds?: number }
 interface SpatialEdgeState { id: string; kind: string; start: { x: number; y: number; height: number }; end: { x: number; y: number; height: number }; width_meters: number; density_percent?: number; live_occupancy?: number; waiting_count?: number; capacity_persons?: number }
-interface RoadEdgeState { id: string; name: string; start: { x: number; y: number }; end: { x: number; y: number }; width_meters: number; status: 'open' | 'restricted' | 'blocked'; blocked_by_event: boolean; risk_score: number; smoke_risk?: number; density_percent?: number; live_occupancy?: number; waiting_count?: number; capacity_persons?: number; flow_capacity_per_second?: number }
+interface RoadEdgeState { reserved_by_vehicle?: string | null; id: string; name: string; start: { x: number; y: number }; end: { x: number; y: number }; width_meters: number; status: 'open' | 'restricted' | 'blocked'; blocked_by_event: boolean; risk_score: number; smoke_risk?: number; density_percent?: number; live_occupancy?: number; waiting_count?: number; capacity_persons?: number; flow_capacity_per_second?: number }
 interface Simulation {
   vehicles?: Vehicle[]
   spatial_network?: { nodes: Array<{id:string;name:string;x:number;y:number;height:number;kind:string;floor:number;is_exit?:boolean;building_id?:string}>; edges: SpatialEdgeState[] }
@@ -39,6 +43,7 @@ type SpatialIntent =
   | { kind: 'robot'; x: number; y: number; target: string }
   | { kind: 'residents'; residentIds: string[]; exit: 'north' | 'south'; action: 'evacuate' | 'priority_assist' }
 interface OperationPreview {
+  rescue_action?: 'spray' | 'load' | 'handover'
   kind: 'road' | 'robot' | 'residents' | 'vehicle'; can_apply: boolean; title?: string; notice: string
   expected_sequence?: number
   route_points?: Array<{ x: number; y: number; height?: number }>; route_edge_ids?: string[]; route_distance?: number
@@ -177,6 +182,7 @@ async function retryActorModels() {
 }
 const actorMotion = new ActorMotion()
 let vehicleVisuals: VehicleVisuals | null = null
+let rescueVisuals: RescueVisuals | null = null
 const currentRobotTask = computed(() => props.robot?.task_queue?.find(task => ['executing', 'blocked'].includes(task.status)))
 const robotProgress = computed(() => Math.round(100 * Math.max(0, Math.min(1, currentRobotTask.value?.progress ?? (['arrived', 'completed'].includes(props.robot?.state ?? '') ? 1 : 0)))))
 const robotRemaining = computed(() => currentRobotTask.value?.ends_at_seconds === undefined || currentRobotTask.value.status === 'blocked' ? null : Math.max(0, Math.ceil(currentRobotTask.value.ends_at_seconds - props.elapsedSeconds)))
@@ -208,6 +214,7 @@ const povExposureLevel = computed(() => Math.min(100, Math.round((activeResident
 const latestRoutePoints = computed(() => props.robotRoutePreview?.length ? props.robotRoutePreview : props.robot?.task_queue?.find((item) => ['executing', 'blocked'].includes(item.status))?.route_points ?? props.robot?.task_queue?.filter((item) => item.status === 'completed').slice(-1)[0]?.route_points ?? [])
 const toolHelp = computed(() => ({ inspect: '拖动旋转视角，滚轮缩放；点击对象查看实时状态。', block: '点击有颜色的真实路段：红色封锁、橙色受限，提交后立即重算所有 A* 路线。', robot: '点击任意空间目标，机器人会沿当前道路图逐段移动并持续回传进度。', residents: '点击或拖动框选居民；点击出口预览，确认后观察连续行走与队列。' }[toolMode.value]))
 const accessibleObjects = computed(() => [
+  ...(props.simulation?.vehicles?.map(v => ({ key: `vehicle:${v.id}`, label: v.name })) ?? []),
   ...(props.robot ? [{ key: 'robot', label: '巡检广播机器人 R-01' }] : []),
   ...(props.simulation?.world?.objects.filter(o=>o.type!=='assembly_point' || !assemblyNodes.value.length).map(o => ({ key: `object:${o.id}`, label: o.name })) ?? [{ key: 'building-3', label: '3 号重点疏散楼栋' }, { key: 'east-hydrant', label: '东侧消火栓' }, { key: 'south-exit', label: '南门出口' }]),
   ...(props.simulation?.road_network?.edges.map((edge) => ({ key: `road:${edge.id}`, label: `${edge.name}（${edge.status === 'blocked' ? '已封锁' : edge.status === 'restricted' ? '受限' : '畅通'}）` })) ?? []),
@@ -224,7 +231,7 @@ function material(color: number, roughness = 0.82, emissive = 0): THREE.MeshStan
 }
 
 function roadDetail(edge: RoadEdgeState): string {
-  const status = edge.status === 'blocked' ? '已封锁' : edge.status === 'restricted' ? '通行受限' : '当前畅通'
+  const status = edge.status === 'blocked' ? '已封锁' : edge.reserved_by_vehicle ? '车辆通行管控 · 人员在入口等候' : edge.status === 'restricted' ? '通行受限' : '当前畅通'
   const capacity = edge.capacity_persons ? ` · 容量 ${edge.capacity_persons} 人` : ''
   const flow = edge.flow_capacity_per_second ? ` · 估算流量 ${edge.flow_capacity_per_second} 人/秒` : ''
   return `${edge.width_meters} 米 · ${status} · 综合风险 ${edge.risk_score} · 密度 ${edge.density_percent ?? 0}% · 通行 ${edge.live_occupancy ?? 0} 人 · 排队 ${edge.waiting_count ?? 0} 人${capacity}${flow}`
@@ -647,6 +654,7 @@ function animate(time = 0): void {
   // essential spatial feedback. Positions still stop at the server's last sample.
   const activelyAnimating = props.status === 'running'
   vehicleVisuals?.step(delta, activelyAnimating, time / 1000, !reducedMotion && props.effectsEnabled !== false)
+  rescueVisuals?.step(delta, activelyAnimating, time / 1000, !reducedMotion && props.effectsEnabled !== false)
   if (!activelyAnimating && !renderDirty) return
   const fireScale = .8 + (props.simulation?.fire.intensity ?? 20) / 115
   if(activelyAnimating)visualSeconds+=delta
@@ -781,9 +789,11 @@ function updateEntities(): void {
   if (scene && props.simulation) {
     if (!vehicleVisuals) { vehicleVisuals = new VehicleVisuals(object => interactiveMeshes.push(object), () => { renderDirty = true }); scene.add(vehicleVisuals.layer) }
     vehicleVisuals.update(props.simulation.vehicles ?? [], props.elapsedSeconds, props.status === 'running')
+    if (!rescueVisuals) { rescueVisuals = new RescueVisuals(object => interactiveMeshes.push(object)); scene.add(rescueVisuals.layer) }
+    rescueVisuals.update(props.simulation.vehicles ?? [], props.simulation.residents, props.elapsedSeconds, props.status === 'running')
     if (selected.value?.vehicleId) {
       const vehicle = props.simulation.vehicles?.find(item => item.id === selected.value?.vehicleId)
-      if (vehicle) Object.assign(selected.value, { x: vehicle.x, y: vehicle.y, detail: `${vehicle.reason}${vehicle.remaining_seconds === null ? '' : ` 剩余 ${vehicle.remaining_seconds} 秒。`}` })
+      if (vehicle) Object.assign(selected.value, { x: vehicle.x, y: vehicle.y, detail: vehicle.service ? `${vehicle.service.label} · 剩余 ${vehicle.service.remaining_seconds} 秒。${vehicle.service.reason}` : `${vehicle.reason}${vehicle.passenger ? ` 车内人员：${vehicle.passenger.label}。` : ''}${vehicle.remaining_seconds === null ? '' : ` 剩余 ${vehicle.remaining_seconds} 秒。`}` })
     }
   }
   if (!scene || destroyed) return
@@ -886,6 +896,7 @@ function updateEntities(): void {
       const heading = nextPosition.clone().sub(previousPosition); heading.y = 0
       if (heading.lengthSq() > .0025) residentHeadings.set(resident.id, heading.normalize())
       mesh.visible = mesh.visible && !(viewMode.value === 'resident' && activeResident.value?.id === resident.id)
+      mesh.visible = mesh.visible && !['loading', 'onboard', 'handing_over'].includes(resident.medical_transfer?.phase ?? '')
       updateResidentTrail(resident, mesh.position)
     }
   }
@@ -1117,6 +1128,11 @@ function selectAccessibleObject(event: Event): void {
   if (!key) { selected.value = null; return }
   setTool('inspect')
   if (!key.startsWith('resident-')) setView('director')
+  if (key.startsWith('vehicle:')) {
+    const vehicle = props.simulation?.vehicles?.find(v => v.id === key.slice(8))
+    if (vehicle) { selected.value = { title: vehicle.name, type: '可调度应急车辆', detail: vehicle.reason, vehicleId: vehicle.id, x: vehicle.x, y: vehicle.y }; focusPoint(vehicle.x, vehicle.y) }
+    return
+  }
   if (key.startsWith('object:')) {
     const object = props.simulation?.world?.objects.find(o => o.id === key.slice(7))
     if (object) { selected.value = interactiveMeshes.find(mesh=>mesh.userData.selection?.title===object.name)?.userData.selection ?? { title: object.name, type: '社区对象', detail: '与场次冻结地图一致 · 可指派机器人到此接入点', x: object.entry.x, y: object.entry.y }; focusPoint(object.x, object.y) }
@@ -1174,6 +1190,7 @@ onMounted(() => {
 })
 onBeforeUnmount(() => {
   vehicleVisuals?.dispose(); vehicleVisuals = null
+  rescueVisuals?.dispose(); rescueVisuals = null
   destroyed = true
   clearTimeout(contextRestoreTimer)
   motionPreference.removeEventListener('change', updateMotionPreference); preferenceObserver.disconnect()
@@ -1246,12 +1263,16 @@ watch(() => [props.routePreview, props.robotRoutePreview], () => updateEntities(
         <div class="twin-sensor twin-sensor--clock"><span>演练时刻</span><strong>{{ clockLabel }}</strong></div>
       </div>
 
+      <div v-if="!compact" ref="sceneUtilities" class="scene-utilities" role="group" aria-label="现场显示与车辆工具">
+        <label class="scene-quality">画面品质<select v-model="quality" aria-label="三维画质"><option value="high">精细</option><option value="medium">均衡</option><option value="low">流畅</option></select><small role="status" :title="actorAssetLabel">{{ actorAssetStatus === 'loading' ? '模型加载中' : actorAssetStatus === 'fallback' ? '轻量模型' : status === 'running' && fps ? fps + ' fps' : '静止省电' }}</small></label>
+        <button type="button" :disabled="!simulation?.spatial_network" :title="simulation?.spatial_network ? '显示楼内通道、楼梯与居民位置' : '当前历史场次没有室内空间，请新建连续空间演练'" :aria-pressed="indoorView" @click="showIndoor"><AppIcon name="building" :size="18" />{{ indoorView ? '恢复建筑外观' : '查看楼内透视' }}</button>
+        <button type="button" :disabled="!simulation?.vehicles?.length" @click="emit('dispatchVehicle', simulation?.vehicles?.[0]?.id ?? '')"><AppIcon name="route" :size="18" />车辆调度</button>
+      </div>
       <nav v-if="!compact" class="twin-views" aria-label="沙盘视角">
         <button type="button" title="总控鸟瞰" aria-label="总控鸟瞰" :data-active="viewMode === 'director'" :aria-pressed="viewMode === 'director'" @click="setView('director')"><AppIcon name="eye" />总控鸟瞰</button>
         <button type="button" title="机器人跟随" aria-label="机器人跟随" :data-active="viewMode === 'robot'" :aria-pressed="viewMode === 'robot'" @click="setView('robot')"><AppIcon name="robot" />机器人跟随</button>
         <button type="button" title="居民第一视角" aria-label="居民第一视角" :data-active="viewMode === 'resident'" :aria-pressed="viewMode === 'resident'" @click="setView('resident')"><AppIcon name="person" />居民第一视角</button>
         <button type="button" title="救援视角" aria-label="救援视角" :data-active="viewMode === 'rescue'" :aria-pressed="viewMode === 'rescue'" @click="setView('rescue')"><AppIcon name="rescue" />救援视角</button>
-        <label class="twin-quality" :title="actorAssetLabel">画质<select v-model="quality" aria-label="三维画质"><option value="high">精细</option><option value="medium">均衡</option><option value="low">流畅</option></select><small role="status" :aria-label="actorAssetLabel">{{actorAssetStatus==='loading'?'模型加载中':actorAssetStatus==='fallback'?'轻量模型':status==='running' && fps ? fps+' fps' : '静止省电'}}</small></label>
         <button v-if="actorAssetStatus === 'fallback' || retryingModels" type="button" class="twin-model-retry" :disabled="retryingModels" aria-label="重试人物与机器人精细模型" @click="retryActorModels"><AppIcon name="refresh" /><span>{{ retryingModels ? '正在重试模型' : '重试精细模型' }}</span></button>
       </nav>
 
@@ -1289,7 +1310,6 @@ watch(() => [props.routePreview, props.robotRoutePreview], () => updateEntities(
         </details>
       </nav>
       <div class="scene-spatial-footer">
-        <button v-if="simulation?.spatial_network" type="button" class="indoor-toggle" :aria-pressed="indoorView" @click="showIndoor">{{indoorView?'收起楼内剖面':'查看楼内剖面'}}</button>
         <div class="twin-stage__legend">
           <span><i class="legend-dot legend-dot--resident"></i>普通居民</span><span><i class="legend-dot legend-dot--vulnerable"></i>重点人员</span><span><i class="legend-dot legend-dot--danger"></i>暴露轨迹</span><span><i class="legend-dot legend-dot--robot"></i>A* 路线</span><span class="risk-scale"><i></i><small>烟气＋密度综合风险 低</small><small>高</small></span><span v-if="stairCongestion.count" class="stair-density">楼梯通行与排队 {{ stairCongestion.count }} 人 · 密度 {{ stairCongestion.density }}%</span><span>拖动旋转 · 滚轮缩放 · 点击空间直接操作</span>
         </div>
@@ -1312,7 +1332,7 @@ watch(() => [props.routePreview, props.robotRoutePreview], () => updateEntities(
           <div v-if="operationPreview.impact" class="spatial-impact"><span>确认后 30 秒影响</span><div><p>拥堵人数<strong>{{ operationPreview.impact.congested_before }} → {{ operationPreview.impact.congested_after }}</strong></p><p>烟气暴露<strong>{{ operationPreview.impact.smoke_exposed_before }} → {{ operationPreview.impact.smoke_exposed_after }}</strong></p></div></div>
           <div v-if="operationPreview.score_impact" class="spatial-score-impact"><span>预计过程评分</span><strong>{{ operationPreview.score_impact.before }} → {{ operationPreview.score_impact.after }} <b>({{ operationPreview.score_impact.delta > 0 ? '+' : '' }}{{ operationPreview.score_impact.delta }})</b></strong><small>{{ operationPreview.score_impact.note }}</small></div>
           <p class="spatial-action-note">{{ operationPreview.notice }}</p>
-          <p class="spatial-evidence"><AppIcon name="award" :size="15" />{{ operationPreview.kind === 'vehicle' ? '到场后写入车辆到场证据；调度本身不额外加分' : '确认后将同步写入事件流、过程评分和复盘证据' }}</p>
+          <p class="spatial-evidence"><AppIcon name="award" :size="15" />{{ operationPreview.kind === 'vehicle' ? operationPreview.rescue_action ? '执行进度与完成结果写入事件证据；喷水效果进入火势、烟气与过程评分计算' : '到场后写入车辆到场证据；调度本身不额外加分' : '确认后将同步写入事件流、过程评分和复盘证据' }}</p>
           <div class="spatial-action-buttons"><button type="button" @click="emit('cancelAction')">重新选择</button><button type="button" :disabled="!operationPreview.can_apply || operationBusy" @click="emit('confirmAction')"><AppIcon name="check" :size="17" />{{ operationPreview.can_apply ? '确认执行' : '当前不可执行' }}</button></div>
         </template>
       </aside>
@@ -1330,7 +1350,7 @@ watch(() => [props.routePreview, props.robotRoutePreview], () => updateEntities(
           <span>后续排队 {{ robot.task_queue?.filter(task => task.status === 'queued').length ?? 0 }} 项</span>
         </section>
         <dl v-if="selected.residentId && activeResident" class="resident-vitals"><div><dt>行为</dt><dd>{{ activeResident.behavior ?? '等待指令' }}</dd></div><div><dt>烟气暴露</dt><dd>{{ activeResident.smoke_exposure ?? 0 }}</dd></div><div><dt>拥堵指数</dt><dd>{{ activeResident.congestion ?? 0 }}</dd></div></dl>
-        <button v-if="selected.vehicleId && interactive" type="button" @click="emit('dispatchVehicle', selected.vehicleId); selected = null">安排车辆 / 查看行程</button>
+        <button v-if="selected.vehicleId" type="button" @click="emit('dispatchVehicle', selected.vehicleId); selected = null">安排车辆 / 查看行程</button>
         <section v-if="assemblyCounts" class="assembly-attendance" aria-label="集合点到达与核验">
           <dl class="resident-vitals"><div><dt>真实到达</dt><dd>{{ assemblyCounts.arrived }} 人</dd></div><div><dt>已清点</dt><dd>{{ assemblyCounts.counted }} 人</dd></div><div><dt>分配此出口、尚未到达</dt><dd>{{ assemblyCounts.inbound }} 人</dd></div></dl>
           <p v-if="assemblyPending.length">待核验：{{ assemblyPending.map(person=>person.label).join('、') }}</p>
@@ -1359,8 +1379,6 @@ watch(() => [props.routePreview, props.robotRoutePreview], () => updateEntities(
 
 
 <style scoped>
-@media(max-width:700px){.twin-quality{white-space:nowrap;padding:4px!important}.twin-quality small{display:none}}
-.twin-quality{display:flex;align-items:center;gap:6px;color:#c9d9d0;font-size:12px;padding:4px 8px}.twin-quality select{min-height:32px;width:auto;max-width:88px;padding:3px 6px;border:1px solid #526e63;border-radius:4px;color:#edf4ed;background:#19392f;font:inherit}.twin-quality small{min-width:52px;font-variant-numeric:tabular-nums;font-size:11px}.twin-quality select:focus-visible{outline:2px solid #f1c773;outline-offset:2px}
 .spatial-marquee{position:absolute;z-index:15;pointer-events:none;border:1px solid #b5eede;background:#a2e9d329}.indoor-toggle{position:absolute;left:16px;bottom:155px;z-index:12;padding:10px 14px;border:1px solid #628a7d;border-radius:8px;background:#16392fee;color:#e9f2e9;font-size:13px;cursor:pointer;min-height:40px}.spatial-action-preview{position:absolute;z-index:16;right:4.75rem;bottom:4.7rem;width:min(25rem,calc(100% - 19rem));border:1px solid #5c8179;border-radius:.85rem;background:#edf1e9;color:#172c28;padding:1rem;box-shadow:0 22px 52px rgba(0,0,0,.34)}.spatial-action-preview header{display:flex;align-items:start;justify-content:space-between;gap:1rem;border-bottom:1px solid #c6d1cb;padding-bottom:.7rem}.spatial-action-preview header span,.spatial-action-preview header strong{display:block}.spatial-action-preview header span{color:#58716b;font-size:.65rem}.spatial-action-preview header strong{margin-top:.2rem;font-size:.9rem;overflow-wrap:anywhere}.spatial-action-preview header button{display:grid;place-items:center;flex:0 0 auto;width:2rem;height:2rem;border:0;border-radius:.4rem;background:transparent;color:#46605a}.spatial-action-loading{display:flex;align-items:center;gap:.65rem;padding:1.3rem 0;color:#58716b;font-size:.75rem}.spatial-action-loading i{width:1rem;height:1rem;border:2px solid #a8bbb5;border-top-color:#1b6a60;border-radius:50%;animation:spatial-spin .75s linear infinite}.spatial-action-metrics{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:.4rem;margin-top:.75rem}.spatial-action-metrics>div{min-width:0;border:1px solid #d1d9d5;border-radius:.5rem;background:#f9faf6;padding:.55rem}.spatial-action-metrics span,.spatial-action-metrics strong{display:block}.spatial-action-metrics span{color:#71827e;font-size:.58rem}.spatial-action-metrics strong{margin-top:.18rem;font-size:.76rem;font-variant-numeric:tabular-nums}.spatial-action-metrics small{font-size:.58rem;font-weight:500}.spatial-impact{margin-top:.7rem;border-top:1px solid #c6d1cb;padding-top:.65rem}.spatial-impact>span{color:#9a4b36;font-size:.62rem;font-weight:700}.spatial-impact>div{display:grid;grid-template-columns:1fr 1fr;gap:.45rem;margin-top:.4rem}.spatial-impact p{display:flex;justify-content:space-between;gap:.4rem;margin:0;border-radius:.45rem;background:#e0e8e1;padding:.5rem;color:#58716b;font-size:.62rem}.spatial-impact p strong{color:#183b34;font-variant-numeric:tabular-nums}.spatial-action-note{margin:.7rem 0 0;color:#536b65;font-size:.67rem;line-height:1.55}.spatial-evidence{display:flex;align-items:center;gap:.4rem;margin:.55rem 0 0;color:#736025;font-size:.62rem}.spatial-action-buttons{display:grid;grid-template-columns:.7fr 1fr;gap:.5rem;margin-top:.8rem}.spatial-action-buttons button{display:flex;align-items:center;justify-content:center;gap:.35rem;min-height:2.5rem;border:1px solid #91a39e;border-radius:.55rem;background:transparent;color:#284b44;font-size:.7rem;font-weight:700}.spatial-action-buttons button:last-child{border-color:#1d685e;background:#1d685e;color:#fff}.spatial-action-buttons button:disabled{opacity:.45;cursor:not-allowed}@keyframes spatial-spin{to{transform:rotate(360deg)}}@media(prefers-reduced-motion:reduce){.spatial-action-loading i{animation:none}}@media(max-width:900px){.spatial-action-preview{right:4rem;bottom:3.3rem;width:min(23rem,calc(100% - 15rem))}}@media(max-width:700px){.indoor-toggle{bottom:12px;left:12px}.spatial-action-preview{position:fixed;z-index:120;right:.55rem;bottom:4.4rem;left:.55rem;width:auto;max-height:calc(100dvh - 9rem);overflow:auto;padding:.85rem}.spatial-action-metrics{grid-template-columns:repeat(2,minmax(0,1fr))}}
 .resident-pov-hud{position:absolute;z-index:11;right:1rem;bottom:1rem;width:min(27rem,calc(100% - 2rem));padding:.85rem 1rem;border:1px solid rgba(111,193,181,.42);border-radius:.7rem;background:rgba(5,25,23,.9);color:#edf8f4;box-shadow:0 18px 42px rgba(0,0,0,.32),inset 0 1px rgba(255,255,255,.06);backdrop-filter:blur(12px)}.resident-pov-hud header{display:flex;align-items:center;justify-content:space-between;gap:1rem}.resident-pov-hud header span,.resident-pov-hud header strong{display:block}.resident-pov-hud header span{color:#73cdbf;font-size:.6rem;letter-spacing:.1em}.resident-pov-hud header strong{margin-top:.18rem;font-size:.9rem}.resident-pov-hud>p{margin:.55rem 0 .7rem;color:#9eb6b0;font-size:.66rem}.resident-pov-switch{display:flex;gap:.25rem}.resident-pov-switch button{display:grid;place-items:center;width:2rem;height:2rem;border:1px solid #426c64;border-radius:.35rem;background:#103c36;color:#a8e2d7}.resident-pov-switch button:last-child svg{transform:rotate(180deg)}.resident-pov-grid{display:grid;grid-template-columns:1fr 1fr;gap:.4rem}.resident-pov-grid>span{min-width:0;padding:.46rem .55rem;border:1px solid rgba(112,153,144,.22);background:rgba(29,68,62,.45);color:#789a92;font-size:.57rem}.resident-pov-grid strong{display:block;margin-top:.18rem;overflow:hidden;color:#eaf4f0;font-size:.66rem;text-overflow:ellipsis;white-space:nowrap}.resident-pov-exposure{margin-top:.65rem}.resident-pov-exposure>span{display:flex;justify-content:space-between;color:#95aba6;font-size:.6rem}.resident-pov-exposure>span strong{color:#ff826b;font-variant-numeric:tabular-nums}.resident-pov-exposure>i{display:block;height:.28rem;margin-top:.3rem;overflow:hidden;border-radius:1rem;background:#263f3a}.resident-pov-exposure b{display:block;height:100%;border-radius:inherit;background:linear-gradient(90deg,#58c9a4,#e8b64a 55%,#ff5640)}.risk-scale{display:grid!important;grid-template-columns:1fr auto;gap:.1rem .35rem!important;min-width:8.4rem}.risk-scale>i{grid-column:1/-1;width:100%;height:.28rem;border-radius:1rem;background:linear-gradient(90deg,#39c99b,#e2b03e 55%,#ff4935)}.risk-scale small{color:#a8bbb6;font-size:.55rem}.risk-scale small:last-child{text-align:right}.stair-density{padding:.18rem .35rem;border:1px solid rgba(255,180,61,.45);border-radius:.25rem;color:#ffd07a!important;background:rgba(118,68,15,.3)}
 @media(max-width:700px){.resident-pov-hud{right:.55rem;bottom:9rem;width:calc(100% - 1.1rem);padding:.72rem}.resident-pov-grid{grid-template-columns:1fr 1fr}.resident-pov-hud>p{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}}

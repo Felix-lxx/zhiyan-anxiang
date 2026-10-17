@@ -2,13 +2,23 @@
 .training-panel { position: absolute; inset: 0 auto 72px 0; z-index: 26; width: 360px; padding: 24px; overflow: auto; background: #edf0e8; color: #173c32; border-right: 1px solid #acbfb2; scrollbar-width: thin; scrollbar-color: #809c8d #edf0e8; }
 .training-panel h1 { font-size: 22px; line-height: 1.4; margin: 0 0 8px; }
 .training-panel h2 { font-size: 18px; line-height: 1.45; margin: 0 0 10px; }
-.training-panel p { font-size: 14px; line-height: 1.7; margin: 8px 0 16px; color: #3e5e51; }
-.training-panel > section, .training-panel > details { border-top: 1px solid #b5c7ba; padding-top: 22px; margin-top: 24px; }
-.training-panel button { display: inline-flex; align-items: center; justify-content: center; gap: 8px; min-height: 44px; margin: 4px 4px 4px 0; padding: 10px 14px; border: 1px solid #466e5b; border-radius: 6px; color: #f3f5ef; background: #21513f; font-size: 14px; line-height: 1.45; cursor: pointer; }
+.training-panel p { font-size: 16px; line-height: 1.7; margin: 8px 0 16px; color: #3e5e51; }
+.training-panel__body > section, .training-panel__body > details { border-top: 1px solid #b5c7ba; padding-top: 22px; margin-top: 24px; }
+.training-panel__body > section:first-child { border-top:0; padding-top:0; margin-top:0; }
+.training-panel__header { display:flex; align-items:flex-start; gap:12px; padding:20px; border-bottom:1px solid #b5c7ba; flex:0 0 auto; }
+.training-panel__header > div { min-width:0; flex:1; }
+.training-panel__header p { margin-bottom:0; }
+.training-panel .training-panel__close { flex:0 0 44px; width:44px; margin:0; padding:8px; background:transparent; color:#21513f; border-color:transparent; }
+.training-panel .training-panel__close:hover:not(:disabled) { background:#dce5dc; color:#173c32; }
+.training-panel__body { min-height:0; flex:1; overflow:auto; overscroll-behavior:contain; scrollbar-gutter:stable; padding:20px; }
+.training-panel__body:focus-visible { outline:2px solid #805000; outline-offset:-3px; }
+.training-result-actions { display:grid; gap:8px; margin:16px 0; }
+.training-panel .training-result-actions > button { width:100%; margin:0; }
+.training-panel button { display: inline-flex; align-items: center; justify-content: center; gap: 8px; min-height: 44px; margin: 4px 4px 4px 0; padding: 10px 14px; border: 1px solid #466e5b; border-radius: 6px; color: #f3f5ef; background: #21513f; font-size: 16px; line-height: 1.45; cursor: pointer; }
 .training-panel button:hover:not(:disabled) { background: #123e2c; }
 .training-panel button:disabled { opacity: .58; cursor: not-allowed; }
 .training-panel button:focus-visible { outline: 2px solid #805000; outline-offset: 2px; }
-.training-panel label { display: grid; gap: 8px; font-size: 14px; line-height: 1.6; }
+.training-panel label { display: grid; gap: 8px; font-size: 16px; line-height: 1.6; }
 .training-panel select { width: 100%; min-width: 0; font-size: 16px; background: #fff; color: #173c32; border: 1px solid #7e9989; padding: 10px; border-radius: 6px; }
 .training-panel .task-workflow { background: transparent; border: 0; padding: 8px 0; margin: 0; box-shadow: none; --exercise-line: #9bb0a2; --exercise-muted: #3e5e51; }
 .training-panel .task-workflow p, .training-panel .task-workflow small, .training-panel .task-workflow__steps li { color: #3e5e51; }
@@ -28,7 +38,7 @@
 .training-panel .training-key { font-size: 12px; }
 .training-panel summary { cursor: pointer; min-height: 44px; font-weight: 600; }
 .training-feedback small { display: block; margin-top: 10px; color: #456150; font-size: 12px; line-height: 1.65; }
-.training-omissions { padding-left: 20px; font-size: 14px; line-height: 1.8; color: #793a25; }
+.training-omissions { padding-left: 20px; font-size: 16px; line-height: 1.8; color: #793a25; }
 .training-live-state { margin-top: 18px; padding-top: 16px; border-top: 1px solid #9fb5a7; }
 .training-live-state__command { display: grid; grid-template-columns: auto 1fr; align-items: baseline; gap: 3px 12px; }
 .training-live-state__command > span { color: #567064; font-size: 12px; letter-spacing: .08em; }
@@ -43,6 +53,7 @@
 .training-score-line strong { color: #805000; font-size: 16px; }
 .training-score-line small { color: #526b60; font-size: 12px; line-height: 1.5; }
 .training-panel .training-score-gap { margin: 8px 0 0; color: #793a25; font-size: 12px; line-height: 1.55; }
+.training-panel :is(small,.training-key,.training-score-gap,.training-live-state__command > span,.training-flow-live span,.training-score-line > span) { font-size:14px; line-height:1.6; }
 .training-mode .director-stage > .twin-stage { position: relative; left: 360px; width: calc(100% - 360px); }
 .training-mode .director-metrics, .training-mode .director-intelligence, .training-mode .spatial-tool-rack, .training-mode .director-cue { display: none; }
 .training-mode .director-stage .twin-views { top: 12px; left: 16px; bottom: auto; translate: 0; width: auto; }

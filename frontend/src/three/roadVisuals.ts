@@ -9,6 +9,7 @@ export interface VisualRoad {
   status: 'open' | 'restricted' | 'blocked'
   risk_score: number
   density_percent?: number
+  reserved_by_vehicle?: string | null
 }
 
 /** Road geometry is static; risk, capacity and availability are live projections. */
@@ -40,6 +41,7 @@ export class RoadVisuals {
       const density = THREE.MathUtils.clamp((edge.density_percent ?? 0) / 100, 0, 1)
       const color = new THREE.Color(edge.status === 'blocked' ? 0xff352c : edge.status === 'restricted' ? 0xffa637 : 0x39c99b)
       if (edge.status === 'open') color.lerp(new THREE.Color(0xff4935), Math.max(risk, density))
+      if (edge.reserved_by_vehicle && edge.status !== 'blocked') color.setHex(0x5b9dd8)
       let mesh = this.meshes.get(edge.id)
       if (!mesh) {
         const length = Math.hypot(edge.end.x - edge.start.x, edge.end.y - edge.start.y)

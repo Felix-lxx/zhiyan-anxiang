@@ -44,7 +44,14 @@ def build_context(data: dict, scene_name: str, historical: bool, question: str =
     requested = {p["id"] for p in people if p.get("label") and re.search(re.escape(re.sub(r"\s+", "", p["label"])) + r"(?!\d)", query)}
     important = sorted(people, key=lambda p: (p["id"] not in requested, p["status"] != "missing", p["status"] == "evacuated", not p.get("vulnerable"), -p.get("congestion", 0)))
     residents = [{k: p.get(k) for k in ("id", "label", "status", "vulnerable", "counted", "last_location", "behavior", "route_reachable", "exit", "queue_seconds", "smoke_exposure", "search_responsible")} for p in important[:16]]
-    roads = [{k: r.get(k) for k in ("id", "name", "status", "width_meters", "risk_score")} for r in sim.get("road_network", {}).get("edges", [])]
+    roads = [{k: r.get(k) for k in ("id", "name", "status", "width_meters", "risk_score", "reserved_by_vehicle")} for r in sim.get("road_network", {}).get("edges", [])]
+    vehicles = []
+    for vehicle in sim.get("vehicles", [])[:8]:
+        service = vehicle.get("service")
+        vehicles.append({**{k: vehicle.get(k) for k in ("id", "name", "kind", "state", "reason", "remaining_seconds")},
+                         "passenger_id": (vehicle.get("passenger") or {}).get("id"),
+                         "service": {k: service.get(k) for k in ("action", "label", "status", "progress", "reason", "remaining_seconds")} if service else None,
+                         "options": {k: {"can_apply": v["can_apply"], "notice": v["notice"]} for k, v in vehicle.get("service_options", {}).items()}})
     tasks = [{k: t.get(k) for k in ("id", "title", "status", "responsible_role", "blockers")} for t in data.get("tasks", [])[:12]]
     robot = data.get("robot") or {}
     robot_summary = {k: robot.get(k) for k in ("state", "battery", "reason", "current_task")}
@@ -67,6 +74,8 @@ def build_context(data: dict, scene_name: str, historical: bool, question: str =
         sources.append({"id": "S6", "title": "当前关注对象", "detail": f"{selection.get('label')}（{selection.get('type') or selection.get('kind')}）{focus_detail}"})
     if command_summary:
         sources.append({"id": "S7", "title": "最近指令回执", "detail": f"{command_summary.get('label')}；状态 {command_summary.get('status')}；{command_summary.get('reason')}"})
+    if vehicles:
+        sources.append({"id": "S8", "title": "车辆与现场处置", "detail": "；".join(f"{v['name']}：{v['service']['reason'] if v['service'] else v['reason']}" for v in vehicles)})
     if not spatial_supported:
         sources[0]["detail"] = f"历史模型：居民 {counts['total']} 人；记录撤离 {counts['arrived']} 人；未提供集合点核验数据，不能将撤离计数当作真实清点。"
     return {"drill_id": data["id"], "scene_name": scene_name[:160], "drill_name": data["name"][:160],
@@ -74,7 +83,8 @@ def build_context(data: dict, scene_name: str, historical: bool, question: str =
             "counts": counts, "residents": residents, "resident_details_limited": len(people) > len(residents),
             "roads": roads[:40], "tasks": tasks, "robot": robot_summary, "events": events,
             "score": score, "sources": sources, "spatial_supported": spatial_supported, "requested_residents": sorted(requested),
-            "selection": selection, "latest_command": command_summary}
+            "selection": selection, "latest_command": command_summary, "vehicles": vehicles,
+            "fire": sim.get("fire"), "water_suppression": sim.get("environment", {}).get("water_suppression", False)}
 
 
 def offline_reply(question: str, context: dict) -> tuple[str, list[dict]]:
@@ -91,7 +101,17 @@ def offline_reply(question: str, context: dict) -> tuple[str, list[dict]]:
     robot = any(word in question for word in ("机器人", "任务", "广播")) or (uses_focus and selection.get("kind") in {"robot", "command"})
     review = any(word in question for word in ("评分", "分数", "复盘", "重做", "比较", "分支")) or (uses_focus and selection.get("kind") in {"score", "replay"})
     # Resolve short follow-ups within the current scene without pretending this is an LLM.
-    if route:
+    if any(word in question for word in ("消防车", "救护车", "喷水", "接运", "转运", "移交", "车辆")):
+        vehicles = context.get("vehicles", [])
+        details = []
+        for vehicle in vehicles:
+            service = vehicle.get("service")
+            details.append(f"• {vehicle['name']}：" + (f"{service['reason']}，进度 {round(service['progress'] * 100)}%，剩余 {service['remaining_seconds']} 秒" if service else vehicle["reason"]))
+            if not service:
+                details.extend(f"  {option['notice']}" for option in vehicle.get("options", {}).values() if not option['can_apply'])
+        answer = ("\n".join(details) + " [S8]" if vehicles else "该场次没有车辆状态。") + "\n\n在「处置任务 → 车辆调度与到场处置」预览并确认。喷水需要到场、水源可用且水带与射流不穿楼；接运需要先清点，再上车、驶往另一出口并完成移交。车辆等待通道清空时尚未出发。助手未下达任何指令。[S4]"
+        actions = [{"kind": "missions", "label": "打开车辆与处置任务"}, {"kind": "events", "label": "查看执行证据"}]
+    elif route:
         blocked = [r for r in context["roads"] if r["status"] == "blocked"]
         description = "、".join(str(r["name"]) for r in blocked) or "当前没有封锁的室外道路"
         answer = f"路况：{description}。当前 {c['congested']} 人拥堵，{c['exposed']} 人累计烟气暴露超过规则阈值。[S2]\n\n打开指挥区，选择同一组居民，分别预览北侧和南侧路线，核对可达性后再确认。通道宽度会影响排队，不能仅凭地图看起来更短来判断。助手未更改任何道路。[S4]"

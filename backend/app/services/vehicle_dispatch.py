@@ -118,6 +118,10 @@ def vehicle_runtime(world: dict | None, events: list, elapsed: int) -> list[dict
         if vehicle is None:
             continue
         _advance(vehicle, event.elapsed_seconds)
+        if event.event_type == "vehicle.traffic_released" and data.get("mission_id") == vehicle["mission_id"]:
+            vehicle.update(state="moving", starts_at_seconds=event.elapsed_seconds, reason="路段人员已清空，车辆沿受控通道出发。")
+            vehicle["missions"][-1].update(status="executing")
+            continue
         if event.event_type == "vehicle.dispatched":
             vehicle["missions"].append({"id": event.id, "label": data["target_name"], "status": "executing", "progress": 0, "remaining_seconds": data["planned_duration_seconds"]})
             vehicle["mission_id"] = event.id
@@ -132,6 +136,9 @@ def vehicle_runtime(world: dict | None, events: list, elapsed: int) -> list[dict
         vehicle.update(starts_at_seconds=event.elapsed_seconds, state="moving" if data["can_apply"] else "blocked", progress=0,
                        reason="沿规划道路前往" + data["target_name"] if data["can_apply"] else data["notice"], remaining_seconds=data["planned_duration_seconds"])
         vehicle["missions"][-1].update(status="executing" if data["can_apply"] else "blocked", progress=0, remaining_seconds=data["planned_duration_seconds"])
+        if data.get("hold_for_pedestrians") and data["can_apply"]:
+            vehicle.update(state="yielding", remaining_seconds=None, reason="正在等待通道内人员走出；入口暂缓放行，清空后自动出发。")
+            vehicle["missions"][-1].update(status="queued", remaining_seconds=None)
         _advance(vehicle, event.elapsed_seconds)
     for vehicle in vehicles.values():
         _advance(vehicle, elapsed)
