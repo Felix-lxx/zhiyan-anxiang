@@ -31,10 +31,6 @@ def test_goal_preview_approve_resume_and_manual_takeover(exercise):
     begun = client.post(url, headers=headers, json=payload)
     assert begun.status_code == 200, begun.text
     assert all(s["command_id"].startswith('agent-') for s in begun.json()["steps"])
-    projected = begun.json()["steps"][0]["execution"]
-    assert projected["command_recorded"] and projected["attention"] and projected["evidence"]
-    assert projected["attention"][0]["id"] in ids
-    assert begun.json()["execution"]["event_sequence"] >= before
     again = client.post(url, headers=headers, json=payload)
     assert again.status_code == 200, again.text
     with operations.SessionLocal() as db:
@@ -59,7 +55,7 @@ def test_goal_escort_capacity_completion_and_rollcall(exercise):
         created.payload = payload; db.commit()
     data = start()
     for edge in data["simulation"]["road_network"]["edges"]:
-        if edge["status"] != "open" and not edge.get("geometry_blocked"): assert client.post(root + '/roads/' + edge["id"] + '/reopen', headers=headers).status_code == 200
+        if edge["status"] != "open": assert client.post(root + '/roads/' + edge["id"] + '/reopen', headers=headers).status_code == 200
     ids = [p["id"] for p in data["simulation"]["residents"] if p["vulnerable"]][:5]
     run = proposal(client, headers, root, ids)
     selected = next(p for p in run["candidates"] if p["can_apply"])
@@ -105,7 +101,7 @@ def robot_proposal(exercise):
     client, headers, _, root, _, _, _, _, start = exercise
     data = start()
     for edge in data["simulation"]["road_network"]["edges"]:
-        if edge["status"] != "open" and not edge.get("geometry_blocked"):
+        if edge["status"] != "open":
             assert client.post(root + '/roads/' + edge["id"] + '/reopen', headers=headers).status_code == 200
     resident = next(p for p in data["simulation"]["residents"] if not p["vulnerable"])
     response = client.post(root + '/agent/runs', headers=headers, json={
@@ -175,46 +171,3 @@ def test_robot_manual_cancellation_yields_automatic_control(exercise):
         advance_run(db, record, SimpleNamespace(username="admin"))
         assert record.status == "taken_over"
         assert not any(c.command_args.get("command") == "broadcast" for c in db.scalars(select(DrillCommand)))
-
-
-def test_no_staff_cannot_approve_escort(exercise):
-    client, headers, demo, root, _, _, _, _, start = exercise
-    with operations.SessionLocal() as db:
-        created = db.scalar(select(DrillEvent).where(DrillEvent.drill_session_id == demo["drill_id"], DrillEvent.event_type == "drill.created"))
-        payload = deepcopy(created.payload)
-        payload["world"]["response_staff"] = []
-        created.payload = payload; db.commit()
-    data = start()
-    resident = next(p for p in data["simulation"]["residents"] if p["vulnerable"])
-    run = proposal(client, headers, root, [resident["id"]])
-    assert all(not c["can_apply"] and c["assist_resource"]["capacity"] == 0 for c in run["candidates"])
-    response = client.post(root + '/agent/runs/' + run["id"] + '/actions', headers=headers,
-        json={"action": "approve", "revision": 1, "candidate_id": run["candidates"][0]["id"]})
-    assert response.status_code == 409
-    with operations.SessionLocal() as db:
-        assert not list(db.scalars(select(DrillCommand)))
-
-
-def test_stopped_plan_keeps_live_receipts_and_unchecked_end_is_unfinished(exercise):
-    client, headers, demo, root, _, _, clock, tick, start = exercise
-    data = start()
-    resident = next(p for p in data["simulation"]["residents"] if not p["vulnerable"])
-    run = proposal(client, headers, root, [resident["id"]])
-    candidate = next(c for c in run["candidates"] if c["can_apply"])
-    url = root + '/agent/runs/' + run["id"] + '/actions'
-    assert client.post(url, headers=headers, json={"action":"approve","revision":1,"candidate_id":candidate["id"]}).status_code == 200
-    assert client.post(url, headers=headers, json={"action":"stop","revision":1}).status_code == 200
-    tick(clock["t"] + 60)
-    view = client.get(root + '/agent/runs', headers=headers).json()["runs"][0]
-    assert view["status"] == "stopped"
-    with operations.SessionLocal() as db:
-        receipt = db.scalar(select(DrillCommand).where(DrillCommand.command_id == view["steps"][0]["command_id"]))
-        assert view["steps"][0]["progress"] == receipt.progress
-        assert view["steps"][0]["status"] == receipt.status
-        assert not view["steps"][0]["execution"]["stalled"]
-        from app.models.operations import DrillSession
-        drill = db.get(DrillSession, demo["drill_id"])
-        record = db.get(AgentRun, run["id"])
-        record.status = "awaiting_rollcall"; drill.status = "ended"; db.commit()
-        reconcile_rollcall(db, record, SimpleNamespace(username="admin"))
-        assert record.status == "unfinished"

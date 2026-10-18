@@ -20,10 +20,7 @@ try {
     if(path.endsWith('/actions')){
       const body=request.postDataJSON()
       run={...run,status:body.action==='stop'?'stopped':'waiting',reason:'居民正在撤离，机器人广播等待到位。',approved_revision:1,selected_candidate:'one',candidates:[],steps:[
-        {id:'step',label:'居民分流 · 北门 · 1 人',resident_ids:['resident-test'],command_id:'agent-step',exit:'north',action:'evacuate',status:'executing',reason:'正沿连续通道撤离',progress:.3,
-          execution:{total:1,arrived:0,blocked:0,queued:1,remaining_details:0,command_recorded:true,idle_seconds:4,stalled:false,
-            attention:[{id:'resident-test',label:'测试居民',location:'三号楼二层东侧走廊 → 二层楼梯入口',behavior:'前方人员通过后继续前进',arrived:false,blocked:false,counted:false,queue_seconds:18,smoke_exposure:3,bottleneck:'二层楼梯',staff_name:'模拟值守员 1',responsible:'物业测试员',escort_state:'approaching'}],
-            evidence:[{id:'receipt-1',sequence:12,at_seconds:15,message:'居民分流指令已受理，沿北侧通道撤离。'}]}},
+        {id:'step',label:'居民分流 · 北门 · 1 人',resident_ids:['resident-test'],command_id:'agent-step',exit:'north',action:'evacuate',status:'executing',reason:'正沿连续通道撤离',progress:.3},
         {id:'move',kind:'robot.command',label:'机器人前往示例楼栋东侧楼门广播点',resident_ids:[],command_id:'agent-move',depends_on:[],status:'executing',reason:'机器人正沿道路逐段前往目标。',progress:.4},
         {id:'broadcast',kind:'robot.command',label:'机器人到位广播',resident_ids:[],command_id:'agent-broadcast',depends_on:['move'],status:'waiting',reason:'等待本计划机器人真实到位，居民疏散同步进行。',progress:0}]}
       return route.fulfill({json:run})
@@ -37,7 +34,7 @@ try {
   })
   await page.goto((process.env.QA_BASE_URL||'http://127.0.0.1:5173')+'/tests/arena-recovery.html?rescue=1')
   await page.locator('canvas').first().waitFor({timeout:30000})
-  for(const [width,height] of [[1440,900],[1366,650],[1024,800],[390,844]]){
+  for(const [width,height] of [[1440,900],[1024,800],[390,844]]){
     run=null
     await page.evaluate(()=>window.arenaQA.assistant(false))
     await page.setViewportSize({width,height})
@@ -73,24 +70,11 @@ try {
     await assistant.getByText('正沿连续通道撤离',{exact:true}).waitFor()
     await assistant.getByText('等待本计划机器人真实到位，居民疏散同步进行。',{exact:true}).waitFor()
     assert.equal(await assistant.getByRole('button',{name:'定位机器人',exact:true}).count(),2)
-    const resident=assistant.getByRole('button',{name:'定位测试居民',exact:true})
-    await resident.scrollIntoViewIfNeeded()
-    assert.ok(await resident.isVisible())
-    assert.ok(await assistant.locator('.agent-workspace__detail').evaluate(el=>el.scrollWidth<=el.clientWidth+1))
-    await page.screenshot({path:resolve(output,`monitor-${width}.png`)})
-    await resident.click()
-    assert.equal(await assistant.count(),0,'Resident action returns to the actual 3D viewport')
-    await page.locator('.resident-pov-hud').waitFor()
-    assert.equal(await page.locator('.twin-object-nav').count(),0,'Object picker cannot overlap the resident inspector')
-    await page.screenshot({path:resolve(output,`staff-route-${width}.png`)})
-    await page.evaluate(()=>window.arenaQA.assistant(true))
-    await assistant.getByRole('button',{name:'目标计划',exact:true}).click()
-    await assistant.getByText('正沿连续通道撤离',{exact:true}).waitFor()
     await assistant.getByRole('button',{name:'停止后续自动下令'}).scrollIntoViewIfNeeded()
     await page.screenshot({path:resolve(output,`execution-${width}.png`)})
     await assistant.getByRole('button',{name:'停止后续自动下令'}).click()
     await assistant.getByText('已停止自动下令',{exact:true}).waitFor()
   }
   assert.deepEqual(errors,[])
-  console.log(JSON.stringify({checks:['目标生成→路线预览→确认→人员定位与依据→停止','1440/1366短屏/1024/390 面板内部滚动，无横向溢出','确认按钮与固定标题不重叠'],errors,output},null,2))
+  console.log(JSON.stringify({checks:['目标生成→路线预览→确认→执行→停止','1440/1024/390 面板内部滚动，无横向溢出','确认按钮与固定标题不重叠'],errors,output},null,2))
 }finally{await browser.close()}

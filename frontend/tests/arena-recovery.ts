@@ -37,7 +37,6 @@ const state = reactive({
     environment: { south_lane: 'open', east_hydrant: 'available', visibility: 90 },
     sensors: { temperature: 70, smoke_ppm: 50, alarm: true },
     residents: [{ id: 'resident-test', label: '居民测试员', vulnerable: false, status: 'moving', x: 50, y: 40, progress: 0, exit: 'north' as const, behavior: '正在疏散', last_location: '一楼走廊', queue_seconds: 0, smoke_exposure: 1.2 }],
-    helpers: [{id:'helper-test',staff_id:'escort-1',staff_name:'模拟值守员 1',resident_id:'resident-test',x:30,y:70,height:0,state:'approaching',responsible:'物业测试员',behavior:'沿通道前往会合',route_reachable:true,route_points:[{x:30,y:70},{x:30,y:40},{x:50,y:40}]}],
     vehicles: [{ id: 'firetruck-1', name: '消防车 F-01', kind: 'firetruck', x: 50, y: 70, state: 'idle', reason: '在南门待命，选择道路节点安排到场。', minimum_width: 3.5, target_name: '', target_node_id: null, mission_id: null, current_edge_id: null, progress: 0, remaining_seconds: null, route_points: [], route_edge_ids: [] }] as Vehicle[],
     summary: { total: 1, evacuated: 0, moving: 1, vulnerable: 0, missing: 0 },
   },
@@ -68,7 +67,7 @@ Object.assign(window, { arenaQA: {
 } })
 createApp({ setup: () => () => h('main', { class: ['operations-center--immersive atlas-director', { 'space-preview-open': state.preview, 'detail-panel-open': state.vehiclesOpen || state.assistantOpen, 'assistant-open': state.assistantOpen, 'coach-open': state.coachOpen && !state.vehiclesOpen && !state.preview && !state.assistantOpen }], 'data-ui-theme': 'immersive', 'data-mode': 'command' }, [
   h(DirectorTopbar, { name: '演练布局验收 · 不连接后端', subtitle: '隔离场景', socketState: 'live', statusLabel: '已结束', displayClock: '05:00', drillStatus: 'ended', busy: false, coachOpen: state.coachOpen, replay: false, onToggleCoach: () => { state.coachOpen = !state.coachOpen; state.vehiclesOpen = false; state.preview = false } }),
-  state.assistantOpen ? h(SceneAssistant, { open: true, apiBaseUrl: '/__layout_api__', accessToken: 'layout-only', drillId: 'layout-only', drillName: '布局验收', atSeconds: null, liveSeconds: 0, onClose: () => { state.assistantOpen = false }, onPlanPreview: people => { state.agentPreview = people }, onNavigate: action=>{state.assistantOpen=false;if(action.resident_id)arena.value?.focusResident(action.resident_id)} }) : null,
+  state.assistantOpen ? h(SceneAssistant, { open: true, apiBaseUrl: '/__layout_api__', accessToken: 'layout-only', drillId: 'layout-only', drillName: '布局验收', atSeconds: null, liveSeconds: 0, onClose: () => { state.assistantOpen = false }, onPlanPreview: people => { state.agentPreview = people } }) : null,
   h('div', { class: 'director-stage' }, [
     h('nav', { class: 'atlas-director-modes', 'aria-label': '导演台模式' }, ['观察', '指挥', '复盘'].map(label => h('button', label))),
     state.coachOpen ? h(GuidedExercise, { drill: { status: 'ended', engine_version: 3, elapsed_seconds: 300, participants: [], events: [], tasks: [], robot: null, simulation: state.simulation }, busy: false, replay: false, onClose: () => { state.coachOpen = false }, onTasks: () => { state.vehiclesOpen = true }, onCompare: () => { state.coachOpen = false; state.preview = true } }) : null,
