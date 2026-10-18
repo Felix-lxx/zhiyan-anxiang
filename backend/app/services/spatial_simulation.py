@@ -9,6 +9,7 @@ from collections import defaultdict
 import heapq
 import math
 from app.services.escort_motion import can_meet, follow_walked_path
+from app.services.navigation_geometry import building_obstacles, clear_segment
 
 
 def xyz(p):
@@ -24,9 +25,15 @@ def simulate(world, events, elapsed, strategy=None, branch_at=None, *, checkpoin
     graph = deepcopy(world["spatial_network"])
     nodes = {n["id"]: n for n in graph["nodes"]}
     edges = {e["id"]: e for e in graph["edges"]}
+    obstacles = building_obstacles(world)
+    invalid_edges = set()
     adjacent = defaultdict(list)
     for edge in edges.values():
         a, b = edge["start_node_id"], edge["end_node_id"]
+        if edge.get("kind", "outdoor") in {"outdoor", "assembly"} and not clear_segment(
+                (nodes[a]["x"], nodes[a]["y"]), (nodes[b]["x"], nodes[b]["y"]), obstacles, .22):
+            edge.update(status="blocked", geometry_blocked=True, blocked_reason="通道与楼体或人员净距范围相交，请调整地图后新建场次。")
+            invalid_edges.add(edge["id"])
         edge["length"] = max(.05, math.dist(xyz(nodes[a]), xyz(nodes[b])))
         adjacent[a].append((b, edge["id"]))
         adjacent[b].append((a, edge["id"]))
@@ -103,7 +110,7 @@ def simulate(world, events, elapsed, strategy=None, branch_at=None, *, checkpoin
         # Share the road-to-hub search; preserve their unique final walking segment.
         if start != goal and nodes[goal]["kind"] == "assembly" and len(adjacent[goal]) == 1:
             hub, eid = adjacent[goal][0]
-            if edges[eid]["status"] == "blocked": return None
+            if edges[eid]["status"] == "blocked" or eid in invalid_edges: return None
             path = route_core(start, hub)
             return None if path is None else [*path, (eid, goal)]
         return route_core(start, goal)
@@ -120,7 +127,7 @@ def simulate(world, events, elapsed, strategy=None, branch_at=None, *, checkpoin
                 # Rooms and private berths cannot be transit shortcuts.
                 if other != goal and len(adjacent[other]) == 1: continue
                 edge = edges[eid]
-                if edge["status"] == "blocked": continue
+                if edge["status"] == "blocked" or eid in invalid_edges: continue
                 mid = ((nodes[current]["x"]+nodes[other]["x"])/2, (nodes[current]["y"]+nodes[other]["y"])/2)
                 risk = max(0, fire["smoke_radius"]-math.dist(mid, (origin["x"], origin["y"]))) * .1
                 congestion = pressure(eid)
@@ -163,7 +170,7 @@ def simulate(world, events, elapsed, strategy=None, branch_at=None, *, checkpoin
             if kind in {"inject.channel_blocked", "road.reopened"}:
                 edge = edges.get(payload.get("blocked_edge_id"))
                 if edge:
-                    edge["status"] = "blocked" if kind.startswith("inject") else "open"
+                    edge["status"] = "blocked" if kind.startswith("inject") or edge["id"] in invalid_edges else "open"
                     revision += 1; route_cache.clear()
             elif kind == "resident.command":
                 for pid in payload.get("resident_ids", []):
@@ -341,7 +348,8 @@ def simulate(world, events, elapsed, strategy=None, branch_at=None, *, checkpoin
                 actor["node_id"] = actor["edge_from"] if retreat else actor["edge_to"]
                 occupied[actor["edge_id"]].remove(actor); actor["edge_id"] = None
                 invalidate_flow()
-                if not is_helper and nodes[actor["node_id"]]["kind"] == "door": actor.setdefault("building_exited_at_seconds", now+dt)
+                if not is_helper and nodes[actor["node_id"]]["kind"] == "door" and actor["node_id"].endswith(":door"):
+                    actor.setdefault("building_exited_at_seconds", now+dt)
                 if not is_helper and nodes[actor["node_id"]].get("is_exit"): actor.setdefault("exit_reached_at_seconds", now+dt)
             if not is_helper and person["id"] in helpers and helpers[person["id"]]["state"] == "escorting":
                 follow_walked_path(helpers[person['id']], person)
@@ -413,9 +421,12 @@ def simulate(world, events, elapsed, strategy=None, branch_at=None, *, checkpoin
         live_edge.update(status=source["status"], length=round(source["length"], 2), lane_count=lane_count(source), capacity_persons=capacity, live_occupancy=occupancy, waiting_count=waiting, density_percent=density, flow_capacity_per_second=round(max(.35, source["width_meters"]*1.15*flow_modifier), 2), smoke_risk=smoke_risk, risk_score=risk_score)
         runtime_edges[live_edge["id"]] = live_edge
     roads = deepcopy(world["road_network"])
+    roads["obstacles"] = obstacles
     for e in roads["edges"]:
         metrics = runtime_edges[e["id"]]
         e.update({key: metrics[key] for key in ("status", "lane_count", "capacity_persons", "live_occupancy", "waiting_count", "density_percent", "flow_capacity_per_second", "smoke_risk", "risk_score")})
+        if metrics.get("geometry_blocked"):
+            e.update(geometry_blocked=True, blocked_reason=metrics["blocked_reason"])
         e["reserved_by_vehicle"] = traffic_at(elapsed).get(e["id"])
     south = [e for e in roads["edges"] if "南" in e["name"]]
     env.update(south_lane="blocked" if any(e["status"] == "blocked" for e in south) else "restricted" if any(e["status"] == "restricted" for e in south) else "open", visibility=max(8, round(100-fire["smoke_radius"]*1.8)), blockages=[{"x": (e["start"]["x"]+e["end"]["x"])/2, "y": (e["start"]["y"]+e["end"]["y"])/2, "target": e["name"], "road_edge_id": e["id"]} for e in roads["edges"] if e["status"] == "blocked"])

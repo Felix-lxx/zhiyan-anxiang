@@ -52,6 +52,7 @@ def initialize_schema() -> bool:
     import app.models.tasks  # noqa: F401
     import app.models.account  # noqa: F401
     import app.models.auth  # noqa: F401
+    import app.models.agent  # noqa: F401
 
     try:
         Base.metadata.create_all(bind=engine)

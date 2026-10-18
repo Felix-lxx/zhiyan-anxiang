@@ -97,7 +97,7 @@ const detailPanelOpen = computed(() => activePanel.value !== 'none')
 const coachVisible = computed(() => coachOpen.value && !detailPanelOpen.value && !spatialPreview.value && !spatialPreviewBusy.value)
 const endConfirmationOpen = ref(false)
 const trainingLab = ref<InstanceType<typeof SpatialTrainingLab> | null>(null)
-const routePreview = ref<Array<Resident>>([])
+const routePreview = ref<Array<{id:string;route_points?:Array<{x:number;y:number;height?:number}>}>>([])
 const branchEvidence = ref<{at_seconds:number;source_name:string;branch_name:string;notice:string;worlds:{baseline:Simulation;alternative:Simulation};residents:Array<{id:string;label:string;original_status:string;branch_status:string;exposure_delta:number;queue_delta:number}>}|null>(null)
 function applyCurrent(value: Drill) { if (value.id === current.value?.id && isNewerState(value, current.value)) current.value = value }
 function updateFromLab(value: unknown) { applyCurrent(value as Drill); notifyCommand('指令已受理，可在执行进度查看人员行程、等待原因和关联证据'); clearSpatialPreview() }
@@ -351,6 +351,9 @@ async function assistantNavigate(action: AssistantAction): Promise<void> {
     return
   }
   if (historical) { exitReplay(); await nextTick(); latestCue.value = '已返回实时现场，请核对当前状态后再确认操作。' }
+  if (action.kind === 'focus' && action.object_kind === 'robot' && displayed.value?.robot) {
+    arena.value?.focusPoint(displayed.value.robot.x, displayed.value.robot.y); return
+  }
   if (action.kind === 'focus' && action.resident_id) { arena.value?.focusResident(action.resident_id); return }
   if (action.kind === 'report') { await openReplay(); return }
   if (action.kind === 'missions' || action.kind === 'events') { drawer.value = action.kind; return }
@@ -401,7 +404,7 @@ onBeforeUnmount(() => { desiredDrillId = ''; stopLive?.(); clearSpatialPreview()
     <template v-else-if="displayed">
       <ReplayWorkspace v-if="directorMode==='replay'" ref="replayWorkspace" :drill="current" :displayed="displayed" :at="replayAt" :playing="replayPlaying" :loading="replayLoading" :busy="busy" @back="exitReplay" @seek="seekReplay" @play="replayPlaying=!replayPlaying" @fork="forkReplay" @compare="compareBranches" @export="downloadReport" @assistant="openReplayAssistant"/>
       <UiToast v-if="directorMode==='replay'&&error" class="atlas-replay-error" :message="error" tone="danger" @dismiss="error=''"/>
-      <SceneAssistant :key="current.id" :open="assistantOpen" :api-base-url="apiBaseUrl" :access-token="accessToken" :drill-id="current.id" :drill-name="current.name" :live-seconds="current.elapsed_seconds" :at-seconds="directorMode === 'replay' ? replayAt : replay?.at_seconds ?? null" :focus-context="assistantFocus" @close="closeAssistant" @navigate="assistantNavigate" />
+      <SceneAssistant :key="current.id" :open="assistantOpen" :api-base-url="apiBaseUrl" :access-token="accessToken" :drill-id="current.id" :drill-name="current.name" :live-seconds="current.elapsed_seconds" :at-seconds="directorMode === 'replay' ? replayAt : replay?.at_seconds ?? null" :focus-context="assistantFocus" @plan-preview="people=>routePreview=people" @close="closeAssistant" @navigate="assistantNavigate" />
       <DirectorTopbar v-show="directorMode!=='replay'" :name="current.name" :subtitle="(current.engine_version ?? 1) >= 2 ? '场景配置已冻结 · 三维现场实时运行' : '历史场次 · 固定主案例模型'" :socket-state="socketState" :status-label="statusLabel" :display-clock="displayClock" :drill-status="current.status" :busy="busy" :coach-open="coachVisible" :replay="Boolean(replay)" @back="emit('back')" @toggle-coach="toggleCoach" @action="act" @create="createDrill" />
       <section v-show="directorMode!=='replay'" class="director-stage">
         <nav class="atlas-director-modes" aria-label="导演台模式"><button :aria-pressed="directorMode==='observe'" @click="directorMode='observe';closeFloatingPanels()"><AppIcon name="eye"/>观察</button><button :aria-pressed="directorMode==='command'" @click="directorMode='command';closeFloatingPanels()"><AppIcon name="robot"/>指挥</button><button @click="openReplay"><AppIcon name="history"/>复盘</button></nav>

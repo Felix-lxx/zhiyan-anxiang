@@ -64,7 +64,7 @@ def build_context(data: dict, scene_name: str, historical: bool, question: str =
         {"id": "S1", "title": "居民与集合状态", "detail": f"居民 {counts['total']} 人；到集合点 {counts['arrived']} 人；已清点 {counts['counted']} 人；失联 {counts['missing']} 人。"},
         {"id": "S2", "title": "道路与排队", "detail": f"道路 {len(roads)} 段；封锁 {sum(r['status']=='blocked' for r in roads)} 段；当前拥堵 {counts['congested']} 人，累计烟气暴露超阈值 {counts['exposed']} 人。"},
         {"id": "S3", "title": "任务与机器人", "detail": f"任务 {len(tasks)} 项，完成 {sum(t['status']=='completed' for t in tasks)} 项；机器人状态 {robot.get('state', '未配置')}。"},
-        {"id": "S4", "title": "平台操作规则", "detail": "选人→预览→确认；到集合点后才能清点；重做生成独立分支。助手不执行处置。"},
+        {"id": "S4", "title": "平台操作规则", "detail": "选人→预览→确认；到集合点后才能清点；重做生成独立分支。场景对话不下令；目标计划需单独预演并确认后执行。"},
     ]
     score = None if historical else data.get("score") or data.get("score_preview")
     if score:
@@ -150,6 +150,8 @@ def offline_reply(question: str, context: dict) -> tuple[str, list[dict]]:
     if context["historical"]:
         answer = "这是历史回放时刻的解读，不是当前现场状态。\n\n" + answer
         actions = [{"kind": "branch", "label": "从此时刻创建训练分支"}]
+    elif context["spatial_supported"] and (route or population or any(word in question for word in ("下一步", "疏散", "分流", "护送"))):
+        actions = [*actions, {"kind": "plan", "label": "制定并比较疏散目标计划"}]
     if selection:
         answer = f"当前关注：{selection.get('label')}。[S6]\n\n" + answer
     return answer, actions

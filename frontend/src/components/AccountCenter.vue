@@ -102,15 +102,17 @@ onBeforeUnmount(() => window.removeEventListener('beforeunload', beforeUnload))
               <div><span>当前身份</span><strong>{{ profile.role }}</strong></div>
               <div><span>认证方式</span><strong>{{ profile.authentication_mode === 'account_session' ? '正式账号会话' : '开发兼容凭证' }}</strong></div>
             </div>
-            <p class="account-security-note">{{ profile.authentication_mode === 'account_session' ? '访问凭证到期后会自动安全续期；结束其他会话可立即撤销对应设备的访问权限。' : '当前凭证仅用于本地开发，正式部署后需要重新登录。' }}</p>
-            <p class="account-security-note">手机参演人员通过演练加入码进入，不共享管理端权限。</p>
+            <div class="account-security-notes">
+              <p class="account-security-note">{{ profile.authentication_mode === 'account_session' ? '访问凭证到期后会自动安全续期；结束其他会话可立即撤销对应设备的访问权限。' : '当前凭证仅用于本地开发，正式部署后需要重新登录。' }}</p>
+              <p class="account-security-note">手机参演人员通过演练加入码进入，不共享管理端权限。</p>
+            </div>
           </div>
-          <div class="account-security-sessions">
+          <div class="account-security-sessions" :aria-busy="sessionsLoading">
             <div class="account-session-heading"><h3>登录会话</h3><span>{{ sessions.filter(item => item.status === 'active').length }} 个活动会话</span></div>
             <p v-if="sessionsError" class="session-error" role="alert">{{ sessionsError }} <button type="button" @click="loadSessions">重试</button></p>
             <p v-else-if="sessionsLoading" role="status">正在读取登录会话…</p>
             <ul v-else class="account-session-list">
-              <li v-for="item in sessions" :key="item.id">
+              <li v-for="item in sessions" :key="item.id" :data-current="item.current">
                 <div>
                   <strong>{{ item.current ? '当前浏览器' : '其他登录会话' }}</strong>
                   <span>最近活动：{{ date(item.last_used_at) }}</span>
@@ -120,7 +122,7 @@ onBeforeUnmount(() => window.removeEventListener('beforeunload', beforeUnload))
               </li>
               <li v-if="!sessions.length" class="session-empty">暂未读取到正式登录会话。</li>
             </ul>
-            <button type="button" class="secondary-button account-logout" :disabled="saving" @click="logout"><AppIcon name="logout" :size="18" />退出并结束当前会话</button>
+            <footer class="account-session-actions"><button type="button" class="secondary-button account-logout" :disabled="saving" @click="logout"><AppIcon name="logout" :size="18" />退出并结束当前会话</button></footer>
           </div>
         </div>
         </section>
@@ -157,7 +159,34 @@ onBeforeUnmount(() => window.removeEventListener('beforeunload', beforeUnload))
 .account-section>header>button,.account-activity li button,.account-history-link{background:transparent;color:var(--action-primary);border:0;padding:8px 0}.account-section>header>button{min-width:44px}
 .account-summary{margin:0 0 12px;color:var(--text-secondary)}.account-activity ol{list-style:none;margin:0;padding:0}.account-activity li{display:flex;align-items:center;gap:16px;padding:16px 0;border-top:1px solid var(--border-default)}
 .account-activity li>div{flex:1;min-width:0}.account-activity li strong,.account-activity li span,.account-activity li time{display:block;overflow-wrap:anywhere}.account-activity li span,.account-activity time{color:var(--text-secondary);font-size:var(--ui-meta-size)}.account-activity li button{flex-shrink:0}
-.account-history-link{margin-top:16px;text-decoration:underline;text-underline-offset:4px}.account-security-grid{display:grid;grid-template-columns:minmax(0,.9fr) minmax(0,1.1fr);gap:var(--space-10);align-items:start}.account-security-note{color:var(--text-secondary);margin:12px 0}.account-role-summary{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:1px;background:var(--border-default);border:1px solid var(--border-default);border-radius:var(--radius-sm);overflow:hidden}.account-role-summary>div{display:grid;gap:3px;padding:14px 16px;background:var(--surface-raised)}.account-role-summary span{color:var(--text-secondary);font-size:var(--ui-meta-size)}.account-role-summary strong{overflow-wrap:anywhere}.account-session-heading{display:flex;align-items:baseline;justify-content:space-between;gap:16px;margin:0}.account-session-heading h3{font-size:17px;margin:0}.account-session-heading span{color:var(--text-secondary);font-size:var(--ui-meta-size)}.account-session-list{list-style:none;margin:8px 0 0;padding:0;border-top:1px solid var(--border-default)}.account-session-list li{display:grid;grid-template-columns:minmax(0,1fr) auto auto;align-items:center;gap:14px;padding:14px 0;border-bottom:1px solid var(--border-default)}.account-session-list li>div{min-width:0}.account-session-list li strong,.account-session-list li>div span{display:block;overflow-wrap:anywhere}.account-session-list li>div span{color:var(--text-secondary);font-size:var(--ui-meta-size);margin-top:2px}.session-status{min-width:54px;text-align:center;padding:4px 8px;border-radius:999px;background:var(--surface-panel);color:var(--text-secondary);font-size:var(--ui-meta-size)}.session-status.is-active{background:var(--color-success-soft);color:var(--status-success)}.account-session-list li>button,.session-error button{min-height:40px;padding:6px 10px;background:transparent;color:var(--action-primary);border:0;text-decoration:underline;text-underline-offset:3px}.account-session-list .session-empty{display:block;color:var(--text-secondary)}.session-error{color:var(--status-danger);margin:12px 0}.account-logout{margin-top:20px}
+.account-history-link{margin-top:16px;text-decoration:underline;text-underline-offset:4px}
+.account-security{container-type:inline-size}
+.account-security-grid{display:grid;grid-template-columns:minmax(0,1fr);gap:var(--space-6)}
+.account-security-overview{display:grid;grid-template-columns:minmax(0,.9fr) minmax(0,1.1fr);align-items:start;gap:var(--space-8)}
+.account-security-notes,.account-security-sessions{min-width:0}
+.account-security-note{color:var(--text-secondary);margin:0;overflow-wrap:anywhere}
+.account-security-note+.account-security-note{margin-top:var(--space-2)}
+.account-role-summary{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:1px;background:var(--border-default);border:1px solid var(--border-default);border-radius:var(--radius-sm);overflow:hidden}
+.account-role-summary>div{display:grid;gap:var(--space-1);padding:var(--space-3) var(--space-4);background:var(--surface-raised)}
+.account-role-summary span{color:var(--text-secondary);font-size:var(--ui-meta-size)}
+.account-role-summary strong{overflow-wrap:anywhere}
+.account-session-heading{display:flex;flex-wrap:wrap;align-items:baseline;justify-content:space-between;gap:var(--space-2) var(--space-4);margin:0}
+.account-session-heading h3{font-size:18px;margin:0}
+.account-session-heading span{color:var(--text-secondary);font-size:var(--ui-meta-size)}
+.account-session-list{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));column-gap:var(--space-8);list-style:none;margin:var(--space-3) 0 0;padding:0;border-top:1px solid var(--border-default)}
+.account-session-list li{display:grid;grid-template-columns:minmax(0,1fr) auto auto;align-items:center;gap:var(--space-3);padding:var(--space-4) 0;border-bottom:1px solid var(--border-default)}
+.account-session-list li>div{min-width:0}
+.account-session-list li strong,.account-session-list li>div span{display:block;overflow-wrap:anywhere}
+.account-session-list li>div span{color:var(--text-secondary);font-size:var(--ui-meta-size);margin-top:var(--space-1);font-variant-numeric:tabular-nums}
+.session-status{min-width:54px;text-align:center;padding:4px 8px;border-radius:999px;background:var(--surface-panel);color:var(--text-secondary);font-size:var(--ui-meta-size)}
+.session-status.is-active{background:var(--color-success-soft);color:var(--status-success)}
+.account-session-list li>button,.session-error button{min-height:var(--control-height);padding:var(--space-2);background:transparent;color:var(--action-primary);border:0;text-decoration:underline;text-underline-offset:3px;white-space:nowrap}
+.account-session-list .session-empty{display:block;grid-column:1/-1;color:var(--text-secondary)}
+.session-error{color:var(--status-danger);margin:var(--space-3) 0}
+.account-session-actions{display:flex;justify-content:flex-end;padding-top:var(--space-5)}
+.account-logout{margin:0}
+@container(max-width:800px){.account-security-overview{grid-template-columns:1fr;gap:var(--space-4)}.account-session-list{grid-template-columns:1fr}}
+@container(max-width:420px){.account-session-list li{grid-template-columns:minmax(0,1fr) auto}.account-session-list li>button{grid-column:1/-1;justify-self:start;padding-left:0}.account-session-actions{justify-content:stretch}.account-logout{width:100%}}
 .account-message,.account-notice{padding:16px 20px;margin:20px 0;background:var(--color-danger-soft);color:var(--status-danger);border-radius:var(--radius-sm)}.account-message p{margin:0}.account-notice{background:var(--color-success-soft);color:var(--status-success)}
 @media(max-width:1150px){.account-layout{column-gap:24px;grid-template-columns:minmax(0,1.1fr) minmax(0,1fr)}.account-security-grid{gap:24px}.account-fields{grid-template-columns:1fr}}
 @media(max-width:820px){.account-layout{grid-template-columns:1fr;grid-template-areas:"form" "security" "activity"}.account-security-grid{grid-template-columns:1fr}.account-center{padding:24px 16px}.account-heading{align-items:flex-start;flex-wrap:wrap}.account-activity li{flex-wrap:wrap}.account-fields{grid-template-columns:repeat(2,minmax(0,1fr))}}

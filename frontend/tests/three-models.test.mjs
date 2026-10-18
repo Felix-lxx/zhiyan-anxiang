@@ -120,6 +120,31 @@ test('replanned or disconnected positions reconcile without an invented diagonal
   assert.equal(motion.step(actor, 1, true), 0)
 })
 
+test('missing routes cannot invent movement and continuous reversal preserves corners', () => {
+  const motion = new ActorMotion(), actor = new THREE.Group()
+  const p = (x, z) => new THREE.Vector3(x, 0, z)
+  motion.accept(actor, p(0, 0), [], 0, true, 0)
+  motion.accept(actor, p(4, 4), [], 1, true, 1000)
+  assert.ok(actor.position.equals(p(4, 4)), 'no geometry means reconcile, not diagonal animation')
+  assert.equal(motion.step(actor, .2, true), 0)
+  motion.clear()
+  motion.accept(actor, p(1, 1), [p(1, 1), p(1, 2)], 0, true, 0)
+  motion.accept(actor, p(.5, 0), [p(1, 1), p(1, 0), p(0, 0)], 1, true, 1000)
+  motion.step(actor, .5, true)
+  assert.ok(actor.position.distanceTo(p(1, .25)) < 1e-8, 'retreat follows actual corner')
+})
+
+test('both apartment detail levels have a real unobstructed front doorway', () => {
+  const building = createApartment(12, 8, 5, 4, true)
+  building.updateMatrixWorld(true)
+  const ray = new THREE.Raycaster(new THREE.Vector3(0, 1.4, 6), new THREE.Vector3(0, 0, -1), 0, 4)
+  for (const level of building.levels) {
+    assert.equal(ray.intersectObject(level.object, true).length, 0, 'doorway must not be backed by a solid shell or door leaf')
+    const wall = new THREE.Raycaster(new THREE.Vector3(4, 1.4, 6), new THREE.Vector3(0, 0, -1), 0, 4)
+    assert.ok(wall.intersectObject(level.object, true).length > 0)
+  }
+})
+
 test('legacy snapshots align rooms, floors and full-height facades without changing simulation coordinates', () => {
   assert.equal(displayHeight(0), 0)
   for(let floor=1;floor<=12;floor++) {

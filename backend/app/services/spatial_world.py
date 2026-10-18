@@ -4,6 +4,7 @@ No surveyed building or life-safety accuracy is implied by this example layout.
 """
 from copy import deepcopy
 import math
+from app.services.navigation_geometry import building_obstacles, outdoor_connector
 
 
 def add_spatial_layout(world: dict, home: dict) -> dict:
@@ -17,6 +18,8 @@ def add_spatial_layout(world: dict, home: dict) -> dict:
     edges = deepcopy(roads["edges"])
     width = float(world["parameters"].get("stair_width", 1.2))
     buildings = [o for o in world.get("objects", []) if o.get("type") == "building"] or [home]
+    obstacles = building_obstacles(world)
+    roads["obstacles"] = obstacles
     active_building = home.get("id")
 
     def node(key, label, px, py, height=0, kind="outdoor", floor=0):
@@ -40,10 +43,23 @@ def add_spatial_layout(world: dict, home: dict) -> dict:
         stair_width = max(.4, float(building.get("properties", {}).get("stair_width", width)))
         door = node(f"{prefix}:door", name+"楼门", x, y+d/2+.3, kind="door")
         base = node(f"{prefix}:stair:0", name+"首层楼梯出口", x-w*.3, y, kind="stairs")
-        link(base, door, "door", 1.5)
+        foyer = node(f"{prefix}:foyer", name+"门厅", x, y+d/2-.5, kind="door")
+        link(base, foyer, "door", 1.5)
+        link(foyer, door, "door", 1.5)
         if roads["nodes"]:
-            entry = min(roads["nodes"], key=lambda n: math.dist((n["x"], n["y"]), (building["entry"]["x"], building["entry"]["y"])))
-            link(door, entry["id"], "outdoor", 2)
+            connector = outdoor_connector((x, y+d/2+.3), roads["nodes"], obstacles)
+            if connector:
+                points, entry = connector
+                previous = door
+                for index, point in enumerate(points[:-1]):
+                    waypoint = node(f"{prefix}:walkway:{index}", name+"门前通道", *point)
+                    link(previous, waypoint, "outdoor", 1.2)
+                    previous = waypoint
+                link(previous, entry["id"], "outdoor", 1.2)
+                building["entry"] = {"x": entry["x"], "y": entry["y"]}
+                building["access_notice"] = "楼门经可通行路径连接路网。"
+            else:
+                building["access_notice"] = "楼门无法接入路网，请调整建筑或道路节点。"
         for floor in range(1, floors+1):
             landing = node(f"{prefix}:stair:{floor}", f"{name} · {floor}层楼梯", x-w*.3, y+(.2*d if floor % 2 else -.2*d), floor*1.92, "stairs", floor)
             hall = node(f"{prefix}:hall:{floor}", f"{name} · {floor}层走廊", x, y, floor*1.92, "corridor", floor)
@@ -56,6 +72,12 @@ def add_spatial_layout(world: dict, home: dict) -> dict:
             link(room, f"{prefix}:hall:{floor}", "room", .9)
             person.update(floor=floor, current_floor=float(floor), x=px, y=py, height=floor*1.92, start_node_id=room)
     active_building = None
+    entries = {b.get("id"): b.get("entry") for b in buildings}
+    for task in world.get("tasks", []):
+        if task.get("target_object_id") in entries:
+            task["target_position"] = deepcopy(entries[task["target_object_id"]])
+    if home.get("id") in entries:
+        world["broadcast_target"] = deepcopy(entries[home["id"]])
     exits = [n for n in roads["nodes"] if n.get("is_exit")]
     destinations = {}
     for direction, choose in (("north", min), ("south", max)):

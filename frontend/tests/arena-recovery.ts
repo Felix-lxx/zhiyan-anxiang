@@ -19,6 +19,7 @@ import '../src/styles/director-readability.css'
 
 const state = reactive({
   elapsed: 0, preview: false, vehiclesOpen: false, coachOpen: false, assistantOpen: false,
+  agentPreview: [] as Array<{id:string;route_points:Array<{x:number;y:number;height?:number}>}>,
   simulation: {
     spatial_network: { nodes: [], edges: [] },
     world: new URLSearchParams(location.search).has('rescue') ? {
@@ -66,11 +67,11 @@ Object.assign(window, { arenaQA: {
 } })
 createApp({ setup: () => () => h('main', { class: ['operations-center--immersive atlas-director', { 'space-preview-open': state.preview, 'detail-panel-open': state.vehiclesOpen || state.assistantOpen, 'assistant-open': state.assistantOpen, 'coach-open': state.coachOpen && !state.vehiclesOpen && !state.preview && !state.assistantOpen }], 'data-ui-theme': 'immersive', 'data-mode': 'command' }, [
   h(DirectorTopbar, { name: '演练布局验收 · 不连接后端', subtitle: '隔离场景', socketState: 'live', statusLabel: '已结束', displayClock: '05:00', drillStatus: 'ended', busy: false, coachOpen: state.coachOpen, replay: false, onToggleCoach: () => { state.coachOpen = !state.coachOpen; state.vehiclesOpen = false; state.preview = false } }),
-  state.assistantOpen ? h(SceneAssistant, { open: true, apiBaseUrl: '/__layout_api__', accessToken: 'layout-only', drillId: 'layout-only', drillName: '布局验收', atSeconds: null, liveSeconds: 0, onClose: () => { state.assistantOpen = false } }) : null,
+  state.assistantOpen ? h(SceneAssistant, { open: true, apiBaseUrl: '/__layout_api__', accessToken: 'layout-only', drillId: 'layout-only', drillName: '布局验收', atSeconds: null, liveSeconds: 0, onClose: () => { state.assistantOpen = false }, onPlanPreview: people => { state.agentPreview = people } }) : null,
   h('div', { class: 'director-stage' }, [
     h('nav', { class: 'atlas-director-modes', 'aria-label': '导演台模式' }, ['观察', '指挥', '复盘'].map(label => h('button', label))),
     state.coachOpen ? h(GuidedExercise, { drill: { status: 'ended', engine_version: 3, elapsed_seconds: 300, participants: [], events: [], tasks: [], robot: null, simulation: state.simulation }, busy: false, replay: false, onClose: () => { state.coachOpen = false }, onTasks: () => { state.vehiclesOpen = true }, onCompare: () => { state.coachOpen = false; state.preview = true } }) : null,
-    h(DigitalTwinArena, { ref: arena, status: 'running', elapsedSeconds: state.elapsed, simulation: state.simulation, robot: { state: 'idle', battery: 96, x: 50, y: 70, route: [], reason: '等待任务' }, interactive: true, effectsEnabled: false, operationPreview: state.preview ? preview : null, onCancelAction: () => { state.preview = false }, onDispatchVehicle: () => { state.preview = false; state.vehiclesOpen = true } }),
+    h(DigitalTwinArena, { ref: arena, status: 'running', elapsedSeconds: state.elapsed, simulation: state.simulation, routePreview: state.agentPreview, robot: { state: 'idle', battery: 96, x: 50, y: 70, route: [], reason: '等待任务' }, interactive: true, effectsEnabled: false, operationPreview: state.preview ? preview : null, onCancelAction: () => { state.preview = false }, onDispatchVehicle: () => { state.preview = false; state.vehiclesOpen = true } }),
     h('nav', { class: 'director-rail' }, '任务 / 事件 / 助手'),
 state.vehiclesOpen ? h(UiDrawer, { class: 'director-drawer', title: '处置任务', subtitle: '车辆调度布局验收', onClose: () => { state.vehiclesOpen = false } }, { default: () => h('div', { class: 'drawer-list' }, [h(VehicleDispatchPanel, { vehicles: state.simulation.vehicles, nodes: [{ id: 'north', name: '北门路口' }, { id: 'building', name: '老旧住宅楼门外消防车临时停靠位置' }], running: true, busy: false })]) }) : null,
     h('footer', { class: 'exercise-timeline' }, '现场事件时间线'),

@@ -1,10 +1,12 @@
 <script setup lang="ts">
 import { createApiClient } from '../api/client'
+import AgentPlanWorkspace from './AgentPlanWorkspace.vue'
+import type { AgentAssignment } from '../domain/agent'
 
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import AppIcon from './AppIcon.vue'
 import '../assistant.css'
-export type AssistantAction = { kind: 'missions' | 'events' | 'report' | 'command' | 'rollcall' | 'branch' | 'focus'; label: string; resident_id?: string }
+export type AssistantAction = { kind: 'missions' | 'events' | 'report' | 'command' | 'rollcall' | 'branch' | 'focus' | 'plan'; label: string; resident_id?: string; object_kind?:'robot' }
 export interface AssistantFocusContext { kind: 'resident' | 'road' | 'robot' | 'object' | 'command' | 'score' | 'replay'; id?: string; label: string; type?: string; detail?: string; x?: number; y?: number }
 interface Reply {
   mode: 'offline' | 'model'; model: string | null; answer: string; notice: string
@@ -14,7 +16,14 @@ interface Reply {
 interface Message { role: 'user' | 'assistant'; content: string; reply?: Reply }
 const props = defineProps<{ apiBaseUrl: string; accessToken: string; drillId: string; drillName: string; open: boolean; atSeconds: number | null; liveSeconds: number; focusContext?: AssistantFocusContext | null }>()
 const api = createApiClient(props.apiBaseUrl, () => props.accessToken)
-const emit = defineEmits<{ close: []; navigate: [action: AssistantAction] }>()
+const emit = defineEmits<{ close: []; navigate: [action: AssistantAction]; planPreview: [people: AgentAssignment[]] }>()
+const activeView = ref<'chat' | 'plan'>('chat')
+let keepPlanPreview = false
+function previewPlan(people: AgentAssignment[]) {
+  emit('planPreview', people)
+  if (people.length && mobile.value) { keepPlanPreview = true; previousFocus = null; emit('close') }
+}
+function showSettings() { activeView.value = 'chat'; void toggleHelp('settings') }
 const messages = ref<Message[]>([]), question = ref(''), error = ref(''), pending = ref(false)
 const provider = ref<{ configured: boolean; model: string | null } | null>(null)
 const statusError = ref(''), useModel = ref(false), log = ref<HTMLElement | null>(null), input = ref<HTMLTextAreaElement | null>(null)
@@ -107,6 +116,7 @@ function actionLabel(action: AssistantAction) {
   return action.label
 }
 function navigate(action: AssistantAction) {
+  if (action.kind === 'plan') { activeView.value = 'plan'; return }
   // The destination owns focus; only an ordinary close restores the opener.
   previousFocus = null
   emit('navigate', action)
@@ -115,6 +125,7 @@ watch(() => props.open, open => {
   confirmClear.value = false
   if (open) { previousFocus = document.activeElement instanceof HTMLElement ? document.activeElement : null; updateViewport(); void nextTick(() => input.value?.focus({ preventScroll: true })); if (!pending.value) void loadStatus() }
   else void nextTick(() => { if (previousFocus?.isConnected && !previousFocus.closest('[inert]') && previousFocus.getClientRects().length) previousFocus.focus({ preventScroll: true }) })
+  if (!open) { if (!keepPlanPreview) emit('planPreview', []); keepPlanPreview = false }
 })
 watch([() => props.open, mobile], syncModalBackground, { flush: 'post' })
 watch(error, async value => { if (value && props.open) { await nextTick(); log.value?.querySelector('.scene-assistant__error')?.scrollIntoView({ block: 'nearest' }) } })
@@ -125,8 +136,8 @@ onBeforeUnmount(() => { for (const [element, wasInert] of inertSiblings) element
 
 <template>
   <aside v-show="open" ref="panel" class="scene-assistant" :class="{ 'is-compact': compact }" :style="viewportStyle" :role="mobile ? 'dialog' : undefined" :aria-modal="mobile ? true : undefined" aria-label="场景 AI 助手" @keydown="trapFocus" @keydown.esc.stop="confirmClear ? confirmClear = false : emit('close')">
-    <header class="scene-assistant__header"><div class="scene-assistant__identity"><AppIcon name="brain" :size="25" /><div><h2>安巷教练</h2><p>{{ atSeconds === null ? '实时现场' : '历史 ' + clock(atSeconds) }} · {{ useModel && provider?.configured ? '模型问答' : '离线解读' }}</p></div></div><div><button type="button" aria-label="模型设置" title="模型设置" :aria-expanded="settingsOpen" aria-controls="scene-assistant-settings" @click="toggleHelp('settings')"><AppIcon name="settings" :size="18" /></button><button type="button" :disabled="!messages.length" aria-label="清空本场对话" title="清空本场对话" @click="toggleClear"><AppIcon name="refresh" :size="18" /></button><button type="button" aria-label="关闭 AI 助手" @click="emit('close')"><AppIcon name="close" /></button></div></header>
-    <div ref="log" class="scene-assistant__log" aria-label="场景上下文与对话">
+    <div class="scene-assistant__top"><header class="scene-assistant__header"><div class="scene-assistant__identity"><AppIcon name="brain" :size="25" /><div><h2>安巷指挥助手</h2><p>{{ atSeconds === null ? '实时现场' : '历史 ' + clock(atSeconds) }} · {{ activeView === 'plan' ? '目标计划' : useModel && provider?.configured ? '模型问答' : '离线解读' }}</p></div></div><div><button type="button" aria-label="模型设置" title="模型设置" :aria-expanded="settingsOpen" aria-controls="scene-assistant-settings" @click="showSettings"><AppIcon name="settings" :size="18" /></button><button type="button" :disabled="!messages.length" aria-label="清空本场对话" title="清空本场对话" @click="toggleClear"><AppIcon name="refresh" :size="18" /></button><button type="button" aria-label="关闭 AI 助手" @click="emit('close')"><AppIcon name="close" /></button></div></header><nav class="scene-assistant__views" aria-label="助手工作视图"><button type="button" :aria-pressed="activeView==='chat'" @click="activeView='chat';emit('planPreview',[])"><AppIcon name="brain" :size="18" />场景对话</button><button type="button" :aria-pressed="activeView==='plan'" @click="activeView='plan'"><AppIcon name="route" :size="18" />目标计划</button></nav></div>
+    <div v-show="activeView==='chat'" ref="log" class="scene-assistant__log" aria-label="场景上下文与对话">
     <div class="scene-assistant__context"><AppIcon name="compass" :size="17" /><div><strong>{{ drillName }}</strong><span>{{ atSeconds === null ? '每次提问读取本场最新快照' : '正在解读历史时刻 ' + clock(atSeconds) }}</span></div><span class="scene-assistant__mode">{{ useModel && provider?.configured ? '模型问答' : '离线解读' }}</span></div>
     <details v-if="focusContext" :key="focusKey(focusContext)" class="scene-assistant__focus"><summary><AppIcon name="target" :size="17" /><span>当前关注<strong>{{ focusContext.label }}</strong></span><AppIcon name="chevron" :size="16" /></summary><p>{{ focusContext.detail || focusContext.type || '本轮提问将结合此对象的现场状态。' }}</p></details>
     <section class="scene-assistant__connection" aria-label="模型连接与授权">
@@ -162,7 +173,8 @@ onBeforeUnmount(() => { for (const [element, wasInert] of inertSiblings) element
       </div>
       <div v-if="error" class="scene-assistant__error" role="alert"><p>{{ error }}</p><button type="button" :disabled="pending" @click="send(lastQuestion)">重试本次问题</button></div>
     </div>
-    <div class="scene-assistant__compose">
+    <div v-show="activeView==='plan'" class="scene-assistant__log" aria-label="目标计划工作区"><AgentPlanWorkspace :api-base-url="apiBaseUrl" :access-token="accessToken" :drill-id="drillId" :active="open&&activeView==='plan'" :historical="atSeconds!==null" :model-available="!!provider?.configured" :focus-id="focusContext?.kind==='resident'?focusContext.id:undefined" @preview="previewPlan" @focus="id=>navigate({kind:'focus',label:'定位目标居民',resident_id:id})" @robot="navigate({kind:'focus',object_kind:'robot',label:'定位机器人'})" @rollcall="navigate({kind:'rollcall',label:'前往集合清点'})" /></div>
+    <div v-show="activeView==='chat'" class="scene-assistant__compose">
       <div class="scene-assistant__question-heading"><button type="button" :aria-expanded="questionsOpen || !messages.length" aria-controls="scene-assistant-questions" @click="toggleHelp('questions')">常见问题<AppIcon name="chevron" :size="14" /></button><span>{{ useModel && provider?.configured ? '本次发送给模型' : '本次为离线解读' }}</span></div>
       <form @submit.prevent="send()"><label class="sr-only" for="scene-assistant-question">向场景助手提问</label><textarea id="scene-assistant-question" ref="input" v-model="question" rows="2" maxlength="2000" placeholder="问问当前现场，例如：谁还没有到集合点？" :disabled="pending" aria-describedby="scene-assistant-input-hint" @keydown="onKey"></textarea><div class="scene-assistant__send"><span id="scene-assistant-input-hint">{{ question.length }}/2000 · Shift+Enter 换行</span><button v-if="pending" type="button" @click="stop">停止等待</button><button v-else type="submit" :disabled="!question.trim() || configurationLoading"><AppIcon name="send" :size="16" />{{ useModel && provider?.configured ? '发送给模型' : '离线解读' }}</button></div></form>
       <p class="scene-assistant__disclaimer">训练解读，不替代真实火场专业判断。对话仅在本场页面内保留。</p>

@@ -23,11 +23,12 @@ from app.models.operations import DrillCommand, DrillEngineLease, DrillEvent, Dr
 from app.models.tasks import DecisionTask
 from app.schemas.operations import BranchCompareRequest, DrillAction, DrillCreate, EventInject, ParticipantAction, ResidentCommand, RobotCommand, ParticipantHeartbeat, ParticipantJoin, TaskAction, TaskAssignment, DirectorConfig
 from app.services.drill_simulation import plan_route, simulate_residents
+from app.services.navigation_geometry import clear_segment
 from app.services.exercise_world import capture_world, frozen_world, projected_tasks
 from app.schemas.operations import EditableBranchCreate, SearchAssignment
 from app.schemas.operations import LiveCommand, VehicleCommand
 from app.services.vehicle_dispatch import vehicle_runtime, plan_vehicle
-from app.services.vehicle_rescue import rescue_projection, action_plan, ACTION_LABELS
+from app.services.vehicle_rescue import project_rescue_state, action_plan, ACTION_LABELS
 from app.services.vehicle_traffic import protect_plan
 from app.services.command_feedback import commit_changes, command_feedback
 from app.services.command_ledger import apply_feedback, ledger_feedback, safe_arguments, same_command, synchronize_records
@@ -314,9 +315,12 @@ def reopen_road(drill_id: str, edge_id: str, identity: AuthenticatedIdentity = D
     if drill.status != "running":
         raise HTTPException(409, "只有运行中可解除封锁。")
     events = list(session.scalars(select(DrillEvent).where(DrillEvent.drill_session_id == drill_id)))
-    edge = next((e for e in road_network_state(session, drill, events)["edges"] if e["id"] == edge_id), None)
+    network = road_network_state(session, drill, events)
+    edge = next((e for e in network["edges"] if e["id"] == edge_id), None)
     if not edge:
         raise HTTPException(404, "未找到本场次道路。")
+    if not clear_segment((edge["start"]["x"], edge["start"]["y"]), (edge["end"]["x"], edge["end"]["y"]), network.get("obstacles", []), .22):
+        raise HTTPException(409, "该道路与楼体净距范围相交，不能通过解除封锁恢复。请调整地图后新建场次。")
     if edge["status"] == "blocked":
         append_event(session, drill, "road.reopened", identity.username, edge["name"] + "已解除封锁，重新计算路径。", {"blocked_edge_id": edge_id})
         robot = session.scalar(select(RobotAgent).where(RobotAgent.drill_session_id == drill.id))
@@ -370,6 +374,8 @@ def plan_robot_route(
         live_network["fire_origin"] = network.get("fire_origin", world["fire_origin"])
         live_network["obstacles"] = network.get("obstacles", [])
         network = live_network
+    # Covers the fallback robot's diagonal footprint while it turns in place.
+    network = {**network, "actor_clearance": .85}
     return plan_route(network, start, target, elapsed)
 
 
@@ -609,22 +615,7 @@ def simulation_state(
         from app.services.state_store import restore_engine_checkpoint
         restore_engine_checkpoint(session, drill.id, world, elapsed)
     simulation = simulate_residents(network, evidence, elapsed, strategy, branch_at if branch_at is not None else effective_elapsed(drill) if strategy else None, world)
-    state = rescue_projection(world, events, elapsed, vehicle_runtime(world, events, elapsed), simulation)
-    state["rescue_projection_version"] = 1
-    for vehicle in state["vehicles"]:
-        if vehicle["state"] == "yielding":
-            occupants = [p for p in state["residents"] if p.get("current_edge_id") in vehicle["route_edge_ids"]]
-            helpers = [h for h in state.get("helpers", []) if h.get("edge_id") in vehicle["route_edge_ids"]]
-            vehicle["waiting_people"] = len(occupants) + len(helpers)
-            names = "、".join(p["label"] for p in occupants[:3])
-            vehicle["reason"] = f"通道内还有 {vehicle['waiting_people']} 人" + (f"（{names}）" if names else "") + "；入口已暂停放行，清空后自动出发。"
-            if any(p["status"] == "missing" for p in occupants):
-                vehicle["reason"] += "其中有失联人员，请先安排搜索会合，或取消行程后改选目标。"
-        vehicle["service_options"] = {action: action_plan(world, state, vehicle, action) for action in (["spray"] if vehicle["kind"] == "firetruck" else ["handover"])}
-    state["transfer_candidates"] = [{"id": p["id"], "label": p["label"], "exit": p.get("exit"), "eligible": bool(p.get("counted")),
-                                     "reason": "已核验，可以接运" if p.get("counted") else "先在集合点完成清点"}
-                                    for p in state["residents"] if p["status"] == "evacuated" and not p.get("medical_transfer") and (p["vulnerable"] or p.get("smoke_exposure", 0) > 5)]
-    return state
+    return project_rescue_state(world, events, elapsed, simulation)
 
 
 def vehicle_state(session: Session, drill: DrillSession):
@@ -1949,7 +1940,8 @@ async def drill_socket(websocket: WebSocket, drill_id: str, token: str | None = 
                 stored = load_snapshot(session, drill_id, version)
                 # Old persisted snapshots predate the fleet projection. Rebuild
                 # from frozen world/events without modifying the user's history.
-                return stored if stored and stored.get("simulation", {}).get("rescue_projection_version") == 1 else snapshot(session, drill)
+                simulation = (stored or {}).get("simulation", {})
+                return stored if simulation.get("rescue_projection_version") == 1 and simulation.get("navigation_geometry_version") == 1 else snapshot(session, drill)
             return live_snapshots.get(drill_id, version, compatible_snapshot)
 
     try:

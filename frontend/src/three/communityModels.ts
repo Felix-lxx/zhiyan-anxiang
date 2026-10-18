@@ -37,9 +37,21 @@ export function createApartment(width: number, depth: number, floors: number, se
   const height = floors * 3.2
   for (const detailed of [true,false]) {
     const group = new THREE.Group()
-    const shell = box(group,[width,height,depth],[0,height/2,0],colors[seed % colors.length]!)
-    if (materials) { shell.material.dispose(); shell.material = materials.surface('plaster', colors[seed % colors.length]!, Math.max(1,width/4), floors).clone() }
-    box(group,[width+.25,.8,depth+.25],[0,.4,0],0x707671)
+    // Hollow envelope with an actual south-facing opening shared by both LODs.
+    // A solid box behind a decorative door made every exiting resident cross a wall.
+    const doorway = Math.min(1.8, width - .4), wall = .12
+    const shellParts = [
+      box(group,[wall,height,depth],[-width/2+wall/2,height/2,0],colors[seed % colors.length]!),
+      box(group,[wall,height,depth],[width/2-wall/2,height/2,0],colors[seed % colors.length]!),
+      box(group,[width,height,wall],[0,height/2,-depth/2+wall/2],colors[seed % colors.length]!),
+      box(group,[(width-doorway)/2,height,wall],[-(width+doorway)/4,height/2,depth/2-wall/2],colors[seed % colors.length]!),
+      box(group,[(width-doorway)/2,height,wall],[(width+doorway)/4,height/2,depth/2-wall/2],colors[seed % colors.length]!),
+      box(group,[doorway,height-2.55,wall],[0,(height+2.55)/2,depth/2-wall/2],colors[seed % colors.length]!),
+    ]
+    for (const shell of shellParts) {
+      shell.name = 'building-envelope'
+      if (materials) { shell.material.dispose(); shell.material = materials.surface('plaster', colors[seed % colors.length]!, Math.max(1,width/4), floors).clone() }
+    }
     box(group,[width+.45,.25,depth+.45],[0,height+.12,0],0x6b7770)
     for (const side of [-1,1]) {
       box(group,[width+.45,.8,.18],[0,height+.5,side*depth/2],0x979e91)
@@ -52,6 +64,7 @@ export function createApartment(width: number, depth: number, floors: number, se
       if (detailed) box(group,[width+.1,.09,depth+.1],[0,(floor+1)*3.2-.1,0],0x90998e)
       for (const side of [-1,1]) for(let col=0;col<columns;col++) {
         const x = (col-(columns-1)/2)*(width/(columns+1))
+        if (floor === 0 && side === 1 && Math.abs(x) < doorway/2+.8) continue
         const y = floor*3.2+1.8, z = side*(depth/2+.04)
         const target = night && (floor*7+col+seed)%5 < 2 ? lit : dark
         target.push([x,y,z,side === -1 ? Math.PI : 0])
@@ -88,14 +101,13 @@ export function createApartment(width: number, depth: number, floors: number, se
       for(const x of [-width/2+.25,width/2-.25]) box(group,[.08,height,.1],[x,height/2,depth/2+.1],0x647872)
       box(group,[.12,height,.12],[width/2-.45,height/2,-depth/2-.12],0x7e7c6e)
       for(let level=0;level<floors;level++) box(group,[.2,.08,.15],[width/2-.45,level*3.2+1,-depth/2-.12],0x575b54)
-      for(const side of [-1,1]) {
-        box(group,[1.6,2.5,.14],[0,1.25,side*(depth/2+.08)],0x254e4c)
-        box(group,[2.8,.15,1.5],[0,2.65,side*(depth/2+.55)],0x798a80)
-        box(group,[2.4,.16,.9],[0,.09,side*(depth/2+.45)],0xa8aaa0)
-        box(group,[.035,.9,.05],[.48,1.2,side*(depth/2+.17)],0xc4c9c2)
-        box(group,[.08,2.5,.07],[0,1.25,side*(depth/2+.17)],0x697e72)
-      }
     }
+    // Door leaves are held against the jambs, outside the traversable opening.
+    for (const side of [-1,1]) {
+      box(group,[.07,2.5,.68],[side*(doorway/2+.06),1.25,depth/2+.2],0x254e4c)
+      box(group,[.10,2.55,.14],[side*(doorway/2+.02),1.275,depth/2],0x697e72)
+    }
+    box(group,[Math.min(width,2.8),.15,1.2],[0,2.7,depth/2+.4],0x798a80)
     // Both levels retain windows. Only small fixtures disappear in overview.
     lod.addLevel(group,detailed?0:90, .12)
   }

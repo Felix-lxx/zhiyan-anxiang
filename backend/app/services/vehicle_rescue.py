@@ -2,9 +2,30 @@
 from copy import deepcopy
 import math
 from app.services.drill_simulation import clear_segment
-from app.services.vehicle_dispatch import plan_vehicle
+from app.services.vehicle_dispatch import plan_vehicle, vehicle_runtime
 
 ACTION_LABELS = {"spray": "喷水压制", "load": "接近并上车", "handover": "出口医疗移交"}
+
+
+def project_rescue_state(world, events, elapsed, simulation):
+    """One read-only projection for configuration preview, live drills and branches."""
+    state = rescue_projection(world, events, elapsed, vehicle_runtime(world, events, elapsed), simulation)
+    state["rescue_projection_version"] = 1
+    state["navigation_geometry_version"] = 1
+    for vehicle in state["vehicles"]:
+        if vehicle["state"] == "yielding":
+            occupants = [p for p in state["residents"] if p.get("current_edge_id") in vehicle["route_edge_ids"]]
+            helpers = [h for h in state.get("helpers", []) if h.get("edge_id") in vehicle["route_edge_ids"]]
+            vehicle["waiting_people"] = len(occupants) + len(helpers)
+            names = "、".join(p["label"] for p in occupants[:3])
+            vehicle["reason"] = f"通道内还有 {vehicle['waiting_people']} 人" + (f"（{names}）" if names else "") + "；入口已暂停放行，清空后自动出发。"
+            if any(p["status"] == "missing" for p in occupants):
+                vehicle["reason"] += "其中有失联人员，请先安排搜索会合，或取消行程后改选目标。"
+        vehicle["service_options"] = {action: action_plan(world, state, vehicle, action) for action in (["spray"] if vehicle["kind"] == "firetruck" else ["handover"])}
+    state["transfer_candidates"] = [{"id": p["id"], "label": p["label"], "exit": p.get("exit"), "eligible": bool(p.get("counted")),
+                                     "reason": "已核验，可以接运" if p.get("counted") else "先在集合点完成清点"}
+                                    for p in state["residents"] if p["status"] == "evacuated" and not p.get("medical_transfer") and (p["vulnerable"] or p.get("smoke_exposure", 0) > 5)]
+    return state
 
 
 def rescue_projection(world, events, elapsed, vehicles, simulation):

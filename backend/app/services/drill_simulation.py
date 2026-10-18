@@ -4,28 +4,7 @@ from __future__ import annotations
 import heapq
 import math
 from collections import Counter
-
-
-def clear_segment(start, end, obstacles: list[dict]) -> bool:
-    """Liang–Barsky rectangle intersection; no straight connector through buildings."""
-    for box in obstacles:
-        lo, hi = 0.0, 1.0
-        dx, dy = end[0] - start[0], end[1] - start[1]
-        left, right = box["x"] - box["width"] / 2, box["x"] + box["width"] / 2
-        top, bottom = box["y"] - box["depth"] / 2, box["y"] + box["depth"] / 2
-        intersects = True
-        for p, q in [(-dx, start[0] - left), (dx, right - start[0]), (-dy, start[1] - top), (dy, bottom - start[1])]:
-            if abs(p) < 1e-9:
-                if q < 0:
-                    intersects = False
-                    break
-            elif p < 0:
-                lo = max(lo, q / p)
-            else:
-                hi = min(hi, q / p)
-        if intersects and lo <= hi:
-            return False
-    return True
+from app.services.navigation_geometry import clear_segment
 
 
 def plan_route(network: dict, start: tuple[float, float], target: tuple[float, float], elapsed: float = 0) -> tuple[list[str], list[dict], list[str], float, list[dict]]:
@@ -33,8 +12,9 @@ def plan_route(network: dict, start: tuple[float, float], target: tuple[float, f
     if not nodes:
         return ["道路图未配置"], [{"x": start[0], "y": start[1]}], [], 0.0, []
     obstacles = network.get("obstacles", [])
-    starts = [n for n in nodes.values() if clear_segment(start, (n["x"], n["y"]), obstacles)]
-    ends = [n for n in nodes.values() if clear_segment(target, (n["x"], n["y"]), obstacles)]
+    clearance = float(network.get("actor_clearance", 0))
+    starts = [n for n in nodes.values() if clear_segment(start, (n["x"], n["y"]), obstacles, clearance)]
+    ends = [n for n in nodes.values() if clear_segment(target, (n["x"], n["y"]), obstacles, clearance)]
     if not starts or not ends:
         return ["当前位置", "目标不可达"], [{"x": start[0], "y": start[1]}], [], 0.0, []
     first = min(starts, key=lambda node: math.dist(start, (node["x"], node["y"])))
@@ -47,7 +27,7 @@ def plan_route(network: dict, start: tuple[float, float], target: tuple[float, f
         a, b = nodes.get(edge["start_node_id"]), nodes.get(edge["end_node_id"])
         if not a or not b or edge["status"] == "blocked":
             continue
-        if not clear_segment((a["x"], a["y"]), (b["x"], b["y"]), obstacles):
+        if edge["width_meters"] < clearance * 2 or not clear_segment((a["x"], a["y"]), (b["x"], b["y"]), obstacles, clearance):
             continue
         distance = math.dist((a["x"], a["y"]), (b["x"], b["y"]))
         fire_distance = math.dist(((a["x"] + b["x"]) / 2, (a["y"] + b["y"]) / 2), (origin["x"], origin["y"]))

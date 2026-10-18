@@ -20,6 +20,10 @@
 .scene-assistant__identity>svg { color:#c6dfaa; }
 .scene-assistant h2 { font-size:20px; line-height:1.4; }
 .scene-assistant__header p { font-size:var(--ui-meta-size,14px); color:#c1d3c4; }
+.scene-assistant__top { min-height:0; }
+.scene-assistant__views { display:flex; gap:8px; padding:8px 14px; border-bottom:1px solid #335347; }
+.scene-assistant__views button { flex:1; font-size:16px; background:transparent; }
+.scene-assistant__views button[aria-pressed=true] { background:#315647; border-color:#a4c5a1; color:#edf5e7; }
 .scene-assistant__log { min-height:0; overflow:auto; overscroll-behavior:contain; padding:18px; scrollbar-gutter:stable; overflow-wrap:anywhere; }
 .scene-assistant__context { display:flex; align-items:flex-start; gap:10px; padding-bottom:14px; }
 .scene-assistant__context>div { flex:1; }

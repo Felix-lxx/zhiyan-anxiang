@@ -78,6 +78,8 @@ def build_preview(session: Session, scene: Scene, minute: int, parameter_overrid
     import math
     world = capture_world(session, version, parameters)
     simulation = simulate_residents(world["road_network"], [], minute * 60, world=world)
+    from app.services.vehicle_rescue import project_rescue_state
+    simulation = project_rescue_state(world, [], minute * 60, simulation)
     intensity, radius = simulation["fire"]["intensity"], simulation["fire"]["smoke_radius"]
     fire = "初起" if intensity < 35 else "发展" if intensity < 70 else "猛烈"
     smoke = "轻微" if radius < 15 else "中等" if radius < 30 else "浓厚"

@@ -21,7 +21,7 @@ import AppIcon from './AppIcon.vue'
 
 interface Resident extends RescueResident { height?: number; building_id?: string; floor?: number; current_floor?: number; indoor_stage?: string; current_edge_id?: string | null; id: string; label: string; vulnerable: boolean; status: string; x: number; y: number; progress: number; exit?: 'north' | 'south'; behavior?: string; smoke_exposure?: number; congestion?: number; queue_seconds?: number; last_location?: string; assisted?: boolean; search_responsible?: string; speed_factor?: number; route_points?: Array<{ x: number; y: number; height?: number }>; route_edge_ids?: string[]; route_reachable?: boolean; estimated_seconds?: number }
 interface SpatialEdgeState { id: string; kind: string; start: { x: number; y: number; height: number }; end: { x: number; y: number; height: number }; width_meters: number; density_percent?: number; live_occupancy?: number; waiting_count?: number; capacity_persons?: number }
-interface RoadEdgeState { reserved_by_vehicle?: string | null; id: string; name: string; start: { x: number; y: number }; end: { x: number; y: number }; width_meters: number; status: 'open' | 'restricted' | 'blocked'; blocked_by_event: boolean; risk_score: number; smoke_risk?: number; density_percent?: number; live_occupancy?: number; waiting_count?: number; capacity_persons?: number; flow_capacity_per_second?: number }
+interface RoadEdgeState { geometry_blocked?: boolean; blocked_reason?: string; reserved_by_vehicle?: string | null; id: string; name: string; start: { x: number; y: number }; end: { x: number; y: number }; width_meters: number; status: 'open' | 'restricted' | 'blocked'; blocked_by_event: boolean; risk_score: number; smoke_risk?: number; density_percent?: number; live_occupancy?: number; waiting_count?: number; capacity_persons?: number; flow_capacity_per_second?: number }
 interface Simulation {
   vehicles?: Vehicle[]
   spatial_network?: { nodes: Array<{id:string;name:string;x:number;y:number;height:number;kind:string;floor:number;is_exit?:boolean;building_id?:string}>; edges: SpatialEdgeState[] }
@@ -54,7 +54,7 @@ interface OperationPreview {
 }
 
 const props = defineProps<{
-  routePreview?: Array<{id:string;route_points?: Array<{x:number;y:number;height?:number}>}>
+  routePreview?: Array<{id:string;exit?:'north'|'south';route_kind?:'robot';route_points?: Array<{x:number;y:number;height?:number}>}>
   robotRoutePreview?: Array<{ x: number; y: number; height?: number }>
   operationPreview?: OperationPreview | null
   operationBusy?: boolean
@@ -231,6 +231,7 @@ function material(color: number, roughness = 0.82, emissive = 0): THREE.MeshStan
 }
 
 function roadDetail(edge: RoadEdgeState): string {
+  if (edge.geometry_blocked) return `${edge.width_meters} 米 · 地图通行受阻 · ${edge.blocked_reason ?? '道路与楼体净距范围相交，请调整地图后新建场次。'}`
   const status = edge.status === 'blocked' ? '已封锁' : edge.reserved_by_vehicle ? '车辆通行管控 · 人员在入口等候' : edge.status === 'restricted' ? '通行受限' : '当前畅通'
   const capacity = edge.capacity_persons ? ` · 容量 ${edge.capacity_persons} 人` : ''
   const flow = edge.flow_capacity_per_second ? ` · 估算流量 ${edge.flow_capacity_per_second} 人/秒` : ''
@@ -962,14 +963,15 @@ function rebuildResidentRoutes(): void {
   if (!residentRouteLayer) return
   const ids = [...new Set([...(props.routePreview ?? []).map(p => p.id), ...selectedResidents.value, ...(selected.value?.residentId ? [selected.value.residentId] : [])])]
   const routes = ids.map(id => props.routePreview?.find(p => p.id === id) ?? props.simulation?.residents.find(p => p.id === id))
-  const signature = JSON.stringify([Boolean(props.routePreview?.length), routes.map(p => [p?.id, p?.route_points])])
+  const signature = JSON.stringify([Boolean(props.routePreview?.length), routes.map(p => [p?.id, p?.exit, p && 'route_kind' in p ? p.route_kind : null, p?.route_points])])
   if (signature === residentRouteSignature) return
   residentRouteSignature = signature
   disposeLayer(residentRouteLayer)
   for (const resident of routes) {
     if (!resident?.route_points || resident.route_points.length < 2) continue
     const geometry = new THREE.BufferGeometry().setFromPoints(resident.route_points.map((point) => {const p=worldPoint(point.x, point.y, point.height??0);p.y+=.12;return p}))
-    const line = new THREE.Line(geometry, new THREE.LineDashedMaterial({ color: props.routePreview?.length ? 0xffd789 : 0x8fe8da, dashSize: .9, gapSize: .45, transparent: true, opacity: .9 }))
+    const robotPreview = 'route_kind' in resident && resident.route_kind === 'robot'
+    const line = new THREE.Line(geometry, new THREE.LineDashedMaterial({ color: props.routePreview?.length ? robotPreview ? 0xd1b0ff : resident.exit === 'north' ? 0x85ddff : 0xffd789 : 0x8fe8da, dashSize: robotPreview ? 1.4 : .9, gapSize: .45, transparent: true, opacity: .9 }))
     line.computeLineDistances()
     residentRouteLayer.add(line)
   }

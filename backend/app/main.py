@@ -8,6 +8,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from app.api.routes import auth, communities, decisions, demo, health, map_objects, operations, road_network, roles, scenes, tasks, assistant
 from app.api.routes import account
+from app.api.routes import agent
 import app.models.tasks  # noqa: F401
 from app.core.config import get_settings
 from app.core.database import initialize_schema
@@ -21,9 +22,15 @@ async def lifespan(_: FastAPI):
     initialize_schema()
     from app.services.engine_scheduler import serve
     worker = asyncio.create_task(serve()) if not os.environ.get("PYTEST_CURRENT_TEST") else None
+    from app.services.agent_workflow import serve as serve_agent
+    agent_worker = asyncio.create_task(serve_agent()) if not os.environ.get("PYTEST_CURRENT_TEST") else None
     try:
         yield
     finally:
+        if agent_worker:
+            agent_worker.cancel()
+            with suppress(asyncio.CancelledError):
+                await agent_worker
         if worker:
             worker.cancel()
             with suppress(asyncio.CancelledError):
@@ -54,6 +61,7 @@ app.include_router(tasks.router, prefix=settings.api_prefix)
 app.include_router(operations.router, prefix=settings.api_prefix)
 app.include_router(roles.router, prefix=settings.api_prefix)
 app.include_router(assistant.router, prefix=settings.api_prefix)
+app.include_router(agent.router, prefix=settings.api_prefix)
 
 
 @app.websocket("/ws/system")

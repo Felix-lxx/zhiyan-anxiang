@@ -81,6 +81,7 @@ def get_or_create_demo_community(session: Session, owner_username: str) -> tuple
         ("北门出口", 12, 12, True), ("北侧路口", 30, 18, False), ("中部路口", 48, 38, False),
         ("3 号楼路口", 58, 54, False), ("充电棚路口", 68, 44, False), ("东侧路口", 80, 48, False),
         ("南侧路口", 66, 78, False), ("南门出口", 84, 88, True),
+        ("楼西消防转角", 48, 54, False),
     ]
     node_by_name: dict[str, RoadNode] = {}
     for name, x, y, is_exit in nodes:
@@ -92,7 +93,8 @@ def get_or_create_demo_community(session: Session, owner_username: str) -> tuple
     edges = [
         ("北门主通道", "北门出口", "北侧路口", 4.5, RoadEdgeStatus.OPEN),
         ("西北道路", "北侧路口", "中部路口", 4.0, RoadEdgeStatus.OPEN),
-        ("3 号楼北侧道路", "中部路口", "3 号楼路口", 3.5, RoadEdgeStatus.OPEN),
+        ("中部消防接近道路", "中部路口", "楼西消防转角", 4.0, RoadEdgeStatus.OPEN),
+        ("3 号楼北侧道路", "楼西消防转角", "3 号楼路口", 3.5, RoadEdgeStatus.OPEN),
         ("充电棚接近道路", "3 号楼路口", "充电棚路口", 3.0, RoadEdgeStatus.OPEN),
         ("东侧支路", "充电棚路口", "东侧路口", 3.0, RoadEdgeStatus.OPEN),
         ("东南连接道路", "东侧路口", "南侧路口", 4.0, RoadEdgeStatus.OPEN),

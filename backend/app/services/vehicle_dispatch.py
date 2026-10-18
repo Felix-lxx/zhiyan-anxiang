@@ -6,6 +6,7 @@ Widths and speeds below are scenario parameters, not fire-code certification.
 from copy import deepcopy
 import heapq
 import math
+from app.services.navigation_geometry import clear_segment
 
 
 def fleet(world: dict | None) -> list[dict]:
@@ -37,7 +38,16 @@ def plan_vehicle(network: dict, vehicle: dict, target_id: str) -> dict:
     def distance(a, b):
         return math.hypot(a["x"] - b["x"], a["y"] - b["y"])
     def allowed(edge):
-        return edge["status"] != "blocked" and edge["width_meters"] >= vehicle["minimum_width"]
+        a, b = nodes.get(edge["start_node_id"]), nodes.get(edge["end_node_id"])
+        if a is None or b is None or edge["status"] == "blocked" or edge["width_meters"] < vehicle["minimum_width"]:
+            return False
+        length = max(.0001, distance(a, b))
+        # Extend the swept centerline by the authored half-length. Width alone
+        # misses a fire engine's nose/rear overhang near the end of a segment.
+        half_length = 3.1 if vehicle.get("kind", "firetruck") == "firetruck" else 2.6
+        dx, dy = (b["x"]-a["x"])/length*half_length, (b["y"]-a["y"])/length*half_length
+        return clear_segment((a["x"]-dx, a["y"]-dy), (b["x"]+dx, b["y"]+dy),
+                             network.get("obstacles", []), vehicle["minimum_width"]/2)
     graph = {key: [] for key in nodes}
     for edge in edges.values():
         a, b = edge["start_node_id"], edge["end_node_id"]
@@ -69,7 +79,7 @@ def plan_vehicle(network: dict, vehicle: dict, target_id: str) -> dict:
                 costs[neighbor] = cost + weight; previous[neighbor] = (key, edge_id)
                 heapq.heappush(frontier, (cost + weight, neighbor))
     if target_id not in previous:
-        return {**result, "notice": f"没有满足 {vehicle['minimum_width']} 米场景通行宽度的可用路线，请恢复通道或改选目标。"}
+        return {**result, "notice": f"没有同时满足 {vehicle['minimum_width']} 米通行宽度、楼体净距与道路状态的路线，请检查地图或改选目标。"}
     chain, key = [], target_id
     while key is not None:
         parent, edge_id = previous[key]
@@ -80,6 +90,12 @@ def plan_vehicle(network: dict, vehicle: dict, target_id: str) -> dict:
         if distance(points[-1], point) > .001:
             points.append(point)
     route_edges = list(dict.fromkeys(point["edge_id"] for point in points[1:] if point.get("edge_id")))
+    turn_radius = math.hypot(3.1 if vehicle.get("kind", "firetruck") == "firetruck" else 2.6, vehicle["minimum_width"]/2) + .3
+    for a, b, c in zip(points, points[1:], points[2:]):
+        first, second = distance(a, b), distance(b, c)
+        cosine = ((b["x"]-a["x"])*(c["x"]-b["x"])+(b["y"]-a["y"])*(c["y"]-b["y"]))/max(.0001, first*second)
+        if cosine < .995 and not clear_segment((b["x"], b["y"]), (b["x"], b["y"]), network.get("obstacles", []), turn_radius):
+            return {**result, "notice": f"{nodes.get(b.get('node_id'), {}).get('name', '道路转角')}周边楼体净距不足以容纳车身转向，请改选目标或调整道路。"}
     length = sum(distance(a, b) for a, b in zip(points, points[1:]))
     risk = max((edges[key].get("risk_score", 0) for key in route_edges), default=0)
     traffic = max((edges[key].get("density_percent", 0) for key in route_edges), default=0)
