@@ -18,6 +18,18 @@ const { displayHeight } = await load('sceneMaterials')
 const { createPerson, posePerson, createPatrolRobot } = await load('actors')
 const { RoadVisuals } = await load('roadVisuals')
 const { CrowdRenderer } = await load('crowdRenderer')
+const { presentHelpers, meetingRoute } = await load('helperPresentation')
+
+test('staff reuse keeps one physical actor and meeting paths preserve corridor corners', () => {
+  const route = [{x:0,y:0,height:0},{x:0,y:10,height:0},{x:10,y:10,height:3}]
+  const old = {id:'old',staff_id:'staff-1',state:'completed',x:0,y:0}
+  const active = {id:'new',staff_id:'staff-1',state:'approaching',x:0,y:0,route_points:route}
+  assert.deepEqual(presentHelpers([old,active]),[active])
+  assert.deepEqual(presentHelpers([active,old]),[active])
+  assert.deepEqual(meetingRoute(active),route)
+  assert.deepEqual(meetingRoute({...active,route_reachable:false}),[])
+  assert.deepEqual(meetingRoute({...active,route_points:[]}),[])
+})
 
 test('1000 residents share five instance batches; detail pool stays bounded and selection survives reuse', () => {
   const actors = Array.from({length:1000}, (_, i) => {

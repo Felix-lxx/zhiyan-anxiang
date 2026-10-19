@@ -15,8 +15,8 @@ try {
   for (const mode of ['spray', 'load']) {
     await page.evaluate(mode => { window.arenaQA.rescue(mode); window.arenaQA.vehicles(false) }, mode)
     await page.getByRole('group', { name: '现场显示与车辆工具' }).getByRole('button', { name: '车辆调度' }).click()
-    for (const width of [1440, 1024, 390]) {
-      await page.setViewportSize({ width, height: width === 390 ? 844 : 900 })
+    for (const [width, height] of [[1440, 900], [1366, 650], [1024, 768], [390, 844]]) {
+      await page.setViewportSize({ width, height })
       const panel = page.locator('.vehicle-dispatch')
       await panel.getByRole('heading', { name: '车辆调度与到场处置' }).waitFor()
       const utilities = page.getByRole('group', { name: '现场显示与车辆工具' })
@@ -47,5 +47,5 @@ try {
     await page.screenshot({ path: resolve(output, `${mode}-scene.png`) })
   }
   assert.deepEqual(errors, [])
-  console.log(JSON.stringify({ checks: ['喷水 / 担架模型加载无脚本异常', '1440 / 1024 / 390 抽屉无横向溢出', '画质和楼内透视在任务抽屉打开时可操作且无重叠'], errors, output }, null, 2))
+  console.log(JSON.stringify({ checks: ['喷水 / 担架模型加载无脚本异常', '1440×900 / 1366×650 / 1024×768 / 390×844 抽屉无横向溢出', '画质和楼内透视在任务抽屉打开时可操作且无重叠'], errors, output }, null, 2))
 } finally { await browser.close() }

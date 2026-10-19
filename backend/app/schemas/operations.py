@@ -70,6 +70,10 @@ class TaskAssignment(BaseModel):
     participant_id: str = Field(min_length=1, max_length=64)
 
 
+class StaffBinding(BaseModel):
+    participant_id: str | None = Field(default=None, max_length=64)
+
+
 class DirectorConfig(BaseModel):
     enabled: bool
 

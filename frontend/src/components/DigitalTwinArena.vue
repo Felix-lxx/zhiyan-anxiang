@@ -10,6 +10,7 @@ import { createPerson, createPatrolRobot, posePerson } from '../three/actors'
 import { CrowdRenderer } from '../three/crowdRenderer'
 import { ActorAssets, type ActorAssetStatus } from '../three/actorAssets'
 import { ActorMotion } from '../three/actorMotion'
+import { helperIdentity, meetingRoute, presentHelpers, type HelperState } from '../three/helperPresentation'
 import { VehicleVisuals } from '../three/vehicleVisuals'
 import { RescueVisuals, type RescueResident } from '../three/rescueVisuals'
 import type { Vehicle } from '../domain/drill'
@@ -26,7 +27,7 @@ interface Simulation {
   vehicles?: Vehicle[]
   spatial_network?: { nodes: Array<{id:string;name:string;x:number;y:number;height:number;kind:string;floor:number;is_exit?:boolean;building_id?:string}>; edges: SpatialEdgeState[] }
   world?: { schema_version?: number; parameters?: { start_time?: string; wind_direction?: string }; objects: Array<{ id: string; name: string; type: string; x: number; y: number; width: number; depth: number; floors: number; entry: { x: number; y: number } }>; fire_origin: { x: number; y: number } } | null
-  helpers?: Array<{ id: string; resident_id?: string; x: number; y: number; height?: number; edge_id?: string | null; state: string; behavior?: string; responsible?: string; met_at_seconds?: number; route_points?: Array<{ x: number; y: number; height?: number }> }>
+  helpers?: HelperState[]
   fire: { intensity: number; smoke_radius: number; temperature: number }
   environment: { south_lane: string; east_hydrant: string; visibility: number; blockages?: Array<{ x: number; y: number; target: string; road_edge_id?: string }> }
   sensors: { temperature: number; smoke_ppm: number; alarm: boolean }
@@ -192,6 +193,7 @@ const actorAssetLabel = computed(() => actorAssetStatus.value === 'loading' ? '�
 const clockLabel = computed(() => `${String(Math.floor(props.elapsedSeconds / 60)).padStart(2, '0')}:${String(props.elapsedSeconds % 60).padStart(2, '0')}`)
 const activeResident = computed(() => props.simulation?.residents.find((item) => item.id === selectedResident.value) ?? props.simulation?.residents.find((item) => item.status === 'moving'))
 const activeHelper = computed(() => props.simulation?.helpers?.find((helper) => helper.resident_id === activeResident.value?.id))
+const displayedHelpers = computed(() => presentHelpers(props.simulation?.helpers ?? []))
 const escortStatusLabel = computed(() => {
   switch (activeHelper.value?.state) {
     case 'completed': return '已护送到达'
@@ -692,14 +694,6 @@ function animate(time = 0): void {
     const phase = reducedMotion ? 1 : 1 + Math.sin(time * .006) * .22
     pulse.scale.setScalar(phase); (pulse.material as THREE.MeshBasicMaterial).opacity = .75 - (phase - 1) * 1.3
   }
-  for (const helper of props.simulation?.helpers ?? []) {
-    const line = helperLinkLines.get(helper.id), from = helperMeshes.get(helper.id), to = residentMeshes.get(helper.resident_id ?? '')
-    const positions = line?.geometry.getAttribute('position') as THREE.BufferAttribute | undefined
-    if (!line?.visible || !from || !to || !positions) continue
-    positions.setXYZ(0, from.position.x, from.position.y + .5, from.position.z)
-    positions.setXYZ(1, to.position.x, to.position.y + .45, to.position.z)
-    positions.needsUpdate = true; line.geometry.computeBoundingSphere(); line.computeLineDistances()
-  }
   updateCameraFollow()
   if (!userOrbiting) {
     if (reducedMotion) { camera.position.copy(targetCameraPosition); controls.target.copy(targetLookAt) }
@@ -759,17 +753,23 @@ function updateResidentTrail(resident: Resident, position: THREE.Vector3): void 
 }
 
 function updateHelperLink(helper: NonNullable<Simulation['helpers']>[number], helperMesh: THREE.Group): void {
-  const resident = props.simulation?.residents.find((person) => person.id === helper.resident_id)
-  const residentMesh = resident ? residentMeshes.get(resident.id) : undefined
-  let line = helperLinkLines.get(helper.id)
-  if (!line) {
+  const id = helperIdentity(helper)
+  const points = meetingRoute(helper)
+  const selectedTarget = helper.resident_id === selected.value?.residentId || helper.resident_id === selectedResident.value || selectedResidents.value.includes(helper.resident_id ?? '')
+  const visible = selectedTarget && points.length > 1 && (indoorView.value || points.every(point => (point.height ?? 0) === 0))
+  let line = helperLinkLines.get(id)
+  if (!line && visible) {
     line = new THREE.Line(new THREE.BufferGeometry(), new THREE.LineDashedMaterial({ color: 0x72b4ff, dashSize: .45, gapSize: .28, transparent: true, opacity: .78 }))
-    helperLinkLayer.add(line); helperLinkLines.set(helper.id, line)
+    helperLinkLayer.add(line); helperLinkLines.set(id, line)
   }
-  const visible = Boolean(residentMesh && helper.state === 'approaching')
-  line.visible = visible
-  if (visible && residentMesh) {
-    line.geometry.dispose(); line.geometry = new THREE.BufferGeometry().setFromPoints([helperMesh.position.clone().add(new THREE.Vector3(0, .5, 0)), residentMesh.position.clone().add(new THREE.Vector3(0, .45, 0))]); line.computeLineDistances()
+  if (line) line.visible = visible
+  if (line && visible) {
+    const signature = JSON.stringify(points)
+    if (signature !== line.userData.signature) {
+      line.geometry.dispose()
+      line.geometry = new THREE.BufferGeometry().setFromPoints(points.map(point => worldPoint(point.x, point.y, point.height).add(new THREE.Vector3(0, .12, 0))))
+      line.computeLineDistances(); line.userData.signature = signature
+    }
   }
   const pulse = helperMesh.userData.meetingPulse as THREE.Mesh | undefined
   if (pulse) pulse.visible = helper.state === 'escorting'
@@ -844,22 +844,28 @@ function updateEntities(): void {
   if (ambientLight) ambientLight.intensity = props.highContrast ? 3.2 : night ? 1.5 : 2.8
   if (scene.fog instanceof THREE.FogExp2) scene.fog.density = props.highContrast ? .001 : night ? .0035 : .0015
   ;(groundPlane.material as THREE.MeshStandardMaterial).color.setHex(night ? 0x647066 : 0xaaa995)
-  for (const helper of props.simulation?.helpers ?? []) {
-    let mesh = helperMeshes.get(helper.id)
+  for (const helper of displayedHelpers.value) {
+    const id = helperIdentity(helper)
+    let mesh = helperMeshes.get(id)
     if (!mesh) {
-      mesh = createPerson(helper.id, false, true)
+      mesh = createPerson(id, false, true)
       const meetingPulse = new THREE.Mesh(new THREE.RingGeometry(.62, .82, 24), new THREE.MeshBasicMaterial({ color: 0x74b7ff, transparent: true, opacity: .75, side: THREE.DoubleSide, depthWrite: false })); meetingPulse.rotation.x = -Math.PI / 2; meetingPulse.position.y = .06; meetingPulse.visible = false; mesh.add(meetingPulse); mesh.userData.meetingPulse = meetingPulse
-      scene.add(mesh); helperMeshes.set(helper.id, mesh)
-      void actorAssets.person(mesh, helper.id, false, true)
+      scene.add(mesh); helperMeshes.set(id, mesh); interactiveMeshes.push(mesh)
+      void actorAssets.person(mesh, id, false, true)
     }
+    const staffSelection:SelectedObject = {title:helper.staff_name??'护送员',type:'值守资源',residentId:helper.resident_id,x:helper.x,y:helper.y,
+      detail:[helper.responsible,helper.state==='completed'?'已完成护送，在集合区域待命':helper.behavior].filter(Boolean).join(' · ')}
+    mesh.traverse(child=>{child.userData.selection=staffSelection})
     const next=worldPoint(helper.x, helper.y, helper.height ?? 0)
     const route = (helper.route_points ?? []).map(point => worldPoint(point.x, point.y, point.height))
     actorMotion.accept(mesh, next, route, props.elapsedSeconds, props.status === 'running')
     mesh.userData.behaviorState = helper.state
-    mesh.userData.targetPosition=next;mesh.visible = helper.state !== 'completed' && ((helper.height??0)===0 || indoorView.value)
+    mesh.userData.crowded = (helper.congestion ?? 0) > 55
+    mesh.userData.targetPosition=next;mesh.visible = (helper.height??0)===0 || indoorView.value
   }
-  for (const [id, mesh] of helperMeshes) if (!props.simulation?.helpers?.some(h => h.id === id)) mesh.visible = false
-  for (const [id, line] of helperLinkLines) if (!props.simulation?.helpers?.some(h => h.id === id)) line.visible = false
+  const visibleStaff = new Set(displayedHelpers.value.map(helperIdentity))
+  for (const [id, mesh] of helperMeshes) if (!visibleStaff.has(id)) mesh.visible = false
+  for (const [id, line] of helperLinkLines) if (!visibleStaff.has(id)) line.visible = false
   if (robotGroup) robotGroup.visible = Boolean(props.robot)
   if (!props.robot && selected.value?.action === 'robot') selected.value = null
   if (props.robot && robotGroup) {
@@ -901,8 +907,8 @@ function updateEntities(): void {
       updateResidentTrail(resident, mesh.position)
     }
   }
-  for (const helper of props.simulation?.helpers ?? []) {
-    const mesh = helperMeshes.get(helper.id)
+  for (const helper of displayedHelpers.value) {
+    const mesh = helperMeshes.get(helperIdentity(helper))
     if (mesh) updateHelperLink(helper, mesh)
   }
   updateStairHeat()
@@ -1159,6 +1165,24 @@ function selectAccessibleObject(event: Event): void {
 }
 
 function onVisibilityChange(): void { pageVisible = !document.hidden; renderDirty = true }
+function onSceneKeydown(event: KeyboardEvent): void {
+  if (event.target !== event.currentTarget || !camera || !controls) return
+  if (event.key === 'Escape') { selected.value = null; emit('cancelAction'); return }
+  if (event.key === 'Home') { event.preventDefault(); setView('director'); return }
+  if (!['ArrowLeft','ArrowRight','ArrowUp','ArrowDown','+','=','-','_'].includes(event.key)) return
+  event.preventDefault()
+  const offset = camera.position.clone().sub(controls.target)
+  const orbit = new THREE.Spherical().setFromVector3(offset)
+  if (event.key === 'ArrowLeft') orbit.theta -= .12
+  if (event.key === 'ArrowRight') orbit.theta += .12
+  if (event.key === 'ArrowUp') orbit.phi = Math.max(.12, orbit.phi - .08)
+  if (event.key === 'ArrowDown') orbit.phi = Math.min(controls.maxPolarAngle, orbit.phi + .08)
+  if (['+','='].includes(event.key)) orbit.radius = Math.max(controls.minDistance, orbit.radius * .9)
+  if (['-','_'].includes(event.key)) orbit.radius = Math.min(controls.maxDistance, orbit.radius / .9)
+  camera.position.copy(controls.target).add(offset.setFromSpherical(orbit))
+  targetCameraPosition.copy(camera.position); targetLookAt.copy(controls.target)
+  controls.update(); renderDirty = true
+}
 function updateMotionPreference(): void { reducedMotion = motionPreference.matches || document.documentElement.dataset.reduceMotion === 'true'; renderDirty = true }
 const preferenceObserver = new MutationObserver(updateMotionPreference)
 let contextRestoreTimer: ReturnType<typeof setTimeout> | undefined
@@ -1255,7 +1279,7 @@ watch(() => [props.routePreview, props.robotRoutePreview], () => updateEntities(
 
 <template>
   <section class="twin-stage" :class="{ 'twin-stage--compact': compact, 'twin-stage--object-open': inspectorOpen, 'twin-stage--resident-view': viewMode === 'resident' }" :data-status="status">
-    <div class="twin-stage__viewport" ref="host" role="application" aria-label="安巷社区三维消防演练沙盘，可使用鼠标旋转缩放，或通过对象导航操作" tabindex="0" @dragover.prevent @drop="dropEvent">
+    <div class="twin-stage__viewport" ref="host" role="application" aria-label="安巷社区三维消防演练沙盘。方向键旋转，加减键缩放，Home 返回鸟瞰；按 Tab 使用对象导航与操作工具。" tabindex="0" @keydown="onSceneKeydown" @dragover.prevent @drop="dropEvent">
       <div v-if="marquee" class="spatial-marquee" :style="{left:marquee.left+'px',top:marquee.top+'px',width:marquee.width+'px',height:marquee.height+'px'}"></div>
       <div v-if="worldLabel" class="twin-world-label"><span>平行世界</span><strong>{{ worldLabel }}</strong></div>
       <div v-if="!compact" class="twin-stage__topline">
@@ -1278,7 +1302,7 @@ watch(() => [props.routePreview, props.robotRoutePreview], () => updateEntities(
         <button v-if="actorAssetStatus === 'fallback' || retryingModels" type="button" class="twin-model-retry" :disabled="retryingModels" aria-label="重试人物与机器人精细模型" @click="retryActorModels"><AppIcon name="refresh" /><span>{{ retryingModels ? '正在重试模型' : '重试精细模型' }}</span></button>
       </nav>
 
-      <label v-if="!compact" class="twin-object-nav">对象导航<select aria-label="选择沙盘对象" @change="selectAccessibleObject"><option value="">选择建筑、设施或人员</option><option v-for="item in accessibleObjects" :key="item.key" :value="item.key">{{ item.label }}</option></select></label>
+      <label v-if="!compact && viewMode !== 'resident' && !inspectorOpen" class="twin-object-nav">对象导航<select aria-label="选择沙盘对象" @change="selectAccessibleObject"><option value="">选择建筑、设施或人员</option><option v-for="item in accessibleObjects" :key="item.key" :value="item.key">{{ item.label }}</option></select></label>
 
       <aside v-if="viewMode === 'resident' && activeResident && !compact" class="resident-pov-hud" aria-live="polite">
         <header><div><span>第一视角跟随</span><strong>{{ activeResident.label }}</strong></div><div class="resident-pov-switch"><button type="button" aria-label="上一位居民" @click="cycleResident(-1)"><AppIcon name="chevron" /></button><button type="button" aria-label="下一位居民" @click="cycleResident(1)"><AppIcon name="chevron" /></button><button type="button" aria-label="返回总控鸟瞰" title="返回总控鸟瞰" @click="setView('director')"><AppIcon name="close" /></button></div></header>

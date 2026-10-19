@@ -190,7 +190,7 @@ export class ActorAssets {
     if (rig.arm) {
       rig.armPose = rig.arm.quaternion.clone()
       if (root.userData.exposed) rig.arm.rotateX(-.65)
-      else if (root.userData.behaviorState === 'escorting' && !moving) rig.arm.rotateZ(-.18)
+      else if (root.userData.behaviorState === 'escorting') { rig.arm.rotateZ(-.18); rig.arm.rotateX(-.25) }
     }
     if (rig.forearm) {
       rig.forearmPose = rig.forearm.quaternion.clone()

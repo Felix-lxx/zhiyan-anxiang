@@ -178,3 +178,29 @@ html .operations-center--immersive.coach-open>.director-stage :is(.director-metr
   html .operations-center--immersive { --scene-tools-top:calc(var(--scene-panel-top,84px) + 68px); }
   html .operations-center--immersive>.director-stage .indoor-toggle { bottom:auto; }
 }
+
+/* Short laptop windows reserve one usable work area above a compact timeline. */
+@media (max-height: 760px) and (min-width: 761px) {
+  html .operations-center--immersive { --director-topbar:64px; --director-timeline:92px; --scene-left:82px; --scene-tools-top:calc(var(--scene-panel-top,84px) + 56px); }
+  html .operations-center--immersive .exercise-timeline { padding:10px 18px; align-content:center; gap:8px; }
+  html .operations-center--immersive .atlas-timeline-events { position:static; flex:1 1 180px; min-width:0; padding:0; }
+  html .operations-center--immersive .atlas-timeline-events button { min-height:52px; }
+  html .operations-center--immersive>.director-stage .director-metrics { display:none; }
+  html .atlas-director-modes { width:58px; }
+  html .atlas-director-modes button { height:64px; }
+  html .operations-center--immersive>.director-stage .spatial-tool-rack { width:60px; flex:0 1 auto; padding:6px; }
+  html .operations-center--immersive>.director-stage .spatial-tool-rack>button { min-width:44px; min-height:44px; justify-content:center; padding:8px; }
+  html .operations-center--immersive>.director-stage .spatial-tool-rack>button>span { position:absolute; width:1px; height:1px; overflow:hidden; clip-path:inset(50%); }
+  html .operations-center--immersive>.director-stage .spatial-tool-rack>header,
+  html .operations-center--immersive>.director-stage .spatial-guidance { display:none; }
+  html .operations-center--immersive>.director-stage .spatial-tool-rack:has(.resident-command-inline),
+  html .operations-center--immersive>.director-stage .spatial-tool-rack:has(.spatial-event-group[open]) { width:230px; }
+  html .operations-center--immersive>.director-stage .spatial-event-group summary { padding:8px; justify-content:center; }
+  html .operations-center--immersive>.director-stage .spatial-event-group:not([open]) summary>span { position:absolute; width:1px; height:1px; overflow:hidden; clip-path:inset(50%); }
+  html .operations-center--immersive>.director-stage .scene-spatial-footer { display:none; }
+  html .operations-center--immersive>.director-stage :is(.twin-inspector,.resident-pov-hud) { top:var(--scene-tools-top); bottom:calc(var(--director-timeline) + 82px); max-height:none; }
+  html .operations-center--immersive>.director-stage .spatial-action-preview.spatial-action-preview--immersive { inset:auto 20px calc(var(--director-timeline) + 76px) var(--scene-left); width:auto; max-height:calc(100% - var(--scene-panel-top,84px) - var(--director-timeline) - 92px); }
+  html .operations-center--immersive>.director-stage .spatial-action-preview .spatial-action-metrics { grid-template-columns:repeat(auto-fit,minmax(130px,1fr)); }
+}
+.participant-invite__code { max-width:100%; overflow-wrap:anywhere; white-space:normal; letter-spacing:.04em; font-size:20px; line-height:1.65; }
+html .atlas-director :is(.spatial-action-metrics span,.spatial-action-metrics small,.spatial-impact p,.spatial-tool-rack small,.risk-scale small) { font-size:max(12px,var(--ui-meta-size,14px)); }

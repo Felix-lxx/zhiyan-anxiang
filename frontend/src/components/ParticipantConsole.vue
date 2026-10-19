@@ -61,9 +61,13 @@ function selectDrill(drill: Drill): void {
   stopLive?.()
   current.value = drill; connected.value = false
   try { member.value = JSON.parse(localStorage.getItem('zhiyan_member_' + drill.id) ?? 'null'); if (member.value) role.value = member.value.role } catch { member.value = null }
-  if (!invite.value && props.accessToken) void api.get<{code:string}>('/drills/' + drill.id + '/participant-invite').then(data => { if(!disposed) { invite.value = data.code; startHeartbeat() } }).catch(cause=>{if(!disposed) error.value=cause instanceof Error?cause.message:'加入码读取失败，请重试。'})
-  const credential = props.inviteCode ? `code=${encodeURIComponent(props.inviteCode)}` : `token=${encodeURIComponent(props.accessToken ?? '')}`
-  stopLive = connectLive<Drill>({ url: api.websocketUrl(`/api/v1/ws/drills/${drill.id}?${credential}`), drillId: drill.id, onState: applyCurrent, onStatus: state => { connected.value = state === 'live' }, onError: message => { error.value = message } })
+  if (!invite.value && props.accessToken && drill.status !== 'ended') void api.post<{code:string}>('/drills/' + drill.id + '/participant-invite').then(data => { if(!disposed) { invite.value = data.code; startHeartbeat() } }).catch(cause=>{if(!disposed) error.value=cause instanceof Error?cause.message:'加入码读取失败，请重试。'})
+  stopLive = connectLive<Drill>({ getUrl: async () => {
+    const admission = props.inviteCode
+      ? await api.post<{ticket:string}>(`/participant/drills/${drill.id}/socket-ticket`, {code: props.inviteCode}, {auth:false})
+      : await api.post<{ticket:string}>(`/drills/${drill.id}/socket-ticket`)
+    return api.websocketUrl(`/api/v1/ws/drills/${drill.id}?ticket=${encodeURIComponent(admission.ticket)}`)
+  }, drillId: drill.id, onState: applyCurrent, onStatus: state => { connected.value = state === 'live' }, onError: message => { error.value = message } })
   startHeartbeat()
 }
 function selectRole(value: string): void { if (member.value) return; role.value = value; localStorage.setItem('zhiyan_participant_role', value) }

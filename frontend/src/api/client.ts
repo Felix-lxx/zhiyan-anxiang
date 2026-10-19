@@ -99,7 +99,11 @@ export class ApiClient {
   delete<T>(path: string, options: ApiRequestOptions = {}) { return this.request<T>(path, { ...options, method: 'DELETE' }) }
 
   websocketUrl(path: string): string {
-    return `${this.baseUrl.replace(/^http/, 'ws').replace(/\/api\/v1$/, '')}${path}`
+    const base = new URL(this.baseUrl, location.origin)
+    base.protocol = base.protocol === 'https:' ? 'wss:' : 'ws:'
+    base.pathname = path.split('?')[0]!
+    base.search = path.includes('?') ? path.slice(path.indexOf('?')) : ''
+    return base.toString()
   }
 }
 

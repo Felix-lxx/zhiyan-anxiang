@@ -26,3 +26,11 @@ def run_schema_migrations(engine: Engine) -> None:
                 text("INSERT INTO schema_migrations(version, applied_at) VALUES (:version, :applied_at)"),
                 {"version": "20261002_01_user_credentials", "applied_at": datetime.now(UTC).isoformat()},
             )
+        if "20261018_01_runtime_lookup_indexes" not in applied:
+            from app.models.operations import DrillEvent, DrillStateSnapshot
+            for table in (DrillEvent.__table__, DrillStateSnapshot.__table__):
+                for index in table.indexes:
+                    if index.name in {"ix_drill_events_session_sequence", "ix_drill_snapshots_session_time"}:
+                        index.create(bind=connection, checkfirst=True)
+            connection.execute(text("INSERT INTO schema_migrations(version, applied_at) VALUES (:version, :applied_at)"),
+                {"version":"20261018_01_runtime_lookup_indexes", "applied_at":datetime.now(UTC).isoformat()})

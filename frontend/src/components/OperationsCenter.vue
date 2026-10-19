@@ -6,6 +6,8 @@ import { sendCommand } from '../api/commands'
 import { useDrillPreview } from '../composables/useDrillPreview'
 import ExecutionFeedback from './ExecutionFeedback.vue'
 import VehicleDispatchPanel from './VehicleDispatchPanel.vue'
+import ResponseStaffPanel from './ResponseStaffPanel.vue'
+import type { ResponseStaff } from '../domain/drill'
 import { useRoute, useRouter } from 'vue-router'
 
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
@@ -121,7 +123,16 @@ function notifyCommand(message: string) {
   clearTimeout(commandNoticeTimer)
   commandNoticeTimer = setTimeout(() => { commandNotice.value = '' }, 7000)
 }
-const participantInvite = ref<{ drill_id: string; code: string; name: string; lan_addresses?: string[] } | null>(null)
+interface ParticipantInvite { drill_id: string; code: string; name: string; expires_at?: string; lan_addresses?: string[] }
+const participantInvite = ref<ParticipantInvite | null>(null)
+const responseStaff = computed(() => (displayed.value?.simulation.environment as { response_staff?: ResponseStaff[] } | undefined)?.response_staff ?? [])
+async function bindStaff(staffId: string, participantId: string | null) {
+  if (!current.value || busy.value) return
+  busy.value = true
+  try { applyCurrent(await api.post<Drill>(`/drills/${current.value.id}/staff/${encodeURIComponent(staffId)}/binding`, {participant_id:participantId})); notifyCommand('值守责任已更新并写入本场事件记录。') }
+  catch (cause) { error.value = cause instanceof Error ? cause.message : '值守责任更新失败。' }
+  finally { busy.value = false }
+}
 const participantOrigin = ref(location.origin)
 const arena = ref<InstanceType<typeof DigitalTwinArena> | null>(null)
 const selectedVehicleId = ref('')
@@ -198,13 +209,14 @@ async function loadDrills(): Promise<void> {
   finally { window.clearTimeout(timeout); if(generation===indexGeneration)indexLoading.value=false }
 }
 async function createDrill(): Promise<void> { busy.value = true; try { const drill = await api.request<Drill>(`${props.apiBaseUrl}/scenes/${selectedSceneId.value}/drills`, { method: 'POST', headers: { ...headers(), 'Content-Type': 'application/json' }, body: JSON.stringify(form.value) }); drills.value = [drill, ...drills.value]; selectDrill(drill) } catch (cause) { error.value = cause instanceof Error ? cause.message : '场次创建失败。' } finally { busy.value = false } }
-function selectDrill(drill: Drill): void { closeFloatingPanels(); assistantFocus.value=null; leaveReplay(); current.value = drill; branchComparison.value = null; void router.replace({query:{scene:selectedSceneId.value,drill:drill.id,...(directorMode.value==='replay'?{mode:'replay'}:{})}}); connectSocket(drill.id); void loadParticipantInvite(); if(directorMode.value==='replay') void seekReplay(0) }
+function selectDrill(drill: Drill): void { closeFloatingPanels(); assistantFocus.value=null; leaveReplay(); current.value = drill; participantInvite.value = null; branchComparison.value = null; void router.replace({query:{scene:selectedSceneId.value,drill:drill.id,...(directorMode.value==='replay'?{mode:'replay'}:{})}}); connectSocket(drill.id); if(directorMode.value==='replay') void seekReplay(0) }
 async function loadParticipantInvite(): Promise<void> {
   const drillId = current.value?.id
   participantInvite.value = null
   if (!drillId) return
   try {
-    const invite = await api.request<{ drill_id: string; code: string; name: string; lan_addresses?: string[] }>(`${props.apiBaseUrl}/drills/${drillId}/participant-invite`, { headers: headers() })
+    if (current.value?.status === 'ended') return
+    const invite = await api.post<ParticipantInvite>(`/drills/${drillId}/participant-invite`)
     if (desiredDrillId !== drillId || current.value?.id !== drillId) return
     participantInvite.value = invite
     if (['127.0.0.1', 'localhost'].includes(location.hostname) && invite.lan_addresses?.[0]) participantOrigin.value = `http://${invite.lan_addresses[0]}:${location.port || '5173'}`
@@ -214,7 +226,10 @@ async function copyParticipantLink(): Promise<void> { if (!participantLink.value
 function connectSocket(drillId: string): void {
   desiredDrillId = drillId; stopLive?.()
   stopLive = connectLive<Drill>({
-    url: api.websocketUrl(`/api/v1/ws/drills/${drillId}?token=${encodeURIComponent(props.accessToken)}`), drillId,
+    getUrl: async () => {
+      const { ticket } = await api.post<{ ticket: string }>(`/drills/${drillId}/socket-ticket`)
+      return api.websocketUrl(`/api/v1/ws/drills/${drillId}?ticket=${encodeURIComponent(ticket)}`)
+    }, drillId,
     onState: value => { if (desiredDrillId === drillId) applyCurrent(value) },
     onStatus: state => { socketState.value = state }, onError: message => { error.value = message },
     onRecovered: (count, complete) => { if (desiredDrillId === drillId && count) latestCue.value = complete ? `连接已恢复，补齐 ${count} 条现场事件` : '连接已恢复；历史事件较多，已通过完整快照校准现场' },
@@ -361,7 +376,18 @@ async function assistantNavigate(action: AssistantAction): Promise<void> {
 }
 function toggleDrawer(value: DirectorDrawerName): void { if(value==='report'){void openReplay();return}; const next = drawer.value === value ? 'none' : value; closeFloatingPanels(); drawer.value = next }
 function openDock(value: 'missions' | 'events' | 'assistant' | 'report' | 'more'): void { if (value === 'assistant') toggleAssistant(); else toggleDrawer(value) }
-function toggleInvite(): void { toggleDrawer('participant') }
+function toggleInvite(): void { toggleDrawer('participant'); if (drawer.value === 'participant' && !participantInvite.value) void loadParticipantInvite() }
+async function rotateParticipantInvite(revokeOnly = false): Promise<void> {
+  if (!current.value || busy.value) return
+  busy.value = true
+  try {
+    await api.delete(`/drills/${current.value.id}/participant-invite`)
+    participantInvite.value = null
+    if (!revokeOnly) await loadParticipantInvite()
+    latestCue.value = revokeOnly ? '本场全部邀请已撤销，手机实时连接将断开。' : '旧邀请已撤销，请分享新链接。'
+  } catch (cause) { error.value = cause instanceof Error ? cause.message : '邀请更新失败，请重试。' }
+  finally { busy.value = false }
+}
 function toggleControls(): void { toggleDrawer('settings') }
 function toggleGuide(): void { const next = !guideOpen.value; closeFloatingPanels(); guideOpen.value = next }
 function closeGuide(): void { guideOpen.value = false; localStorage.setItem('zhiyan_director_guide_seen', '1') }
@@ -421,6 +447,7 @@ onBeforeUnmount(() => { desiredDrillId = ''; stopLive?.(); clearSpatialPreview()
         <KeepAlive :key="current.id" :max="7">
         <UiDrawer v-if="drawer !== 'none'" :key="drawer" :section="drawer" v-slot="{ section: drawer }" class="director-drawer" :title="drawerTitle" :subtitle="replay ? '历史时刻 ' + displayClock : '与当前场次实时联动'" @close="closeFloatingPanels">
           <div v-if="drawer === 'missions'" class="drawer-list">
+            <ResponseStaffPanel :staff="responseStaff" :participants="current.participants" :busy="busy" :ended="current.status==='ended' || Boolean(replay)" @bind="bindStaff" />
             <VehicleDispatchPanel :vehicles="displayed.simulation.vehicles ?? []" :nodes="displayed.simulation.road_network?.nodes ?? []" :candidates="displayed.simulation.transfer_candidates ?? []" :selected-id="selectedVehicleId" :drill-status="current.status" :running="!replay && current.status === 'running'" :busy="busy || spatialPreviewBusy" @preview="previewSpatialAction" @command="(id, command) => requestDrill('/vehicles', 'POST', { vehicle_id: id, command }, '车辆任务已更新，现场位置与执行记录已同步')" @focus="vehicle => { closeFloatingPanels(); arena?.focusPoint(vehicle.x, vehicle.y) }" />
             <ExecutionFeedback v-if="!replay" :commands="current.commands ?? []" :score="current.score_preview" :paused="current.status === 'paused'" @focus="id => { closeFloatingPanels(); arena?.focusResident(id) }" @evidence="at => seekReplay(at)" @ask="askAboutCommand" />
             <article v-if="displayed.robot" class="robot-mission"><h3>巡检广播机器人</h3><p>{{ displayed.robot.reason }}</p><p>{{ displayed.robot.route.join(' → ') }}</p>
@@ -441,10 +468,12 @@ onBeforeUnmount(() => { desiredDrillId = ''; stopLive?.(); clearSpatialPreview()
           </nav>
           <div v-else-if="drawer === 'participant' && participantInvite" class="participant-invite participant-invite--embedded">
             <p>让参演人员在同一局域网打开链接，登记后即可接收责任任务并实时回执。</p>
-            <strong>{{ participantInvite.code }}</strong>
+            <strong class="participant-invite__code">{{ participantInvite.code.match(/.{1,8}/g)?.join(' ') }}</strong>
+            <p v-if="participantInvite.expires_at">有效期至 {{ new Date(participantInvite.expires_at).toLocaleString('zh-CN') }}；旧版六位加入码已停用。</p>
             <label>电脑访问地址<input v-model="participantOrigin" /></label>
             <input :value="participantLink" readonly aria-label="完整参演链接" />
             <div class="participant-invite__actions"><button type="button" @click="copyParticipantLink">复制参演链接</button><button type="button" @click="emit('participant')">本机预览</button></div>
+            <div class="participant-invite__actions"><button type="button" :disabled="busy" @click="rotateParticipantInvite()">更换邀请并撤销旧链接</button><button type="button" :disabled="busy" @click="rotateParticipantInvite(true)">停止邀请</button></div>
             <section class="participant-presence-panel" aria-live="polite">
               <header><div><strong>现场协作</strong><span>设备心跳超过 25 秒自动离线</span></div><b>{{ onlineParticipantCount }} 人在线</b></header>
               <ul class="participant-presence">
@@ -457,6 +486,7 @@ onBeforeUnmount(() => { desiredDrillId = ''; stopLive?.(); clearSpatialPreview()
               </ul>
             </section>
           </div>
+          <div v-else-if="drawer === 'participant'" class="participant-invite participant-invite--embedded"><p>当前没有可分享的邀请。生成后可复制链接给参演人员。</p><button :disabled="busy || current.status === 'ended'" @click="loadParticipantInvite">生成参演邀请</button></div>
           <div v-else-if="drawer === 'settings'" class="scene-control-popover scene-control-popover--embedded">
           <UiSelect v-model="selectedSceneId" label="当前场景" :options="sceneOptions" hint="切换场景后载入对应的历史场次" />
           <UiSelect :model-value="current.id" label="历史场次" :options="drillOptions" @change="changeDrill" @update:model-value="() => undefined" />

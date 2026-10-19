@@ -108,8 +108,10 @@ def test_two_clients_receive_same_road_delta_and_reconnect_snapshot(exercise, mo
     calls = []
     original = operations.snapshot
     monkeypatch.setattr(operations, "snapshot", lambda *a, **kw: (calls.append(1), original(*a, **kw))[1])
-    url = f"/api/v1/ws/drills/{demo['drill_id']}?code={code}&protocol=2"
-    with client.websocket_connect(url) as director, client.websocket_connect(url) as phone:
+    def socket_url():
+        ticket = client.post(root + '/socket-ticket', headers=headers).json()["ticket"]
+        return f"/api/v1/ws/drills/{demo['drill_id']}?ticket={ticket}&protocol=2"
+    with client.websocket_connect(socket_url()) as director, client.websocket_connect(socket_url()) as phone:
         base = director.receive_json()["data"]
         phone_base = phone.receive_json()["data"]
         assert base == phone_base
@@ -126,7 +128,7 @@ def test_two_clients_receive_same_road_delta_and_reconnect_snapshot(exercise, mo
             assert rebuilt["commands"][0]["status"] == "completed"
             assert rebuilt["score_preview"] == response.json()["score_preview"]
             assert all(p["path"][:2] != ["simulation", "world"] for p in message["patch"])
-    with client.websocket_connect(url) as reconnected:
+    with client.websocket_connect(socket_url()) as reconnected:
         assert reconnected.receive_json()["data"]["state_version"] == response.json()["state_version"]
 
 
@@ -141,7 +143,8 @@ def test_reconnect_cursor_receives_missed_events_before_snapshot(exercise):
         "arguments": {"event_type": "channel_blocked", "road_edge_id": edge["id"]},
     })
     assert response.status_code == 200, response.text
-    url = f"/api/v1/ws/drills/{demo['drill_id']}?code={code}&protocol=2&after_sequence={baseline['latest_event_sequence']}"
+    ticket = client.post(root + '/socket-ticket', headers=headers).json()["ticket"]
+    url = f"/api/v1/ws/drills/{demo['drill_id']}?ticket={ticket}&protocol=2&after_sequence={baseline['latest_event_sequence']}"
     with client.websocket_connect(url) as socket:
         catchup = socket.receive_json()
         assert catchup["type"] == "drill.catchup"

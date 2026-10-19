@@ -1,7 +1,7 @@
 from functools import lru_cache
 from pathlib import Path
 from typing import Literal
-from pydantic import Field, SecretStr
+from pydantic import Field, SecretStr, model_validator
 
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
@@ -32,6 +32,19 @@ class Settings(BaseSettings):
     assistant_model: str = ""
     assistant_api_key: SecretStr = SecretStr("")
     assistant_timeout_seconds: int = Field(default=40, ge=5, le=90)
+    participant_invite_hours: int = Field(default=8, ge=1, le=72)
+
+    @model_validator(mode="after")
+    def validate_deployment(self):
+        self.app_env = self.app_env.strip().lower()
+        if self.app_env != "development":
+            if len(self.jwt_secret.encode()) < 32 or len(set(self.jwt_secret)) < 12 or self.jwt_secret == "replace-this-before-any-non-development-run":
+                raise ValueError("非开发环境必须配置至少 32 字节的独立 JWT_SECRET。")
+            if self.bootstrap_admin_password == "Zhiyan@2026" or len(self.bootstrap_admin_password) < 14:
+                raise ValueError("非开发环境必须设置至少 14 字符的独立管理员初始密码。")
+            if not self.cors_origin_list or any(origin == "*" or not origin.startswith("https://") for origin in self.cors_origin_list):
+                raise ValueError("非开发环境 CORS_ORIGINS 必须明确列出 HTTPS 前端地址。")
+        return self
 
     @property
     def cors_origin_list(self) -> list[str]:

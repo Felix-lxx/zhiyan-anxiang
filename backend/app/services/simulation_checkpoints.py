@@ -5,7 +5,7 @@ from hashlib import sha256
 import json
 from threading import RLock
 
-ENGINE_REVISION = 4
+ENGINE_REVISION = 5
 _states = OrderedDict()
 _lock = RLock()
 
@@ -17,8 +17,9 @@ def digest(value):
 def recall(world, elapsed):
     key = digest(world)
     with _lock:
-        state = _states.get(key)
-        if state and state["now"] <= elapsed:
+        candidates = _states.get(key, [])
+        state = max((s for s in candidates if s["now"] <= elapsed), key=lambda s: s["now"], default=None)
+        if state:
             _states.move_to_end(key)
             return deepcopy(state)
     return None
@@ -29,9 +30,11 @@ def remember(world, state):
         return
     key = digest(world)
     with _lock:
-        if key not in _states or _states[key]["now"] <= state["now"]:
-            _states[key] = deepcopy(state)
-            _states.move_to_end(key)
+        # Forecasts at t+30 must not replace the only live checkpoint at t.
+        candidates = [s for s in _states.get(key, []) if s["now"] != state["now"]]
+        candidates.append(deepcopy(state))
+        _states[key] = sorted(candidates, key=lambda s: s["now"])[-8:]
+        _states.move_to_end(key)
         while len(_states) > 16:
             _states.popitem(last=False)
 

@@ -48,7 +48,10 @@ def capture_world(session: Session, version: SceneVersion, parameters_override: 
         target = source if kind == "power_off" else home
         tasks.append({"id": task.id, "title": task.title, "target": task.target, "kind": kind, "responsible_role": "应急指挥人员" if kind == "broadcast" else "物业/网格员" if kind in {"power_off", "escort"} else point.responsible_role if point else "物业/网格员", "deadline_seconds": task.deadline_seconds, "duration_seconds": 8 if kind == "power_off" else 3, "target_object_id": target.get("id"), "target_position": target["entry"], "trigger": "alarm_confirmed", "steps": ["接收任务并核对目标", "到达目标位置（演练回执）", "完成处置并提交文字证据"]})
     from app.services.spatial_world import add_spatial_layout
-    return add_spatial_layout({"scene_version_id": version.id, "community_version_id": version.community_version_id, "parameters": parameters, "objects": objects, "residents": residents, "fire_origin": {"x": source["x"], "y": source["y"]}, "robot_origin": station["entry"], "inspection_target": source["entry"], "broadcast_target": home["entry"], "tasks": tasks, "road_network": {"nodes": nodes, "edges": edges}}, home)
+    from app.services.response_staff import roster
+    # Freeze identifiable resource slots along with the world, not on each command.
+    response_staff = roster({"robot_origin": station["entry"]})
+    return add_spatial_layout({"response_staff": response_staff, "scene_version_id": version.id, "community_version_id": version.community_version_id, "parameters": parameters, "objects": objects, "residents": residents, "fire_origin": {"x": source["x"], "y": source["y"]}, "robot_origin": station["entry"], "inspection_target": source["entry"], "broadcast_target": home["entry"], "tasks": tasks, "road_network": {"nodes": nodes, "edges": edges}}, home)
 
 
 def projected_tasks(world: dict, events: list, elapsed: int, simulation: dict, robot: dict | None) -> list[dict]:

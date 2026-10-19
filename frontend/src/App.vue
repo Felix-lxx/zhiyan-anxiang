@@ -21,7 +21,9 @@ const isSubmitting = ref(false)
 const loginError = ref('')
 const healthState = ref<HealthState>('checking')
 const healthDetail = ref('正在连接服务…')
-const accessToken = ref(localStorage.getItem('zhiyan_access_token'))
+// Reload restores the HttpOnly session. Never persist an access token in Web Storage.
+localStorage.removeItem('zhiyan_access_token')
+const accessToken = ref<string | null>(null)
 const activeUsername = ref('')
 const activeRole = ref('')
 const selectedCommunity = ref<Community | null>(null)
@@ -37,14 +39,17 @@ const participantDrillId = computed(() => route.name === 'participant-invite' ? 
 const participantInviteCode = computed(() => route.name === 'participant-invite' ? String(route.query.code ?? '') : '')
 const api = createApiClient(apiBaseUrl, () => accessToken.value)
 async function refreshSessionToken(): Promise<string | null> {
+  const refresh = async (): Promise<string | null> => {
   try {
     const payload = await api.post<LoginResponse>('/auth/refresh', undefined, { auth: false })
     accessToken.value = payload.access_token
     activeUsername.value = payload.username
     activeRole.value = payload.role
-    localStorage.setItem('zhiyan_access_token', payload.access_token)
     return payload.access_token
   } catch { return null }
+  }
+  // Serialize cookie rotation across tabs where Web Locks are available.
+  return navigator.locks ? navigator.locks.request('zhiyan-refresh-session', refresh) : refresh()
 }
 setTokenRefreshHandler(refreshSessionToken)
 setUnauthorizedHandler(() => {
@@ -91,7 +96,6 @@ async function submitLogin(): Promise<void> {
     accessToken.value = payload.access_token
     activeUsername.value = payload.username
     activeRole.value = payload.role
-    localStorage.setItem('zhiyan_access_token', payload.access_token)
     await loadAccountProfile()
     const redirect = typeof route.query.redirect === 'string' && route.query.redirect.startsWith('/') ? route.query.redirect : '/projects'
     await router.replace(redirect)
@@ -105,7 +109,8 @@ async function submitLogin(): Promise<void> {
 async function joinByCode(code: string): Promise<void> {
   loginError.value = ''; isSubmitting.value = true
   try {
-    if (!/^[a-f0-9]{6}$/i.test(code)) throw new Error('请输入导演提供的 6 位演练加入码。')
+    code = code.trim().replace(/[-\s]/g, '').toUpperCase()
+    if (!/^[a-f0-9]{32}$/i.test(code)) throw new Error('请粘贴导演提供的完整 32 位演练加入码。')
     const invite = await api.get<{ drill_id: string; code: string }>(`/participant/resolve?code=${encodeURIComponent(code)}`, { auth: false })
     await router.push({ name: 'participant-invite', params: { drillId: invite.drill_id }, query: { code: invite.code } })
   } catch (cause) { loginError.value = cause instanceof Error ? cause.message : '加入失败，请重试。' }
@@ -183,7 +188,8 @@ async function syncRouteCommunity(): Promise<void> {
 }
 function routeBack(): void { if (activeView.value === 'scenes') returnToMap(); else if (activeView.value === 'participant') leaveParticipant(); else returnToProjects() }
 
-watch(() => [route.fullPath, accessToken.value] as const, async () => {
+watch(() => [route.fullPath, accessToken.value, sessionReady.value] as const, async () => {
+  if (!sessionReady.value && !accessToken.value) return
   const isPublic = Boolean(route.meta.public)
   if (!isPublic && !accessToken.value) {
     await router.replace({ name: 'login', query: route.path === '/projects' ? {} : { redirect: route.fullPath } })

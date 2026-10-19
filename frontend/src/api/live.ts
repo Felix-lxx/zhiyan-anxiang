@@ -80,19 +80,34 @@ export function applyLiveMessage<T extends VersionedState>(previous: T | null, m
 
 /** Keep transport state apart from HTTP results; an old delta cannot undo a command. */
 export function connectLive<T extends VersionedState>(options: {
-  url: string; drillId: string; onState: (state: T) => void
+  url?: string; getUrl?: () => Promise<string>; drillId: string; onState: (state: T) => void
   onStatus: (state: ConnectionState) => void; onError?: (message: string) => void
   onRecovered?: (count: number, complete: boolean) => void
 }): () => void {
   let socket: WebSocket | null = null, stopped = false, attempt = 0
   let timer: ReturnType<typeof setTimeout> | undefined
   let stream: T | null = null, lastMessageAt = Date.now(), lastSequence: number | null = null
-  function open() {
+  async function open() {
     if (stopped) return
     options.onStatus(attempt ? 'stale' : 'connecting')
     stream = null
     const cursor = lastSequence === null ? '' : `&after_sequence=${lastSequence}`
-    const current = new WebSocket(options.url + '&protocol=3' + cursor)
+    let url: string
+    try {
+      url = options.getUrl ? await options.getUrl() : options.url!
+      if (stopped) return
+      if (!url) throw new Error('实时连接地址缺失')
+    } catch (error) {
+      if (stopped) return
+      options.onStatus('stale')
+      const status = (error as { status?: number })?.status
+      if ([401, 403, 404].includes(status ?? 0)) {
+        options.onError?.('实时连接凭据已失效，请重新登录或获取新邀请。'); return
+      }
+      timer = setTimeout(open, Math.min(1000 * 2 ** attempt++, 10000))
+      return
+    }
+    const current = new WebSocket(url + (url.includes('?') ? '&' : '?') + 'protocol=3' + cursor)
     socket = current; lastMessageAt = Date.now()
     current.onmessage = event => {
       if (stopped || socket !== current) return

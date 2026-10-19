@@ -19,13 +19,15 @@ from app.api.routes.auth import AuthenticatedIdentity, authenticate_access_token
 from app.api.routes.scenes import owned_community
 from app.core.database import SessionLocal, get_db
 from app.models.domain import RoadEdge, RoadEdgeStatus, RoadNode, Scene, SceneStatus, SceneVersion
-from app.models.operations import DrillCommand, DrillEngineLease, DrillEvent, DrillScore, DrillSession, DrillStateSnapshot, ParticipantSession, RobotAgent
+from app.models.operations import DrillCommand, DrillEngineLease, DrillEvent, DrillScore, DrillSession, DrillStateSnapshot, ParticipantSession, ParticipantInvitation, RobotAgent
+from app.core.config import get_settings
+from app.services.connection_security import consume_ticket, digest as credential_digest, invitation_for, issue_ticket, normalize_code, validate_ticket_owner
 from app.models.tasks import DecisionTask
 from app.schemas.operations import BranchCompareRequest, DrillAction, DrillCreate, EventInject, ParticipantAction, ResidentCommand, RobotCommand, ParticipantHeartbeat, ParticipantJoin, TaskAction, TaskAssignment, DirectorConfig
 from app.services.drill_simulation import plan_route, simulate_residents
 from app.services.navigation_geometry import clear_segment
 from app.services.exercise_world import capture_world, frozen_world, projected_tasks
-from app.schemas.operations import EditableBranchCreate, SearchAssignment
+from app.schemas.operations import EditableBranchCreate, SearchAssignment, StaffBinding
 from app.schemas.operations import LiveCommand, VehicleCommand
 from app.services.vehicle_dispatch import vehicle_runtime, plan_vehicle
 from app.services.vehicle_rescue import project_rescue_state, action_plan, ACTION_LABELS
@@ -34,6 +36,7 @@ from app.services.command_feedback import commit_changes, command_feedback
 from app.services.command_ledger import apply_feedback, ledger_feedback, safe_arguments, same_command, synchronize_records
 from app.services.realtime import live_snapshots, snapshot_patch, state_version
 from app.services.state_store import load_snapshot, persist_snapshot
+from app.services.response_staff import capacity as staff_capacity, roster as staff_roster
 
 
 router = APIRouter(tags=["drill operations"])
@@ -67,17 +70,8 @@ def participant_identity(session: Session, drill: DrillSession, token: str | Non
         if touch:
             record.last_seen_at = datetime.now(UTC)
         return {"participant_id": record.id, "role": record.role, "name": record.display_name}
-    events = session.scalars(select(DrillEvent).where(DrillEvent.drill_session_id == drill.id, DrillEvent.event_type == "participant.joined"))
-    member = next((e.payload for e in events if secrets.compare_digest(e.payload.get("token_hash", ""), digest)), None)
-    if not member:
-        raise HTTPException(403, "请先登记参演身份；本场身份凭证缺失或无效。")
-    record = ParticipantSession(
-        id=member["participant_id"], drill_session_id=drill.id, role=member["role"],
-        display_name=member["name"], token_hash=digest, last_seen_at=datetime.now(UTC),
-    )
-    session.add(record)
-    session.flush()
-    return {"participant_id": record.id, "role": record.role, "name": record.display_name}
+    # Events are audit evidence, never a fallback authentication database.
+    raise HTTPException(403, "参演身份已退出或失效，请重新登记。")
 
 
 def participant_presence_revision(session: Session, drill_id: str) -> int:
@@ -494,14 +488,11 @@ def road_network_state(session: Session, drill: DrillSession, events: list[Drill
     }
 
 
-def participant_code(drill_id: str) -> str:
-    return drill_id.replace("-", "")[-6:].upper()
-
-
 def require_participant_drill(session: Session, drill_id: str, code: str) -> DrillSession:
     drill = session.get(DrillSession, drill_id)
-    if drill is None or code.upper() != participant_code(drill_id):
+    if drill is None:
         raise HTTPException(status_code=404, detail="参演链接无效或场次不存在。")
+    invitation_for(session, drill_id, code)
     return drill
 
 
@@ -1157,8 +1148,8 @@ def command_residents(drill_id: str, payload: ResidentCommand, identity: Authent
         if any(not p["vulnerable"] for p in selected):
             raise HTTPException(422, "重点护送仅用于重点人员；普通居民请使用分流疏散。")
         active = {h["resident_id"] for h in before["helpers"] if h["state"] != "completed"}
-        if len(active | {p["id"] for p in selected}) > 4:
-            raise HTTPException(409, "本场仅配置 4 名护送员，请等待在途护送完成。")
+        if len(active | {p["id"] for p in selected}) > staff_capacity(world):
+            raise HTTPException(409, "本场可用值守员均有在途任务，请等待护送完成或调整人员安排。")
     if all(resident["status"] == "evacuated" for resident in before["residents"] if resident["id"] in payload.resident_ids):
         raise HTTPException(status_code=409, detail="所选居民已全部到达安全出口，无需重复下达疏散指令。")
     exits = [n for n in before["road_network"]["nodes"] if n["is_exit"]]
@@ -1239,9 +1230,36 @@ def assign_search(drill_id: str, payload: SearchAssignment, identity: Authentica
     if not person or person["status"] == "evacuated":
         raise HTTPException(422, "请选择未到集合点的居民。")
     active = [h for h in state["simulation"]["helpers"] if h["state"] != "completed"]
-    if any(h["resident_id"] == person["id"] for h in active) or len(active) >= 4:
-        raise HTTPException(409, "此人已有搜索/护送责任人，或 4 名接应人员均在执行任务。")
+    if any(h["resident_id"] == person["id"] for h in active) or len(active) >= staff_capacity(frozen_world(session, drill)):
+        raise HTTPException(409, "此人已有责任人，或可用值守员均在执行任务。")
     append_event(session, drill, "resident.search_assigned", identity.username, f"{payload.responsible}负责寻找{person['label']}，最后位置：{person['last_location']}", {**payload.model_dump(), "last_location": person["last_location"]})
+    commit_changes(session)
+    return snapshot(session, drill)
+
+
+@router.post("/drills/{drill_id}/staff/{staff_id}/binding")
+@serialized_command
+def bind_response_staff(drill_id: str, staff_id: str, payload: StaffBinding,
+                        identity: AuthenticatedIdentity = Depends(get_current_identity), session: Session = Depends(get_db)):
+    drill = require_drill(session, drill_id, identity.username)
+    world = frozen_world(session, drill)
+    if not world or world.get("schema_version", 0) < 3 or drill.status == "ended":
+        raise HTTPException(409, "请在未结束的连续空间场次安排值守责任。")
+    if staff_id not in {s["id"] for s in staff_roster(world)}:
+        raise HTTPException(404, "值守岗位不存在。")
+    data = snapshot(session, drill)
+    if any(h.get("staff_id") == staff_id and h["state"] != "completed" for h in data["simulation"].get("helpers", [])):
+        raise HTTPException(409, "该值守员正在执行任务，完成后才能交接责任。")
+    member = session.get(ParticipantSession, payload.participant_id) if payload.participant_id else None
+    if payload.participant_id:
+        if not member or member.drill_session_id != drill_id or member.left_at or member.role != "物业/网格员":
+            raise HTTPException(422, "请选择本场有效的物业/网格员参演身份。")
+        roster = data["simulation"]["environment"].get("response_staff", [])
+        if any(s["id"] != staff_id and s.get("participant_id") == member.id for s in roster):
+            raise HTTPException(409, "该参演者已负责其他岗位，请先解除原岗位绑定。")
+    append_event(session, drill, "staff.bound", identity.username,
+        f"{staff_id}责任{'交接给' + member.display_name if member else '恢复为模拟值守'}。",
+        {"staff_id": staff_id, "participant_id": member.id if member else None, "responsible": member.display_name if member else None})
     commit_changes(session)
     return snapshot(session, drill)
 
@@ -1304,23 +1322,63 @@ def participant_action(drill_id: str, payload: ParticipantAction, identity: Auth
     return snapshot(session, drill)
 
 
-@router.get("/drills/{drill_id}/participant-invite")
+@router.post("/drills/{drill_id}/participant-invite")
+@serialized_command
 def participant_invite(drill_id: str, identity: AuthenticatedIdentity = Depends(get_current_identity), session: Session = Depends(get_db)):
     drill = require_drill(session, drill_id, identity.username)
+    if drill.status == "ended":
+        raise HTTPException(409, "场次已结束，不能生成新邀请。")
+    # Plaintext is returned once, never stored. Reopening creates an independent
+    # invitation; existing participants remain connected until explicit revocation.
+    code = secrets.token_hex(16).upper()
+    expires = datetime.now(UTC) + timedelta(hours=get_settings().participant_invite_hours)
+    record = ParticipantInvitation(drill_session_id=drill.id, code_hash=credential_digest(code), expires_at=expires)
+    session.add(record)
+    session.flush()
+    append_event(session, drill, "participant.invitation_created", identity.username, "已生成限时参演邀请。", {"invitation_id":record.id,"expires_at":expires.isoformat()})
+    session.commit()
     try:
         lan_addresses = [address for address in socket.gethostbyname_ex(socket.gethostname())[2] if not address.startswith("127.")]
     except OSError:
         lan_addresses = []
-    return {"drill_id": drill.id, "code": participant_code(drill.id), "name": drill.name, "lan_addresses": lan_addresses}
+    return {"id": record.id, "drill_id": drill.id, "code": code, "name": drill.name, "expires_at": expires.isoformat(), "lan_addresses": lan_addresses}
+
+
+@router.delete("/drills/{drill_id}/participant-invite", status_code=204)
+@serialized_command
+def revoke_participant_invites(drill_id: str, identity: AuthenticatedIdentity = Depends(get_current_identity), session: Session = Depends(get_db)):
+    require_drill(session, drill_id, identity.username)
+    from sqlalchemy import update
+    session.execute(update(ParticipantInvitation).where(ParticipantInvitation.drill_session_id == drill_id,
+        ParticipantInvitation.revoked_at.is_(None)).values(revoked_at=datetime.now(UTC)))
+    drill = session.get(DrillSession, drill_id)
+    append_event(session, drill, "participant.invitation_revoked", identity.username, "本场全部参演邀请已撤销。")
+    session.commit()
+
+
+@router.post("/drills/{drill_id}/socket-ticket")
+def director_socket_ticket(drill_id: str, identity: AuthenticatedIdentity = Depends(get_current_identity), session: Session = Depends(get_db)):
+    require_drill(session, drill_id, identity.username)
+    return issue_ticket(session, drill_id, username=identity.username, auth_session_id=identity.session_id)
+
+
+@router.post("/participant/drills/{drill_id}/socket-ticket")
+def participant_socket_ticket(drill_id: str, payload: dict, session: Session = Depends(get_db)):
+    code = payload.get("code")
+    if not isinstance(code, str) or len(code) > 64:
+        raise HTTPException(422, "请提供有效参演邀请。")
+    invite = invitation_for(session, drill_id, code)
+    return issue_ticket(session, drill_id, invitation_id=invite.id)
 
 
 @router.get("/participant/resolve")
 def resolve_participant_code(code: str, session: Session = Depends(get_db)):
-    normalized = code.strip().upper()
-    if not re.fullmatch(r"[0-9A-F]{6}", normalized):
-        raise HTTPException(422, "请输入 6 位演练加入码。")
-    matches = session.scalars(select(DrillSession).where(
-        func.upper(func.substr(DrillSession.id, -6)) == normalized,
+    normalized = normalize_code(code)
+    if not re.fullmatch(r"[0-9A-F]{32}", normalized):
+        raise HTTPException(422, "请粘贴导演提供的完整 32 位加入码。")
+    matches = session.scalars(select(DrillSession).join(ParticipantInvitation, ParticipantInvitation.drill_session_id == DrillSession.id).where(
+        ParticipantInvitation.code_hash == credential_digest(normalized),
+        ParticipantInvitation.revoked_at.is_(None), ParticipantInvitation.expires_at > datetime.now(UTC),
         DrillSession.status.in_(["ready", "running", "paused"]),
     ).limit(2)).all()
     if not matches:
@@ -1343,10 +1401,9 @@ def public_participant_action(drill_id: str, code: str, payload: ParticipantActi
         raise HTTPException(status_code=409, detail="只有运行中的演练可以提交参演反馈。")
     if payload.role not in {item["role"] for item in drill.participants} - {"演练总控/导演"}:
         raise HTTPException(status_code=422, detail="请选择当前演练配置的参演角色。")
-    if frozen_world(session, drill):
-        member = participant_identity(session, drill, payload.participant_token)
-        if member["role"] != payload.role:
-            raise HTTPException(403, "不能以其他身份提交反馈。")
+    member = participant_identity(session, drill, payload.participant_token)
+    if member["role"] != payload.role:
+        raise HTTPException(403, "不能以其他身份提交反馈。")
     validate_feedback(session, drill, payload)
     action_labels = {"acknowledge": "确认警报", "arrived": "到达岗位", "resource_ready": "资源就绪", "resident_counted": "居民清点", "report": "异常报告"}
     append_event(session, drill, f"participant.{payload.action}", payload.role, f"{action_labels[payload.action]}：{payload.message}", payload.model_dump(exclude={"participant_token"}))
@@ -1356,8 +1413,9 @@ def public_participant_action(drill_id: str, code: str, payload: ParticipantActi
 
 @router.patch("/participant/drills/{drill_id}/tasks/{task_id}/complete")
 @serialized_command
-def public_complete_task(drill_id: str, task_id: str, code: str, session: Session = Depends(get_db)):
+def public_complete_task(drill_id: str, task_id: str, code: str, payload: TaskAction, session: Session = Depends(get_db)):
     drill = require_participant_drill(session, drill_id, code)
+    member = participant_identity(session, drill, payload.participant_token)
     if frozen_world(session, drill):
         raise HTTPException(409, "新版任务需要接收、到位和证据核验，请使用任务流程。")
     if drill.status != "running":
@@ -1365,9 +1423,15 @@ def public_complete_task(drill_id: str, task_id: str, code: str, session: Sessio
     task = session.get(DecisionTask, task_id)
     if task is None or task.scene_version_id != drill.scene_version_id:
         raise HTTPException(status_code=404, detail="未找到该场次的处置任务。")
+    from app.models.domain import DecisionPoint
+    point = session.get(DecisionPoint, task.decision_point_id)
+    if not point or member["role"] != point.responsible_role:
+        raise HTTPException(403, "该任务不属于当前参演身份。")
+    if payload.action != "submit" or len(payload.evidence.strip()) < 6:
+        raise HTTPException(422, "请提交至少六个字的处置证据。")
     completion_events = session.scalars(select(DrillEvent).where(DrillEvent.drill_session_id == drill.id, DrillEvent.event_type == "task.completed"))
     if not any(event.payload.get("task_id") == task.id for event in completion_events):
-        append_event(session, drill, "task.completed", "手机参演端", f"任务已完成：{task.title}", {"task_id": task.id})
+        append_event(session, drill, "task.completed", member["role"], f"任务已完成：{task.title}", {"task_id": task.id, "participant_id": member["participant_id"], "evidence": payload.evidence})
         commit_changes(session)
     return snapshot(session, drill)
 
@@ -1875,15 +1939,19 @@ def execute_live_command(drill_id: str, payload: LiveCommand, identity: Authenti
 
 
 @router.websocket("/ws/drills/{drill_id}")
-async def drill_socket(websocket: WebSocket, drill_id: str, token: str | None = None, code: str | None = None, protocol: int = 1, after_sequence: int | None = None):
+async def drill_socket(websocket: WebSocket, drill_id: str, ticket: str | None = None, protocol: int = 3, after_sequence: int | None = None):
     username: str | None = None
-    if token:
-        try:
-            with SessionLocal() as auth_session:
-                username = authenticate_access_token(token, auth_session).username
-        except Exception:
-            await websocket.close(code=4401); return
-    elif not code or code.upper() != participant_code(drill_id):
+    if protocol not in {2, 3}:
+        await websocket.close(code=4400); return
+    if not ticket or len(ticket) > 128:
+        await websocket.close(code=4401); return
+    try:
+        with SessionLocal() as auth_session:
+            admission = consume_ticket(auth_session, ticket, drill_id)
+            validate_ticket_owner(auth_session, admission)
+            username = admission.username
+            require_drill(auth_session, drill_id, username) if username else auth_session.get(DrillSession, drill_id)
+    except HTTPException:
         await websocket.close(code=4401); return
     await websocket.accept()
     import asyncio
@@ -1895,7 +1963,9 @@ async def drill_socket(websocket: WebSocket, drill_id: str, token: str | None = 
         if protocol not in {2, 3} or after_sequence is None or after_sequence < 0:
             return None
         with SessionLocal() as session:
-            drill = require_drill(session, drill_id, username) if username else require_participant_drill(session, drill_id, code or "")
+            validate_ticket_owner(session, admission)
+            drill = require_drill(session, drill_id, username) if username else session.get(DrillSession, drill_id)
+            if drill is None: raise HTTPException(404, "场次已不存在。")
             latest = session.scalar(select(func.max(DrillEvent.sequence)).where(DrillEvent.drill_session_id == drill.id)) or 0
             if after_sequence >= latest:
                 return None
@@ -1929,10 +1999,9 @@ async def drill_socket(websocket: WebSocket, drill_id: str, token: str | None = 
         # Read version and state under the same process lock as engine/commands.
         # Always acquire command lock before snapshot-cache lock.
         with SessionLocal() as session:
-            drill = require_drill(session, drill_id, username) if username else require_participant_drill(session, drill_id, code or "")
-            if protocol not in {2, 3}:
-                advance_engine(session, drill)
-                return snapshot(session, drill)
+            validate_ticket_owner(session, admission)
+            drill = require_drill(session, drill_id, username) if username else session.get(DrillSession, drill_id)
+            if drill is None: raise HTTPException(404, "场次已不存在。")
             # Only the scheduler advances v2 live sessions. Observers never tick it.
             sequence = session.scalar(select(func.max(DrillEvent.sequence)).where(DrillEvent.drill_session_id == drill_id)) or 0
             version = state_version(sequence, effective_elapsed(drill), participant_presence_revision(session, drill.id))
@@ -1941,7 +2010,7 @@ async def drill_socket(websocket: WebSocket, drill_id: str, token: str | None = 
                 # Old persisted snapshots predate the fleet projection. Rebuild
                 # from frozen world/events without modifying the user's history.
                 simulation = (stored or {}).get("simulation", {})
-                return stored if simulation.get("rescue_projection_version") == 1 and simulation.get("navigation_geometry_version") == 1 else snapshot(session, drill)
+                return stored if simulation.get("rescue_projection_version") == 1 and simulation.get("navigation_geometry_version") == 1 and "response_staff" in simulation.get("environment", {}) else snapshot(session, drill)
             return live_snapshots.get(drill_id, version, compatible_snapshot)
 
     try:
@@ -1961,7 +2030,7 @@ async def drill_socket(websocket: WebSocket, drill_id: str, token: str | None = 
                 await websocket.send_json({"type": "drill.heartbeat", "drill_id": drill_id, "state_version": data["state_version"]})
                 heartbeat_at = now
             previous = data
-            await asyncio.sleep(.25 if protocol in {2, 3} else 1)
+            await asyncio.sleep(.5)
     except HTTPException:
         await websocket.close(code=4404)
     except (WebSocketDisconnect, RuntimeError):

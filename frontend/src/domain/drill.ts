@@ -74,3 +74,5 @@ export interface RescueAction {
 }
 export interface TransferCandidate { id: string; label: string; exit: string; eligible: boolean; reason: string }
 export interface Simulation { vehicles?: Vehicle[]; rescue_actions?: RescueAction[]; transfer_candidates?: TransferCandidate[] }
+
+export interface ResponseStaff { id: string; name: string; source: string; state: string; resident_id?: string | null; participant_id?: string | null; responsible?: string | null; completed_count: number }

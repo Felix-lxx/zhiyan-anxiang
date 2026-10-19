@@ -5,7 +5,7 @@ from datetime import UTC, datetime, timedelta
 
 from fastapi import APIRouter, Cookie, Depends, Header, HTTPException, Response
 from pydantic import BaseModel, Field
-from sqlalchemy import func, select
+from sqlalchemy import func, select, update
 from sqlalchemy.orm import Session
 
 from app.core.config import get_settings
@@ -128,7 +128,7 @@ def login(payload: LoginRequest, response: Response, session: Session = Depends(
     user = session.scalar(select(User).where(User.username == username))
     user_count = session.scalar(select(func.count()).select_from(User)) or 0
     bootstrap_allowed = username == settings.bootstrap_admin_username and (
-        settings.app_env == "development" or user_count == 0 or (user is not None and not user.password_hash)
+        settings.app_env == "development" or user_count == 0
     )
     if user is None and bootstrap_allowed and payload.password == settings.bootstrap_admin_password:
         user = ensure_development_user(session, username)
@@ -185,7 +185,7 @@ def refresh_session(response: Response, refresh_token: str | None = Cookie(defau
     if not refresh_token or "." not in refresh_token:
         raise HTTPException(status_code=401, detail="刷新凭证缺失，请重新登录。")
     session_id = refresh_token.split(".", 1)[0]
-    auth_session = session.get(AuthSession, session_id)
+    auth_session = session.scalar(select(AuthSession).where(AuthSession.id == session_id).with_for_update())
     if auth_session is None or auth_session.revoked_at is not None or _aware(auth_session.expires_at) <= datetime.now(UTC) or auth_session.refresh_token_hash != hash_refresh_token(refresh_token):
         _clear_refresh_cookie(response)
         raise HTTPException(status_code=401, detail="刷新凭证无效或已过期，请重新登录。")
@@ -195,8 +195,14 @@ def refresh_session(response: Response, refresh_token: str | None = Cookie(defau
     roles = _roles(session, user)
     identity = _management_identity(user, roles, auth_session.id)
     rotated = create_refresh_token(auth_session.id)
-    auth_session.refresh_token_hash = hash_refresh_token(rotated)
-    auth_session.last_used_at = datetime.now(UTC)
+    claimed = session.execute(update(AuthSession).where(
+        AuthSession.id == auth_session.id,
+        AuthSession.refresh_token_hash == hash_refresh_token(refresh_token),
+        AuthSession.revoked_at.is_(None), AuthSession.expires_at > datetime.now(UTC),
+    ).values(refresh_token_hash=hash_refresh_token(rotated), last_used_at=datetime.now(UTC)).execution_options(synchronize_session=False))
+    if not claimed.rowcount:
+        session.rollback()
+        raise HTTPException(401, "刷新会话已变化，请重试登录。")
     session.commit()
     _set_refresh_cookie(response, rotated)
     settings = get_settings()

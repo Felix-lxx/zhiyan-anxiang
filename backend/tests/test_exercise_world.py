@@ -15,7 +15,7 @@ def exercise(client, monkeypatch):
     headers = {"Authorization": "Bearer " + token}
     demo = client.post('/api/v1/communities/demo-ready', headers=headers).json()
     root = '/api/v1/drills/' + demo["drill_id"]
-    invite = client.get(root + '/participant-invite', headers=headers).json()["code"]
+    invite = client.post(root + '/participant-invite', headers=headers).json()["code"]
     public = '/api/v1/participant/drills/' + demo["drill_id"]
     def tick(t):
         clock["t"] = t

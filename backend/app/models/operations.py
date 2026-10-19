@@ -4,7 +4,7 @@ from datetime import UTC, datetime
 from typing import Any
 from uuid import uuid4
 
-from sqlalchemy import JSON, DateTime, Float, ForeignKey, Integer, String, Text, UniqueConstraint
+from sqlalchemy import JSON, DateTime, Float, ForeignKey, Index, Integer, String, Text, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.core.database import Base
@@ -28,6 +28,7 @@ class DrillSession(Base):
 
 class DrillEvent(Base):
     __tablename__ = "drill_events"
+    __table_args__ = (Index("ix_drill_events_session_sequence", "drill_session_id", "sequence"),)
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid4()))
     drill_session_id: Mapped[str] = mapped_column(ForeignKey("drill_sessions.id", ondelete="CASCADE"), nullable=False, index=True)
@@ -73,7 +74,8 @@ class DrillStateSnapshot(Base):
     """Recoverable materialized state; immutable events remain the source of truth."""
 
     __tablename__ = "drill_state_snapshots"
-    __table_args__ = (UniqueConstraint("drill_session_id", "state_version", name="uq_drill_snapshot_version"),)
+    __table_args__ = (UniqueConstraint("drill_session_id", "state_version", name="uq_drill_snapshot_version"),
+                      Index("ix_drill_snapshots_session_time", "drill_session_id", "elapsed_seconds"))
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid4()))
     drill_session_id: Mapped[str] = mapped_column(ForeignKey("drill_sessions.id", ondelete="CASCADE"), nullable=False, index=True)
@@ -93,6 +95,33 @@ class DrillEngineLease(Base):
     owner_id: Mapped[str] = mapped_column(String(160), nullable=False)
     lease_expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, index=True)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(UTC), onupdate=lambda: datetime.now(UTC), nullable=False)
+
+
+class ParticipantInvitation(Base):
+    __tablename__ = "participant_invitations"
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid4()))
+    drill_session_id: Mapped[str] = mapped_column(ForeignKey("drill_sessions.id", ondelete="CASCADE"), nullable=False, index=True)
+    code_hash: Mapped[str] = mapped_column(String(64), unique=True, nullable=False)
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, index=True)
+    revoked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(UTC), nullable=False)
+
+
+class SocketTicket(Base):
+    __tablename__ = "socket_tickets"
+    token_hash: Mapped[str] = mapped_column(String(64), primary_key=True)
+    drill_session_id: Mapped[str] = mapped_column(ForeignKey("drill_sessions.id", ondelete="CASCADE"), nullable=False)
+    username: Mapped[str | None] = mapped_column(String(64))
+    auth_session_id: Mapped[str | None] = mapped_column(String(36))
+    invitation_id: Mapped[str | None] = mapped_column(ForeignKey("participant_invitations.id", ondelete="CASCADE"))
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, index=True)
+
+
+class SecurityRateWindow(Base):
+    __tablename__ = "security_rate_windows"
+    key: Mapped[str] = mapped_column(String(64), primary_key=True)
+    count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, index=True)
 
 
 class ParticipantSession(Base):

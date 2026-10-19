@@ -37,7 +37,7 @@ export function createPerson(id: string, vulnerable = false, helper = false): TH
   }
   const ring=part(group,new THREE.RingGeometry(.29,.35,24),new THREE.MeshBasicMaterial({color:helper?0x77b7ff:vulnerable?0xefc66f:0x76c4af,transparent:true,opacity:.6,side:THREE.DoubleSide,depthWrite:false}),0,.025,0)
   ring.rotation.x=-Math.PI/2;group.userData.ring=ring
-  group.userData.limbs=limbs;group.userData.phase=seed*.63;group.userData.vulnerable=vulnerable
+  group.userData.limbs=limbs;group.userData.phase=seed*.63;group.userData.vulnerable=vulnerable;group.userData.helper=helper
   const detail=new THREE.Group()
   for(const child of [...group.children])if(child!==ring)detail.add(child)
   const distant=new THREE.Group()
@@ -54,6 +54,12 @@ export function posePerson(group: THREE.Group, moving: boolean, seconds: number,
   const swing=moving?Math.sin(seconds*(group.userData.vulnerable?5:7)+group.userData.phase)*(crowded?.16:.42):0
   limbs[0]!.rotation.x=swing;limbs[2]!.rotation.x=-swing
   limbs[1]!.rotation.x=-swing;limbs[3]!.rotation.x=swing
+  // Pose is presentation only: it cannot move the authoritative root away
+  // from its corridor or manufacture a meeting before the server confirms it.
+  limbs[0]!.rotation.z=0;limbs[2]!.rotation.z=0
+  if(group.userData.helper && group.userData.behaviorState==='escorting') {
+    limbs[0]!.rotation.x=-.35;limbs[0]!.rotation.z=-.18
+  }
   const torso=group.userData.torso as THREE.Group
   torso.rotation.x=exposed?-.22:group.userData.vulnerable?-.08:0
   if(exposed)limbs[2]!.rotation.x=-1.25

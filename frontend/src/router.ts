@@ -15,9 +15,7 @@ const routes: RouteRecordRaw[] = [
 ]
 
 export const router = createRouter({ history: createWebHistory(), routes })
-router.beforeEach(to => {
-  if (!to.meta.public && !localStorage.getItem('zhiyan_access_token')) return { name: 'login', query: { redirect: to.fullPath } }
-})
+// App.vue waits for HttpOnly session restoration before guarding protected routes.
 
 router.afterEach((to) => {
   document.title = `${String(to.meta.title ?? '工作台')} · 智演安巷`

@@ -25,7 +25,7 @@ function submit() { if (mode.value === 'participant' || code.value.trim()) emit(
           <label for="password">密码</label><div class="atlas-input"><AppIcon name="lock" /><input id="password" :value="password" @input="emit('update:password', ($event.target as HTMLInputElement).value)" :type="reveal ? 'text' : 'password'" autocomplete="current-password" placeholder="请输入密码" :disabled="busy" :required="!code" maxlength="128" /><button type="button" :aria-label="reveal ? '隐藏密码' : '显示密码'" @click="reveal = !reveal"><AppIcon :name="reveal ? 'eyeOff' : 'eye'" /></button></div>
           <div class="atlas-login__or"><span>或</span></div>
         </template>
-        <label for="join-code">演练加入码</label><div class="atlas-input"><AppIcon name="phone" /><input id="join-code" v-model="code" placeholder="请输入演练加入码" maxlength="6" autocomplete="off" :required="mode === 'participant'" :disabled="busy" /></div><small>适用于参演人员快速加入演练</small>
+        <label for="join-code">演练加入码</label><div class="atlas-input"><AppIcon name="phone" /><input id="join-code" v-model="code" placeholder="粘贴完整加入码…" maxlength="40" autocomplete="off" spellcheck="false" :required="mode === 'participant'" :disabled="busy" /></div><small>粘贴 32 位加入码，或直接打开导演分享的参演链接。</small>
         <p v-if="error" class="atlas-error" role="alert">{{ error }}</p>
         <button class="atlas-login__submit" type="submit" :disabled="busy || unavailable"><span>{{ busy ? '正在连接…' : mode === 'participant' || code ? '加入演练' : '进入工作台' }}</span><AppIcon name="arrowRight" /></button>
       </form>

@@ -80,6 +80,9 @@ def test_engine_checkpoint_is_durable_but_not_exposed_to_clients(exercise):
     with operations.SessionLocal() as session:
         record = session.scalar(select(DrillStateSnapshot).where(DrillStateSnapshot.drill_session_id==demo['drill_id']).order_by(DrillStateSnapshot.elapsed_seconds.desc()))
         assert record.payload['_engine_checkpoint']['now'] == 6
+        assert record.payload['simulation']['world'] is None
+        assert record.payload['_frozen_world_ref'] is True
+        assert load_snapshot(session, demo['drill_id'])['simulation']['world'] == world
         assert '_engine_checkpoint' not in load_snapshot(session, demo['drill_id'])
         with cache._lock: cache._states.clear()
         assert cache.recall(world, 6) is None
@@ -92,3 +95,31 @@ def test_large_assembly_berths_remain_inside_community(road_graph):
     slots = [n for n in world['spatial_network']['nodes'] if n['kind']=='assembly']
     assert all(0 <= n['x'] <= 100 and 0 <= n['y'] <= 100 for n in slots)
     assert len(world['spatial_network']['berths']['north']) == 1000
+
+
+def test_forecast_does_not_evict_live_checkpoint(road_graph):
+    from app.services.simulation_checkpoints import remember, recall
+    world = layout(road_graph, 3)
+    history = [event("robot.broadcast_completed", 0, {})]
+    current, forecast = {}, {}
+    simulate(world, history, 10, checkpoint_out=current)
+    simulate(world, history, 40, checkpoint=current, checkpoint_out=forecast)
+    remember(world, current)
+    remember(world, forecast)
+    assert recall(world, 11)["now"] == 10
+    assert recall(world, 41)["now"] == 40
+
+
+def test_staff_slot_reused_at_last_position_instead_of_spawn(road_graph):
+    from app.services.spatial_simulation import xyz
+    world = layout(road_graph, 3)
+    world['response_staff'] = [{"id":"duty-one", "name":"值守一号", "role":"物业/网格员", "source":"simulation", "available":True, "origin":world["robot_origin"]}]
+    history = [event("resident.command", 0, {"resident_ids":["resident-3"], "exit":"north", "action":"priority_assist"})]
+    first = simulate(world, history, 300)
+    assert first["helpers"][0]["state"] == "completed"
+    history.append(event("resident.command", 300, {"resident_ids":["resident-2"], "exit":"north", "action":"priority_assist"}, 2))
+    second = simulate(world, history, 300)
+    helper = next(h for h in second["helpers"] if h["resident_id"] == "resident-2")
+    assert helper["staff_id"] == "duty-one"
+    assert xyz(helper) == xyz(next(p for p in first["residents"] if p["id"] == "resident-3"))
+    assert sum(h["state"] != "completed" for h in second["helpers"]) == 1

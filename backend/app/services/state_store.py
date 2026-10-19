@@ -36,8 +36,15 @@ def persist_snapshot(
     elapsed = int(payload.get("elapsed_seconds", 0))
     if not force and latest and elapsed - latest.elapsed_seconds < SNAPSHOT_INTERVAL_SECONDS:
         return None
-    stored_payload = deepcopy(payload)
     world = payload.get("simulation", {}).get("world")
+    # Static topology/population inputs already live in the immutable creation
+    # event. Keep runtime snapshots compact instead of duplicating that world
+    # in every five-second record (up to 120 copies per exercise).
+    if world and world.get("schema_version", 0) >= 3:
+        stored_payload = deepcopy({**payload, "simulation": {**payload["simulation"], "world": None}})
+        stored_payload["_frozen_world_ref"] = True
+    else:
+        stored_payload = deepcopy(payload)
     if world and world.get("schema_version", 0) >= 3:
         from app.services.simulation_checkpoints import recall
         checkpoint = recall(world, elapsed)
@@ -79,6 +86,13 @@ def load_snapshot(session: Session, drill_id: str, version: str | None = None) -
         return None
     payload = deepcopy(record.payload)
     payload.pop("_engine_checkpoint", None)
+    if payload.pop("_frozen_world_ref", False):
+        from app.services.exercise_world import frozen_world
+        drill = session.get(DrillSession, drill_id)
+        world = frozen_world(session, drill) if drill else None
+        if not world:
+            return None  # Rebuild rather than expose a partially restored snapshot.
+        payload["simulation"]["world"] = world
     return payload
 
 

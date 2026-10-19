@@ -85,18 +85,20 @@ def test_main_case_runs_from_scene_to_score(client: TestClient, monkeypatch) -> 
     cancelled = client.post(f"/api/v1/drills/{drill_id}/robot", headers=headers, json={"command": "cancel", "task_id": queued["robot"]["task_queue"][1]["id"]}).json()
     assert cancelled["robot"]["task_queue"][1]["status"] == "cancelled"
     assert client.post(f"/api/v1/drills/{drill_id}/robot", headers=headers, json={"command": "broadcast"}).status_code == 409
-    invite = client.get(f"/api/v1/drills/{drill_id}/participant-invite", headers=headers).json()
+    invite = client.post(f"/api/v1/drills/{drill_id}/participant-invite", headers=headers).json()
     joined = client.get(f"/api/v1/participant/drills/{drill_id}?code={invite['code']}")
     assert joined.status_code == 200
+    member = client.post(f"/api/v1/participant/drills/{drill_id}/join?code={invite['code']}", json={"role": "居民代表", "display_name": "手机参演者"}).json()
     public_feedback = client.post(
         f"/api/v1/participant/drills/{drill_id}/actions?code={invite['code']}",
-        json={"role": "居民代表", "action": "acknowledge", "message": "手机端已收到告警"},
+        json={"role": "居民代表", "action": "acknowledge", "message": "手机端已收到告警", "participant_token": member["token"]},
     )
     assert public_feedback.status_code == 200
     resident_role = next(item for item in public_feedback.json()["participants"] if item["role"] == "居民代表")
     assert resident_role["action_count"] == 1
     assert resident_role["last_action"] == "acknowledge"
-    with client.websocket_connect(f"/api/v1/ws/drills/{drill_id}?code={invite['code']}") as websocket:
+    ticket = client.post(f"/api/v1/participant/drills/{drill_id}/socket-ticket", json={"code":invite["code"]}).json()["ticket"]
+    with client.websocket_connect(f"/api/v1/ws/drills/{drill_id}?ticket={ticket}&protocol=3") as websocket:
         synced = websocket.receive_json()
         assert synced["data"]["events"][0]["event_type"] == "participant.acknowledge"
     directed = client.post(
@@ -195,17 +197,15 @@ def test_main_case_runs_from_scene_to_score(client: TestClient, monkeypatch) -> 
         params={"baseline_id": drill_id, "candidate_id": drill_id},
     )
     assert invalid_comparison.status_code == 422
-    # Regression: a connected director must drive the simulation heartbeat.
-    # Previously websocket snapshots were read-only, so automatic sampling,
-    # movement milestones and score evidence stalled until another HTTP action.
+    # Scheduler owns advancement; a connected observer must not tick the engine.
     import app.api.routes.operations as operations_route
     heartbeat_calls: list[str] = []
     original_advance = operations_route.advance_engine
     monkeypatch.setattr(operations_route, "advance_engine", lambda session, active_drill: heartbeat_calls.append(active_drill.id))
-    access_token = headers["Authorization"].removeprefix("Bearer ")
-    with client.websocket_connect(f"/api/v1/ws/drills/{second_drill['id']}?token={access_token}") as websocket:
+    ticket = client.post(f"/api/v1/drills/{second_drill['id']}/socket-ticket", headers=headers).json()["ticket"]
+    with client.websocket_connect(f"/api/v1/ws/drills/{second_drill['id']}?ticket={ticket}&protocol=3") as websocket:
         assert websocket.receive_json()["type"] == "drill.snapshot"
-    assert heartbeat_calls == [second_drill["id"]]
+    assert heartbeat_calls == []
     monkeypatch.setattr(operations_route, "advance_engine", original_advance)
     reset = client.post(f"/api/v1/communities/{community['id']}/demo-reset", headers=headers)
     assert reset.status_code == 200

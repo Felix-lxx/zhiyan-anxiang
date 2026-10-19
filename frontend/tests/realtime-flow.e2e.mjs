@@ -48,7 +48,7 @@ try {
     }
   })
   phone = await phoneContext.newPage(); phone.setDefaultTimeout(25000); phone.on('pageerror', e => errors.push(e.message)); observe(phone, 'phone')
-  const invite = await api('/drills/' + drillId + '/participant-invite')
+  const invite = await api('/drills/' + drillId + '/participant-invite', 'POST')
   await phone.goto(`${base}/participant/${drillId}?code=${invite.code}`)
   await phone.locator('#participant-name').fill('联动验收组')
   await phone.getByRole('button', { name: '登记并接收任务', exact: true }).click()
