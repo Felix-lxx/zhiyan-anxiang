@@ -26,7 +26,10 @@ def test_history_index_does_not_run_simulation(client: TestClient, monkeypatch):
 def test_join_code_and_exception_report(client: TestClient):
     headers, data = ready(client)
     drill_id = data['drill_id']
-    code = drill_id[-6:].upper()
+    invitation = client.post(f'/api/v1/drills/{drill_id}/participant-invite', headers=headers)
+    assert invitation.status_code == 200
+    code = invitation.json()['code']
+    assert len(code) == 32
     resolved = client.get('/api/v1/participant/resolve', params={'code': ' '+code.lower()+' '})
     assert resolved.status_code == 200 and resolved.json()['drill_id'] == drill_id
     assert client.get('/api/v1/participant/resolve?code=bad').status_code == 422

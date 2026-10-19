@@ -14,8 +14,11 @@ def test_create_demo_community_is_idempotent_and_complete(client: TestClient) ->
     assert len(objects) == 14
     assert {item["object_type"] for item in objects} >= {"building", "charging_shed", "fire_hydrant", "assembly_point"}
     network = client.get(f"/api/v1/communities/{community['id']}/road-network", headers=headers).json()
-    assert len(network["nodes"]) == 8
-    assert len(network["edges"]) == 10
+    # The current validated demo map has a west-side fire turning point and an
+    # emergency bypass, so vehicle access does not depend on a diagonal route
+    # through building geometry.
+    assert len(network["nodes"]) == 9
+    assert len(network["edges"]) == 11
     assert client.get(f"/api/v1/communities/{community['id']}/road-network/reachability", headers=headers).json()["status"] == "passed"
 
 

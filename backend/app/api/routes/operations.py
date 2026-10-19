@@ -313,10 +313,15 @@ def reopen_road(drill_id: str, edge_id: str, identity: AuthenticatedIdentity = D
     edge = next((e for e in network["edges"] if e["id"] == edge_id), None)
     if not edge:
         raise HTTPException(404, "未找到本场次道路。")
-    if not clear_segment((edge["start"]["x"], edge["start"]["y"]), (edge["end"]["x"], edge["end"]["y"]), network.get("obstacles", []), .22):
+    # A restricted road belongs to the frozen, validated base map.  Restoring
+    # it clears a temporary occupancy constraint; it is not a request to draw
+    # a new segment through a building.  Geometry validation remains necessary
+    # for event-blocked roads where the operator is changing a live closure.
+    if edge["status"] == "blocked" and not clear_segment((edge["start"]["x"], edge["start"]["y"]), (edge["end"]["x"], edge["end"]["y"]), network.get("obstacles", []), .22):
         raise HTTPException(409, "该道路与楼体净距范围相交，不能通过解除封锁恢复。请调整地图后新建场次。")
-    if edge["status"] == "blocked":
-        append_event(session, drill, "road.reopened", identity.username, edge["name"] + "已解除封锁，重新计算路径。", {"blocked_edge_id": edge_id})
+    if edge["status"] in {"blocked", "restricted"}:
+        action = "解除封锁" if edge["status"] == "blocked" else "恢复消防通道"
+        append_event(session, drill, "road.reopened", identity.username, edge["name"] + "已" + action + "，重新计算路径。", {"blocked_edge_id": edge_id})
         robot = session.scalar(select(RobotAgent).where(RobotAgent.drill_session_id == drill.id))
         if robot:
             replan_robot_queue(session, drill, robot, "道路恢复通行，重算未完成任务。")
