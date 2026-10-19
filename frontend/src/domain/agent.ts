@@ -9,14 +9,22 @@ export interface AgentCandidate {
   id:string; title:string; can_apply:boolean; reason:string; coverage:string; forecast_at:number; forecast_seconds:number
   assignments:AgentAssignment[]
   robot_support?:AgentRobotSupport|null
+  assist_resource?:{capacity:number;busy:number;required:number;waves:number|null}
   geometry_issues?:Array<{edge_id:string;name:string;reason:string}>
   metrics:{ north:number;south:number;unreachable:number;arrived:number;exposed:number;queue_seconds:number;score:number;score_delta:number }
 }
-export interface AgentStep { id:string;label:string;resident_ids:string[];exit?:'north'|'south';action?:string;kind?:'robot.command';depends_on?:string[];command_id:string;status:string;reason:string;progress:number }
+export interface AgentStepExecution {
+  total:number;arrived:number;blocked:number;queued:number;remaining_details:number
+  command_recorded:boolean;idle_seconds:number;stalled:boolean
+  attention:Array<{id:string;label:string;location:string;behavior:string;arrived:boolean;blocked:boolean;counted:boolean;queue_seconds:number;smoke_exposure:number;bottleneck:string|null;staff_name:string|null;responsible:string|null;escort_state:string|null}>
+  evidence:Array<{id:string;sequence:number;at_seconds:number;message:string}>
+}
+export interface AgentStep { id:string;label:string;resident_ids:string[];exit?:'north'|'south';action?:string;kind?:'robot.command';depends_on?:string[];command_id:string;status:string;reason:string;progress:number;execution?:AgentStepExecution }
 export interface AgentRun {
   id:string; goal:string; status:string; reason:string; revision:number;approved_revision:number|null;selected_candidate:string|null
   scope:{resident_ids:string[];building_id:string|null;building_name:string;priority_assist:boolean;robot_broadcast?:boolean;completion:string}
   candidates:AgentCandidate[];steps:AgentStep[];planner:string;planner_notice:string;at_seconds:number
   summary:{total:number;arrived:number;counted:number;assisted:number;exposed:number}
   history:Array<{id:string;kind:string;message:string;at_seconds:number}>
+  execution?:{at_seconds:number;event_sequence:number;staff:Array<{id:string;name:string;state:string;resident_id:string|null;responsible:string|null;completed_count:number}>}
 }
