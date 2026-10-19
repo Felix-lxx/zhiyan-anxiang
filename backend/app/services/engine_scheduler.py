@@ -5,6 +5,7 @@ import logging
 
 async def serve():
     from app.api.routes import operations
+    from app.core.database import SessionLocal
 
     def tick():
         from sqlalchemy import select
@@ -13,11 +14,11 @@ async def serve():
         # Discovery is read-only. Each lease and simulation step owns a short,
         # independent transaction so one drill cannot hold SQLite's writer lock
         # while the scheduler iterates over every other running drill.
-        with operations.SessionLocal() as discovery:
+        with SessionLocal() as discovery:
             drill_ids = list(discovery.scalars(select(DrillSession.id).where(DrillSession.status == "running")))
         for drill_id in drill_ids:
             try:
-                with operations.SessionLocal() as lease_session:
+                with SessionLocal() as lease_session:
                     acquired = acquire_engine_lease(lease_session, drill_id)
                     if acquired:
                         lease_session.commit()
@@ -25,7 +26,7 @@ async def serve():
                         lease_session.rollback()
                 if not acquired:
                     continue
-                with operations.SessionLocal() as work_session:
+                with SessionLocal() as work_session:
                     drill = work_session.get(DrillSession, drill_id)
                     if drill is None or drill.status != "running":
                         continue

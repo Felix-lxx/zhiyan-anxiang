@@ -28,9 +28,19 @@ def run_schema_migrations(engine: Engine) -> None:
             )
         if "20261018_01_runtime_lookup_indexes" not in applied:
             from app.models.operations import DrillEvent, DrillStateSnapshot
+            inspector = inspect(connection)
+            # A migration may be invoked by an upgrade probe against a legacy,
+            # intentionally partial database.  Never create an index before its
+            # owning table exists, and leave this version pending so normal
+            # application startup can apply it after ``create_all``.
+            all_tables_present = True
             for table in (DrillEvent.__table__, DrillStateSnapshot.__table__):
+                if not inspector.has_table(table.name):
+                    all_tables_present = False
+                    continue
                 for index in table.indexes:
                     if index.name in {"ix_drill_events_session_sequence", "ix_drill_snapshots_session_time"}:
                         index.create(bind=connection, checkfirst=True)
-            connection.execute(text("INSERT INTO schema_migrations(version, applied_at) VALUES (:version, :applied_at)"),
-                {"version":"20261018_01_runtime_lookup_indexes", "applied_at":datetime.now(UTC).isoformat()})
+            if all_tables_present:
+                connection.execute(text("INSERT INTO schema_migrations(version, applied_at) VALUES (:version, :applied_at)"),
+                    {"version":"20261018_01_runtime_lookup_indexes", "applied_at":datetime.now(UTC).isoformat()})
