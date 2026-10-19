@@ -8,6 +8,17 @@
 
 ![智演安巷内置社区数字孪生场景](frontend/public/assets/community-stage-current.png)
 
+## 仓库导航
+
+| 入口 | 说明 |
+| --- | --- |
+| [系统架构](docs/architecture/README.md) | 模块边界、实时命令链路与渐进重构计划 |
+| [文档导航](docs/README.md) | 当前架构、历史实现记录和竞赛资料索引 |
+| [贡献指南](CONTRIBUTING.md) | 分支、依赖方向、提交检查与 PR 约定 |
+| [使用指南](使用指南.md) | 演练演示与基本操作 |
+
+仓库通过 GitHub Actions 自动执行后端测试、前端基础检查与生产构建；本地和 CI 使用同一组命令。
+
 ## 当前版本进展
 
 2026-10-18 完成智能体执行监护与护送模型联动：
