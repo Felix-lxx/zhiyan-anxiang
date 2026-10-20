@@ -7,6 +7,7 @@ import GuidedExercise from '../src/components/GuidedExercise.vue'
 import DirectorTopbar from '../src/components/DirectorTopbar.vue'
 import SceneAssistant from '../src/components/SceneAssistant.vue'
 import type { Vehicle } from '../src/domain/drill'
+import type { AgentLiveState } from '../src/domain/agent'
 import '../src/styles/tokens.css'
 import '../src/styles.css'
 import '../src/styles/base.css'
@@ -20,6 +21,7 @@ import '../src/styles/director-readability.css'
 const state = reactive({
   elapsed: 0, preview: false, vehiclesOpen: false, coachOpen: false, assistantOpen: false,
   agentPreview: [] as Array<{id:string;route_points:Array<{x:number;y:number;height?:number}>}>,
+  agentFeed:null as AgentLiveState|null, connection:undefined as 'connecting'|'live'|'stale'|undefined,
   simulation: {
     spatial_network: { nodes: [], edges: [] },
     world: new URLSearchParams(location.search).has('rescue') ? {
@@ -45,6 +47,7 @@ const state = reactive({
 const preview = { kind: 'robot' as const, title: '巡检机器人 → 北门集合点', can_apply: true, expected_sequence: 4, notice: '确认后加入任务队列；需要等待前一任务完成。', planned_duration_seconds: 42, route_distance: 35, risk_score: 18, queue_position: 2, impact: { congested_before: 2, congested_after: 1, smoke_exposed_before: 1, smoke_exposed_after: 1, forecast_horizon_seconds: 30 }, score_impact: { before: 60, after: 63, delta: 3, note: '此处为布局验收数据，不代表实际演练成绩。' } }
 const arena = ref<InstanceType<typeof DigitalTwinArena>>()
 Object.assign(window, { arenaQA: {
+  agentStream(value:AgentLiveState|null,connection?:'connecting'|'live'|'stale'){state.agentFeed=value;state.connection=connection},
   coach(value: boolean) { state.coachOpen = value; state.vehiclesOpen = false; state.preview = false; state.assistantOpen = false },
   assistant(value: boolean) { state.assistantOpen = value; state.vehiclesOpen = false; state.preview = false },
   vehicles(value: boolean) { state.vehiclesOpen = value },
@@ -68,7 +71,7 @@ Object.assign(window, { arenaQA: {
 } })
 createApp({ setup: () => () => h('main', { class: ['operations-center--immersive atlas-director', { 'space-preview-open': state.preview, 'detail-panel-open': state.vehiclesOpen || state.assistantOpen, 'assistant-open': state.assistantOpen, 'coach-open': state.coachOpen && !state.vehiclesOpen && !state.preview && !state.assistantOpen }], 'data-ui-theme': 'immersive', 'data-mode': 'command' }, [
   h(DirectorTopbar, { name: '演练布局验收 · 不连接后端', subtitle: '隔离场景', socketState: 'live', statusLabel: '已结束', displayClock: '05:00', drillStatus: 'ended', busy: false, coachOpen: state.coachOpen, replay: false, onToggleCoach: () => { state.coachOpen = !state.coachOpen; state.vehiclesOpen = false; state.preview = false } }),
-  state.assistantOpen ? h(SceneAssistant, { open: true, apiBaseUrl: '/__layout_api__', accessToken: 'layout-only', drillId: 'layout-only', drillName: '布局验收', atSeconds: null, liveSeconds: 0, onClose: () => { state.assistantOpen = false }, onPlanPreview: people => { state.agentPreview = people }, onNavigate: action=>{state.assistantOpen=false;if(action.resident_id)arena.value?.focusResident(action.resident_id)} }) : null,
+  state.assistantOpen ? h(SceneAssistant, { open: true, apiBaseUrl: '/__layout_api__', accessToken: 'layout-only', drillId: 'layout-only', drillName: '布局验收', atSeconds: null, liveSeconds: 0, agentFeed:state.agentFeed,connection:state.connection, onClose: () => { state.assistantOpen = false }, onPlanPreview: people => { state.agentPreview = people }, onNavigate: action=>{state.assistantOpen=false;if(action.resident_id)arena.value?.focusResident(action.resident_id)} }) : null,
   h('div', { class: 'director-stage' }, [
     h('nav', { class: 'atlas-director-modes', 'aria-label': '导演台模式' }, ['观察', '指挥', '复盘'].map(label => h('button', label))),
     state.coachOpen ? h(GuidedExercise, { drill: { status: 'ended', engine_version: 3, elapsed_seconds: 300, participants: [], events: [], tasks: [], robot: null, simulation: state.simulation }, busy: false, replay: false, onClose: () => { state.coachOpen = false }, onTasks: () => { state.vehiclesOpen = true }, onCompare: () => { state.coachOpen = false; state.preview = true } }) : null,

@@ -8,6 +8,19 @@ export interface HelperState {
 
 export const helperIdentity = (helper:HelperState) => helper.staff_id || helper.id
 
+/** One visual status across detailed and fallback staff models. */
+export function helperPresentation(helper:HelperState) {
+  const states:Record<string,{label:string;color:number}> = {
+    approaching:{label:'沿通道前往会合',color:0x77b7ff},
+    escorting:{label:'已会合，同行护送',color:0x79ddcd},
+    blocked:{label:'护送通道受阻',color:0xff826c},
+    completed:{label:'护送完成，在集合区域待命',color:0xadcbb0},
+  }
+  const state=states[helper.state] ?? {label:'等待执行回执',color:0xe8b966}
+  const waiting=(helper.congestion??0)>55 && helper.state!=='completed' && helper.state!=='blocked'
+  return {label:waiting?`${state.label} · 正在排队`:state.label,color:waiting?0xe8b966:state.color}
+}
+
 /** Task history is not a population: one physical actor per frozen staff slot. */
 export function presentHelpers(history:HelperState[]):HelperState[] {
   const latest = new Map<string,HelperState>()

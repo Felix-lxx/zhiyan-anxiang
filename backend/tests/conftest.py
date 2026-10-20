@@ -20,6 +20,9 @@ def client(monkeypatch) -> Generator[TestClient, None, None]:
     )
     TestSessionLocal = sessionmaker(bind=test_engine, autoflush=False, autocommit=False)
     monkeypatch.setattr("app.api.routes.operations.SessionLocal", TestSessionLocal)
+    # Admission middleware owns its own transaction; keep it in the same
+    # isolated database rather than the developer's configured runtime store.
+    monkeypatch.setattr("app.main.SessionLocal", TestSessionLocal)
     Base.metadata.create_all(bind=test_engine)
 
     def override_get_db() -> Generator[Session, None, None]:

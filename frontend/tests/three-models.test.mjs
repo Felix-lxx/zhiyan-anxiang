@@ -19,6 +19,22 @@ const { createPerson, posePerson, createPatrolRobot } = await load('actors')
 const { RoadVisuals } = await load('roadVisuals')
 const { CrowdRenderer } = await load('crowdRenderer')
 const { presentHelpers, meetingRoute } = await load('helperPresentation')
+const { createRouteGuide } = await load('routeGuide')
+
+test('route arrows retain confirmed corners and stair height with a bounded mesh count', () => {
+  const points=[new THREE.Vector3(0,0,0),new THREE.Vector3(0,0,10),new THREE.Vector3(10,3,10)]
+  const guide=createRouteGuide(points,0x85ddff)
+  assert.equal(guide.children.length,2)
+  const line=guide.children[0].geometry.getAttribute('position')
+  points.forEach((p,i)=>assert.ok(new THREE.Vector3().fromBufferAttribute(line,i).distanceTo(p)<.00001))
+  const arrows=guide.getObjectByName('route-direction-marks').geometry.getAttribute('position')
+  assert.ok(arrows.count<=24)
+  for(let i=0;i<arrows.count;i+=4) {
+    const tip=new THREE.Vector3().fromBufferAttribute(arrows,i)
+    assert.ok(Math.abs(tip.x)<.00001 ? tip.z>=0&&tip.z<=10 : Math.abs(tip.z-10)<.00001&&Math.abs(tip.y-tip.x*.3)<.00001)
+  }
+  assert.equal(createRouteGuide([points[0],points[0]],0xffffff).children.length,0)
+})
 
 test('staff reuse keeps one physical actor and meeting paths preserve corridor corners', () => {
   const route = [{x:0,y:0,height:0},{x:0,y:10,height:0},{x:10,y:10,height:3}]

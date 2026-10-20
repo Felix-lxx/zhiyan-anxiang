@@ -1,11 +1,12 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, ref, watch } from 'vue'
 import { createApiClient } from '../api/client'
-import type { AgentAssignment, AgentCandidate, AgentRun } from '../domain/agent'
+import { canApplyAgentRun, type AgentAssignment, type AgentCandidate, type AgentRun, type AgentLiveState } from '../domain/agent'
 import AppIcon from './AppIcon.vue'
+import AgentOutcomeReview from './AgentOutcomeReview.vue'
 
-const props = defineProps<{ apiBaseUrl:string;accessToken:string;drillId:string;active:boolean;historical:boolean;modelAvailable:boolean;focusId?:string }>()
-const emit = defineEmits<{ preview:[people:AgentAssignment[]];focus:[id:string];robot:[];rollcall:[] }>()
+const props = defineProps<{ apiBaseUrl:string;accessToken:string;drillId:string;active:boolean;historical:boolean;modelAvailable:boolean;focusId?:string;liveFeed?:AgentLiveState|null;connection?:'connecting'|'live'|'stale' }>()
+const emit = defineEmits<{ preview:[people:AgentAssignment[]];focus:[id:string];robot:[];rollcall:[];replay:[at:number] }>()
 const api = createApiClient(props.apiBaseUrl, () => props.accessToken)
 const goal = ref('将目标居民分流疏散，重点人员安排护送'), building = ref(''), assist = ref(true), useModel = ref(false)
 const robotBroadcast = ref(false)
@@ -15,6 +16,9 @@ const loading = ref(false), busy = ref(false), error = ref(''), syncError = ref(
 let timer:ReturnType<typeof setTimeout>|undefined, generation=0, pollEpoch=0, requestId='', disposed=false
 let readController:AbortController|null=null
 const run = computed(() => runs.value[0])
+const streamReady=computed(()=>props.connection==='live' && props.liveFeed?.id===props.drillId)
+const coordination = computed(() => run.value?.execution?.coordination)
+const laneLabels:Record<string,string> = { observing:'持续核对',paused:'现场冻结',review:'需要复核',approval:'待人工确认',confirmed:'已确认',waiting:'等待条件',attention:'需要关注' }
 const candidate = computed(() => run.value?.candidates.find(p => p.id===chosen.value) ?? run.value?.candidates[0])
 const live = computed(() => !props.historical && drillStatus.value==='running')
 const canCreate = computed(() => !run.value || ['completed','stopped','taken_over','unfinished'].includes(run.value.status))
@@ -26,7 +30,17 @@ const stepSummary = computed(() => {
 function dependencyLabel(step: { depends_on?:string[] }) {
   return step.depends_on?.map(id => run.value?.steps.find(item => item.id === id)?.label).filter(Boolean).join('、')
 }
-const clock = (seconds:number) => `${String(Math.floor(seconds/60)).padStart(2,'0')}:${String(seconds%60).padStart(2,'0')}`
+const clock = (seconds:number) => `${String(Math.floor(seconds/60)).padStart(2,'0')}:${String(Math.floor(seconds%60)).padStart(2,'0')}`
+const signed = (value:number) => `${value>0?'+':''}${value}`
+function nextAction() {
+  const action=coordination.value?.next_action
+  if (!action || busy.value || syncError.value) return
+  if (action.kind==='replan') void act('replan')
+  else if (action.kind==='rollcall') emit('rollcall')
+  else if (action.kind==='robot') emit('robot')
+  else if (action.kind==='focus' && action.resident_id) emit('focus', action.resident_id)
+  else detail.value=action.kind==='review'?'plan':run.value?.status==='completed'?'evidence':'execution'
+}
 function setRun(value:AgentRun) {
   const changed = run.value?.id !== value.id
   runs.value = [value,...runs.value.filter(r => r.id!==value.id)]
@@ -34,13 +48,25 @@ function setRun(value:AgentRun) {
   if (changed) detail.value=value.steps.length?'execution':'plan'
   if (!value.steps.some(step => step.id===expandedStep.value)) expandedStep.value=(value.steps.find(step=>['blocked','waiting','executing'].includes(step.status))??value.steps[0])?.id??''
 }
+function applyStream() {
+  if(!streamReady.value || !props.liveFeed || !props.active || props.historical || busy.value || disposed)return
+  const value=props.liveFeed, incoming=value.runs[0]
+  if(incoming && !canApplyAgentRun(incoming,run.value))return
+  // An in-flight pre-creation frame cannot erase an HTTP-confirmed new plan.
+  if(!incoming && run.value)return
+  generation++;readController?.abort();loading.value=false;syncError.value=''
+  buildings.value=value.buildings;drillStatus.value=value.drill_status
+  if(incoming)setRun(incoming)
+  runs.value=value.runs
+}
 async function read(initial=false, reconcile=false) {
   if (!props.active || props.historical || disposed || (busy.value && !reconcile)) return
+  if(streamReady.value&&!reconcile){applyStream();return}
   const version=generation, scope=props.drillId
   readController?.abort(); const controller=new AbortController();readController=controller
   if (initial) loading.value=true
   try {
-    const value=await api.get<{buildings:Array<{id:string;name:string}>;runs:AgentRun[];drill_status:string}>(`/drills/${scope}/agent/runs`,{signal:controller.signal})
+    const value=await api.get<{buildings:Array<{id:string;name:string}>;runs:AgentRun[];drill_status:string}>(`/drills/${scope}/agent/runs`,{signal:AbortSignal.any([controller.signal,AbortSignal.timeout(10000)])})
     if (version!==generation || scope!==props.drillId || disposed) return
     buildings.value=value.buildings;drillStatus.value=value.drill_status;syncError.value=''
     if(value.runs[0])setRun(value.runs[0])
@@ -50,7 +76,7 @@ async function read(initial=false, reconcile=false) {
   finally { if(version===generation)loading.value=false;if(readController===controller)readController=null }
 }
 async function poll(epoch=pollEpoch) {
-  await read()
+  if(!streamReady.value)await read()
   if(epoch===pollEpoch && props.active && !props.historical && !disposed) timer=setTimeout(()=>poll(epoch),3000)
 }
 async function create() {
@@ -64,11 +90,11 @@ async function create() {
   } catch(cause){if(version===generation)error.value=cause instanceof Error?cause.message:'方案生成失败，请重试。'}
   finally{if(version===generation)busy.value=false}
 }
-async function act(action:'approve'|'stop'|'replan') {
+async function act(action:'approve'|'stop'|'replan'|'review') {
   if(!run.value||busy.value||props.historical)return
   generation++;readController?.abort();const current=run.value,version=generation;busy.value=true;error.value=''
   try{
-    const value=await api.post<AgentRun>(`/drills/${props.drillId}/agent/runs/${current.id}/actions`,{action,revision:current.revision,candidate_id:action==='approve'?candidate.value?.id:null})
+    const value=await api.post<AgentRun>(`/drills/${props.drillId}/agent/runs/${current.id}/actions`,{action,revision:current.revision,candidate_id:action==='approve'?candidate.value?.id:null},{signal:AbortSignal.timeout(30000)})
     if(version!==generation||disposed)return
     setRun(value);detail.value=action==='approve'?'execution':'plan';emit('preview',[])
   }catch(cause){if(version===generation){error.value=cause instanceof Error?cause.message:'计划操作失败';await read(false,true)}}
@@ -89,6 +115,7 @@ function showRoute(value:AgentCandidate){
   emit('preview',sample)
 }
 watch([goal,building,assist,useModel,robotBroadcast,()=>props.focusId],()=>{requestId=''})
+watch([()=>props.liveFeed,streamReady,()=>props.active,()=>props.historical,busy],applyStream,{flush:'post'})
 watch(chosen,()=>emit('preview',[]),{flush:'sync'})
 watch(()=>props.drillId,()=>{runs.value=[];buildings.value=[];chosen.value='';expandedStep.value='';building.value='';requestId='';error.value='';syncError.value='';drillStatus.value=''})
 watch([()=>props.active,()=>props.historical,()=>props.drillId],()=>{
@@ -103,7 +130,8 @@ onBeforeUnmount(()=>{disposed=true;generation++;pollEpoch++;clearTimeout(timer);
   <section class="agent-workspace" aria-label="疏散目标计划" :aria-busy="busy||loading">
     <p v-if="historical" class="agent-workspace__notice">正在查看历史现场。返回实时现场后可制定或执行目标计划，历史解读仍在对话中查看。</p>
     <template v-else>
-      <div class="agent-workspace__intro"><h3>分流、护送与机器人协同</h3><p>选择楼栋与行动范围，比较方案后确认执行。居民先行撤离，机器人独立前往楼门，到位后广播；最后由参演者核验清点。</p></div>
+      <div class="agent-workspace__intro"><h3>疏散协同智能体</h3><p>设定目标，比较出口方案，确认后持续监督居民、护送员与机器人。现场变化时提示复核，到场后转交人工清点。</p></div>
+      <p v-if="connection" class="agent-workspace__sync" role="status"><AppIcon :name="streamReady?'pulse':'refresh'" :size="17" />{{streamReady?'与三维现场实时联动':connection==='stale'?'连接恢复中，定时核对最近状态':'正在连接现场，暂用状态读取'}}</p>
       <p v-if="syncError" class="agent-workspace__error" role="alert">{{syncError}} <button type="button" @click="read(true)">重新连接</button></p>
       <p v-if="loading&&!run" role="status">正在恢复本场目标计划…</p>
       <form v-if="canCreate&&!loading" class="agent-workspace__form" @submit.prevent="create">
@@ -123,21 +151,51 @@ onBeforeUnmount(()=>{disposed=true;generation++;pollEpoch++;clearTimeout(timer);
         <header><strong>{{labels[run.status]||run.status}}</strong><span>计划版本 {{run.revision}} · {{clock(run.at_seconds)}}</span></header>
         <p class="agent-workspace__goal">{{run.goal}}</p><p>{{run.reason}}</p>
         <p class="agent-workspace__meta">{{run.scope.building_name}} · {{run.summary.total}} 人 · {{run.planner_notice}}</p>
+        <section v-if="coordination" class="agent-workspace__coordination" aria-label="智能体协同状态">
+          <div class="agent-workspace__coordination-heading"><h4>当前协同</h4><span>现场 {{clock(coordination.at_seconds)}}</span></div>
+          <ol class="agent-workspace__lanes">
+            <li v-for="lane in coordination.lanes" :key="lane.id" :data-state="lane.state">
+              <div><strong>{{lane.label}}</strong><span>{{laneLabels[lane.state]||lane.state}}</span></div><p>{{lane.detail}}</p>
+            </li>
+          </ol>
+          <div class="agent-workspace__next">
+            <p>{{coordination.next_action.reason}}</p>
+            <button type="button" :disabled="busy||!!syncError" @click="nextAction">{{coordination.next_action.label}}<AppIcon name="arrowRight" :size="18" /></button>
+          </div>
+        </section>
         <p v-if="run.scope.robot_broadcast" class="agent-workspace__flow">居民分流与护送并行推进；机器人到位后广播，两条支线完成后核验清点。</p>
         <dl class="agent-workspace__counts"><div><dt>到集合点</dt><dd>{{run.summary.arrived}} / {{run.summary.total}}</dd></div><div><dt>已清点</dt><dd>{{run.summary.counted}}</dd></div><div><dt>已会合护送</dt><dd>{{run.summary.assisted}}</dd></div><div><dt>暴露超阈值</dt><dd>{{run.summary.exposed}}</dd></div></dl>
         <nav class="agent-workspace__tabs" aria-label="目标计划视图"><button v-for="tab in (['plan','execution','evidence'] as const)" :key="tab" type="button" :aria-pressed="detail===tab" @click="detail=tab">{{ ({plan:'方案',execution:'执行',evidence:'依据'})[tab] }}</button></nav>
+        <section v-if="run.recovery" class="agent-workspace__recovery" aria-label="接续执行范围">
+          <h4>从当前现场接续</h4>
+          <p>{{clock(run.recovery.at_seconds)}} 重新比较时，保留 {{run.recovery.retained_arrived}} 名已到场人员，只调整 {{run.recovery.remaining}} 名未到场人员。{{run.recovery.active_escorts ? `${run.recovery.active_escorts} 名值守员继续原会合与护送，不重复占用岗位。` : ''}}</p>
+          <p class="agent-workspace__meta">不回退人员位置、不重置烟气暴露和排队记录；{{run.status==='awaiting_approval'?'新方案仍需确认。':run.status==='needs_review'?'现场再次需要复核。':'行动进度按真实回执更新。'}}到场与清点进度以上方实时数据为准。</p>
+        </section>
         <section v-if="detail==='plan'" aria-label="候选分流方案">
-          <p v-if="run.candidates.length" class="agent-workspace__meta">同一起点向后预演 30 秒。居民北侧蓝线、南侧金线，最多显示 48 条代表路线；机器人为紫线。</p>
+          <p v-if="run.status==='needs_review'" class="agent-workspace__notice">后续自动下令已暂停；下面保留的是原方案。请先“按当前现场重新比较”，不会取消已经受理的行动。</p>
+          <p v-if="run.candidates.length" class="agent-workspace__meta">同一起点向后预演 30 秒。居民北侧蓝线、南侧金线，最多显示 48 条代表路线；机器人为紫线，箭头表示沿通道的前进方向。</p>
           <div class="agent-workspace__candidates">
             <article v-for="item in run.candidates" :key="item.id" :data-selected="candidate?.id===item.id">
               <label class="agent-workspace__check"><input type="radio" :name="'candidate-'+run.id" :value="item.id" v-model="chosen" :disabled="busy" /><strong>{{item.title}}</strong></label>
               <p v-if="candidate?.id!==item.id" class="agent-workspace__meta">北 {{item.metrics.north}} · 南 {{item.metrics.south}} · 不可达 {{item.metrics.unreachable}} 人；选中查看预演。</p>
               <template v-if="candidate?.id===item.id">
+              <section v-if="item.allocation" class="agent-workspace__decision" aria-label="出口分配依据">
+                <h4>为什么这样分流</h4><p>{{item.allocation.description}}</p>
+                <p v-if="item.allocation.rule==='risk_capacity'" class="agent-workspace__meta">相对路径优先方案，{{item.allocation.changed_residents}} 人调整出口。{{item.allocation.same_allocation?'当前两种规则得到相同分配，不人为制造方案差异。':''}}</p>
+                <p v-if="item.baseline_metrics" class="agent-workspace__meta">相对不下达本方案、沿用原安排：30 秒后到场 {{signed(item.metrics.arrived-item.baseline_metrics.arrived)}} 人，暴露超阈值 {{signed(item.metrics.exposed-item.baseline_metrics.exposed)}} 人，累计排队 {{signed(item.metrics.queue_seconds-item.baseline_metrics.queue_seconds)}} 人秒。</p>
+                <details v-if="item.allocation.bottlenecks.length">
+                  <summary>查看 {{item.allocation.bottlenecks.length}} 处共享通道压力</summary>
+                  <ul><li v-for="place in item.allocation.bottlenecks" :key="place.edge_id">
+                    <div><strong>{{place.name}}</strong><p>本方案途经 {{place.assigned}} 人 · 其他人员当前等待 {{place.waiting}} 人<br />通行能力 {{place.flow_capacity}} 人/秒 · 现场风险 {{place.risk_score}}/100</p></div>
+                    <button type="button" :disabled="busy" @click="emit('focus',place.resident_id)">查看途经居民</button>
+                  </li></ul>
+                </details>
+              </section>
               <dl><div><dt>出口分配</dt><dd>北 {{item.metrics.north}} · 南 {{item.metrics.south}}</dd></div><div><dt>不可达</dt><dd>{{item.metrics.unreachable}} 人</dd></div><div><dt>30 秒后到场</dt><dd>{{item.metrics.arrived}} 人</dd></div><div><dt>暴露超阈值</dt><dd>{{item.metrics.exposed}} 人</dd></div><div><dt>累计排队</dt><dd>{{item.metrics.queue_seconds}} 人秒</dd></div><div><dt>全场预测分</dt><dd>{{item.metrics.score}} <small>（{{item.metrics.score_delta>=0?'+':''}}{{item.metrics.score_delta}}）</small></dd></div></dl>
               <p v-if="item.assist_resource?.required" class="agent-workspace__resource-summary">需护送 {{item.assist_resource.required}} 人；本场 {{item.assist_resource.capacity}} 名值守员，{{item.assist_resource.busy}} 名正在执行。{{item.assist_resource.waves ? `至少分 ${item.assist_resource.waves} 批安排，实际等待取决于在途任务。` : '当前无可用值守员，不能执行护送。'}}</p>
               <section v-if="item.robot_support" class="agent-workspace__resource" aria-label="机器人协同条件">
                 <h4><AppIcon name="robot" :size="18" />{{ item.robot_support.target }}</h4>
-                <dl><div><dt>预计到位</dt><dd>{{ item.robot_support.already_completed ? '已完成广播' : item.robot_support.duration_seconds === null ? '暂不可达' : item.robot_support.duration_seconds + ' 秒' }}</dd></div><div v-if="!item.robot_support.already_completed"><dt>电量需求 / 当前</dt><dd>{{ item.robot_support.battery_required }} / {{ item.robot_support.battery_available ?? '—' }}</dd></div></dl>
+                <dl><div><dt>预计到位</dt><dd>{{ item.robot_support.already_completed ? '已完成广播' : item.robot_support.already_arrived ? '原任务已到位' : item.robot_support.duration_seconds === null ? '暂不可达' : item.robot_support.duration_seconds + ' 秒' }}</dd></div><div v-if="!item.robot_support.already_completed"><dt>{{item.robot_support.reusing_task ? '剩余电量需求 / 当前' : '电量需求 / 当前'}}</dt><dd>{{ item.robot_support.battery_required }} / {{ item.robot_support.battery_available ?? '—' }}</dd></div></dl>
                 <p>{{ item.robot_support.notice }}</p>
               </section>
               <details v-if="item.geometry_issues?.length" class="agent-workspace__geometry">
@@ -152,13 +210,27 @@ onBeforeUnmount(()=>{disposed=true;generation++;pollEpoch++;clearTimeout(timer);
           <p v-if="candidate" class="agent-workspace__meta">预演起点 {{clock(candidate.forecast_at)}} · {{candidate.coverage}}</p>
           <button v-if="run.candidates.length" type="button" @click="emit('preview',[])">清除现场方案路线</button>
           <div class="agent-workspace__actions">
-            <button v-if="run.status==='awaiting_approval'" type="button" class="agent-workspace__primary" :disabled="busy||!live||!candidate?.can_apply||!!syncError" @click="act('approve')">确认方案并执行</button>
+            <button v-if="run.status==='awaiting_approval'" type="button" class="agent-workspace__primary" :disabled="busy||!live||!candidate?.can_apply||!!syncError||run.approval_guard?.can_approve===false" @click="act('approve')">确认方案并执行</button>
             <button v-if="['awaiting_approval','needs_review'].includes(run.status)" type="button" :disabled="busy||drillStatus==='ended'" @click="act('replan')">按当前现场重新比较</button>
           </div>
+          <p v-if="run.approval_guard?.needs_replan" class="agent-workspace__notice">{{run.approval_guard.reason}} 原预演保留用于对照，重新比较后需再次确认。</p>
           <p v-if="!live&&run.status==='awaiting_approval'" class="agent-workspace__notice">请先开始或继续演练，再确认执行。</p>
           <p v-if="!run.candidates.length">{{run.scope.completion}}</p>
         </section>
         <section v-else-if="detail==='execution'" aria-label="目标执行步骤">
+          <p v-if="run.decision" class="agent-workspace__meta">执行依据：{{run.decision.title}} · 批准版本 {{run.decision.revision}} · {{clock(run.decision.approved_at)}} 确认。完整分流依据保留在“依据”中。</p>
+          <button v-if="run.outcomes?.length" type="button" class="agent-workspace__disclosure" @click="detail='evidence'">{{run.outcomes[0]?.result?'查看预测与实际结果差异':`查看 ${clock(run.outcomes[0]!.due_seconds)} 结果核对计划`}}<AppIcon name="arrowRight" :size="18" /></button>
+          <section v-if="coordination && (coordination.issues.length || coordination.bottlenecks.length)" class="agent-workspace__attention" aria-label="需要关注的现场">
+            <h4>先看这些现场</h4>
+            <p v-if="(coordination.issue_count??0)>coordination.issues.length" class="agent-workspace__meta">共 {{coordination.issue_count}} 项人员风险，优先列出 {{coordination.issues.length}} 项；全部目标人员持续接受监护。</p>
+            <ul><li v-for="issue in coordination.issues" :key="issue.id"><div><strong>{{issue.label}}</strong><p>{{issue.reason}}</p></div><button type="button" @click="emit('focus',issue.resident_id)"><AppIcon name="target" :size="18" />定位</button></li>
+            <li v-for="place in coordination.bottlenecks" :key="place.edge_id"><div><strong>{{place.name}}</strong><p>{{place.waiting}} 人等待 · 最长累计排队 {{place.max_wait_seconds}} 秒</p></div><button type="button" @click="emit('focus',place.resident_id)">查看队列</button></li></ul>
+          </section>
+          <section v-if="coordination?.robot.included" class="agent-workspace__robot-live" aria-label="机器人实时执行">
+            <div><h4><AppIcon name="robot" :size="18" />机器人协同</h4><button type="button" @click="emit('robot')">查看三维位置</button></div>
+            <p>{{coordination.robot.reason||'等待机器人状态回执'}} · 电量 {{coordination.robot.battery??'—'}}%</p>
+            <p class="agent-workspace__meta">到位与广播步骤已完成 {{coordination.robot.steps_completed}} / {{coordination.robot.steps_total}}</p>
+          </section>
           <p v-if="run.execution" class="agent-workspace__meta">现场同步 {{clock(run.execution.at_seconds)}} · 事件 {{run.execution.event_sequence}}。展开步骤可定位受阻人员与查看执行依据。</p>
           <p v-if="['stopped','taken_over'].includes(run.status)" class="agent-workspace__notice">自动下令已停止；下方继续显示已受理指令的实际进展。</p>
           <p v-if="!run.steps.length">方案确认后，这里显示命令进度与等待原因。</p>
@@ -193,8 +265,23 @@ onBeforeUnmount(()=>{disposed=true;generation++;pollEpoch++;clearTimeout(timer);
           </ol>
           <button v-if="run.status==='awaiting_rollcall'" type="button" @click="emit('rollcall')">前往集合清点</button>
         </section>
-        <section v-else aria-label="计划过程证据"><p>{{run.scope.completion}}</p><ol class="agent-workspace__evidence"><li v-for="item in run.history" :key="item.id"><time>{{clock(item.at_seconds)}}</time><p>{{item.message}}</p></li></ol></section>
-        <div v-if="!canCreate" class="agent-workspace__stop"><button type="button" :disabled="busy" @click="act('stop')">{{run.steps.length?'停止后续自动下令':'取消未执行方案'}}</button><p>已受理的动作仍继续。暂停现场请使用顶部“暂停演练”；人工改派后，本计划会让出控制。</p></div>
+        <section v-else aria-label="计划过程证据">
+          <section v-if="run.decision" class="agent-workspace__decision" aria-label="已批准决策依据">
+            <h4>{{run.decision.title}} · 版本 {{run.decision.revision}}</h4>
+            <p>{{clock(run.decision.approved_at)}} 人工确认，预演起点 {{clock(run.decision.forecast_at)}}。</p>
+            <p v-if="run.decision.allocation">{{run.decision.allocation.description}}</p>
+            <p class="agent-workspace__meta">当时向后预演 {{run.decision.forecast_seconds}} 秒：预计到场 {{run.decision.metrics.arrived}} 人、暴露超阈值 {{run.decision.metrics.exposed}} 人、累计排队 {{run.decision.metrics.queue_seconds}} 人秒。此处保留批准时的预测，实际进展见“执行”。</p>
+          </section>
+          <AgentOutcomeReview v-if="run.outcomes?.length" :outcomes="run.outcomes" :elapsed="run.at_seconds" @replay="at=>emit('replay',at)" />
+          <p>{{run.scope.completion}}</p><ol class="agent-workspace__evidence"><li v-for="item in run.history" :key="item.id"><time>{{clock(item.at_seconds)}}</time><p>{{item.message}}</p></li></ol>
+        </section>
+        <div v-if="!canCreate" class="agent-workspace__stop">
+          <div class="agent-workspace__control-actions">
+            <button v-if="['executing','waiting','paused'].includes(run.status)" type="button" :disabled="busy||!!syncError" @click="act('review')"><AppIcon name="route" :size="18" />调整剩余行动</button>
+            <button type="button" :disabled="busy" @click="act('stop')">{{run.steps.length?'停止后续自动下令':'取消未执行方案'}}</button>
+          </div>
+          <p>调整只暂停后续自动下令，已受理动作仍继续；重新比较后需再次确认。暂停整个现场请使用顶部“暂停演练”；人工改派后，本计划会让出控制。</p>
+        </div>
       </article>
     </template>
   </section>
@@ -204,6 +291,8 @@ onBeforeUnmount(()=>{disposed=true;generation++;pollEpoch++;clearTimeout(timer);
 .agent-workspace{min-width:0;font-size:16px;line-height:1.65;color:#e9f1e8}
 .agent-workspace h3{font-size:20px;margin:0 0 8px}.agent-workspace p{margin:8px 0 12px;overflow-wrap:anywhere}
 .agent-workspace__intro{padding-bottom:16px;border-bottom:1px solid #335347;margin-bottom:18px}
+.agent-workspace__sync{display:flex;align-items:center;gap:var(--space-2);font-size:14px;color:var(--text-secondary)}
+.agent-workspace__sync svg{flex-shrink:0}
 .agent-workspace__geometry{margin-block:16px;border-block:1px solid #65836a;padding-block:8px;min-width:0}
 .agent-workspace__geometry summary{min-height:44px;align-content:center;cursor:pointer;color:#f0d6a3;overflow-wrap:anywhere}
 .agent-workspace__geometry ul{max-height:240px;overflow:auto;margin:0;padding-inline-start:22px}
@@ -237,6 +326,15 @@ onBeforeUnmount(()=>{disposed=true;generation++;pollEpoch++;clearTimeout(timer);
 .agent-workspace__actions{display:grid;gap:10px;margin-top:16px}.agent-workspace__steps{padding:0;list-style:none;margin:0}.agent-workspace__steps>li{padding:16px 0;border-bottom:1px solid #335347}.agent-workspace__step-heading{display:flex;flex-wrap:wrap;gap:6px 14px;justify-content:space-between}.agent-workspace__steps span{font-size:14px;color:#cce9a9}.agent-workspace progress{display:block;width:100%;height:6px;margin:12px 0;accent-color:#b4ddb1}
 .agent-workspace__evidence{padding:0;list-style:none}.agent-workspace__evidence>li{display:grid;grid-template-columns:56px minmax(0,1fr);gap:10px;padding:10px 0;border-bottom:1px solid #335347}.agent-workspace__evidence time{font-size:14px;color:#b4ddb1;font-variant-numeric:tabular-nums}.agent-workspace__evidence p{margin:0}
 .agent-workspace__stop{margin-top:22px;padding-top:16px;border-top:1px solid #476653}.agent-workspace__stop p{font-size:14px;color:#c1d3c4}.agent-workspace__stop button{width:100%}
+.agent-workspace__control-actions{display:flex;flex-wrap:wrap;gap:var(--space-3)}
+.agent-workspace__control-actions button{flex:1 1 200px;min-width:0;min-height:44px;display:flex;align-items:center;justify-content:center;gap:var(--space-2);white-space:normal}
+.agent-workspace__recovery{margin-block:var(--space-4);padding-block:var(--space-3);border-block:1px solid var(--border-default)}
+.agent-workspace__decision{padding-block:var(--space-3);margin-bottom:var(--space-3);border-bottom:1px solid var(--border-default)}
+.agent-workspace__decision summary{min-height:44px;align-content:center;cursor:pointer;overflow-wrap:anywhere}
+.agent-workspace__decision ul{list-style:none;padding:0;margin:var(--space-2) 0}
+.agent-workspace__decision li{min-width:0;padding-block:var(--space-3);border-top:1px solid var(--border-default)}
+.agent-workspace__decision li p{font-size:14px;color:var(--text-secondary)}
+.agent-workspace__decision button{min-height:44px;white-space:normal}
 .agent-workspace__resource-summary{padding-block:var(--space-3);border-block:1px solid var(--border-default);font-size:14px;color:var(--text-secondary)}
 .agent-workspace__disclosure{width:100%;display:flex;align-items:center;justify-content:space-between;gap:var(--space-2);margin-block:var(--space-3);min-height:44px;text-align:left}
 .agent-workspace__disclosure svg{flex-shrink:0}
@@ -251,4 +349,22 @@ onBeforeUnmount(()=>{disposed=true;generation++;pollEpoch++;clearTimeout(timer);
 .agent-workspace :is(button,strong){overflow-wrap:anywhere}
 .agent-workspace__step-heading>strong{flex:1 1 180px;min-width:0}
 .agent-workspace__detail .agent-workspace__evidence{margin-block:var(--space-3)}
+.agent-workspace__coordination{margin-block:var(--space-5);padding-block:var(--space-4);border-block:1px solid var(--border-default)}
+.agent-workspace__coordination-heading,.agent-workspace__lanes li>div,.agent-workspace__robot-live>div{display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:var(--space-2)}
+.agent-workspace h4{margin:0;font-size:16px}
+.agent-workspace__coordination-heading>span,.agent-workspace__lanes li>div>span{font-size:14px;color:var(--text-secondary)}
+.agent-workspace__lanes{margin:var(--space-3) 0;padding:0;list-style:none;display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:var(--space-4)}
+.agent-workspace__lanes li{min-width:0;padding-top:var(--space-3);border-top:1px solid var(--border-default)}
+.agent-workspace__lanes p{font-size:14px;margin:var(--space-2) 0 0;color:var(--text-secondary)}
+.agent-workspace__lanes li[data-state=attention] strong,.agent-workspace__lanes li[data-state=review] strong{color:var(--status-warning)}
+.agent-workspace__next{margin-top:var(--space-4)}
+.agent-workspace__next button{width:100%;min-height:44px;display:flex;align-items:center;justify-content:space-between;gap:var(--space-3);white-space:normal;text-align:left}
+.agent-workspace__attention{margin-block:var(--space-4)}
+.agent-workspace__attention ul{list-style:none;padding:0;margin:0}
+.agent-workspace__attention li{display:flex;align-items:center;gap:var(--space-3);padding-block:var(--space-3);border-bottom:1px solid var(--border-default)}
+.agent-workspace__attention li>div{flex:1;min-width:0}.agent-workspace__attention li p{margin:var(--space-1) 0 0;font-size:14px;color:var(--text-secondary)}
+.agent-workspace__attention button{flex-shrink:0;min-height:44px;display:flex;align-items:center;gap:var(--space-1)}
+.agent-workspace__robot-live{padding-block:var(--space-4);margin-bottom:var(--space-4);border-block:1px solid var(--border-default)}
+.agent-workspace__robot-live h4{display:flex;align-items:center;gap:var(--space-2)}
+@media(max-width:480px){.agent-workspace__lanes{grid-template-columns:minmax(0,1fr);gap:var(--space-3)}.agent-workspace__attention li{align-items:flex-start;flex-wrap:wrap}.agent-workspace__attention li>div{flex-basis:100%}}
 </style>

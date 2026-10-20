@@ -31,6 +31,8 @@ def test_goal_preview_approve_resume_and_manual_takeover(exercise):
     begun = client.post(url, headers=headers, json=payload)
     assert begun.status_code == 200, begun.text
     assert all(s["command_id"].startswith('agent-') for s in begun.json()["steps"])
+    assert begun.json()["decision"]["allocation"] == selected["allocation"]
+    assert begun.json()["decision"]["metrics"] == selected["metrics"]
     projected = begun.json()["steps"][0]["execution"]
     assert projected["command_recorded"] and projected["attention"] and projected["evidence"]
     assert projected["attention"][0]["id"] in ids
@@ -39,6 +41,7 @@ def test_goal_preview_approve_resume_and_manual_takeover(exercise):
     assert again.status_code == 200, again.text
     with operations.SessionLocal() as db:
         initial_ids = list(db.scalars(select(DrillCommand.command_id)))
+        assert len([entry for entry in db.get(AgentRun, run["id"]).evidence if entry.get("decision")]) == 1
         advance_run(db, db.get(AgentRun, run["id"]), SimpleNamespace(username="admin"))
         assert list(db.scalars(select(DrillCommand.command_id))) == initial_ids
     # Direct legacy commands must also relinquish automatic control.
@@ -89,6 +92,10 @@ def test_stale_plan_and_stop_do_not_move_residents(exercise):
     ids = [data["simulation"]["residents"][0]["id"]]
     run = proposal(client, headers, root, ids)
     clock["t"] += 46
+    visible = client.get(root + '/agent/runs', headers=headers).json()["runs"][0]
+    assert not visible["approval_guard"]["can_approve"]
+    assert visible["approval_guard"]["needs_replan"]
+    assert visible["execution"]["coordination"]["next_action"]["kind"] == "replan"
     url = root + '/agent/runs/' + run["id"] + '/actions'
     stale = client.post(url, headers=headers, json={"action": "approve", "revision": 1, "candidate_id": run["candidates"][0]["id"]})
     assert stale.status_code == 409

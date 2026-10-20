@@ -2,6 +2,7 @@
 import type { DrillIndex, DrillEvent, DrillTask, Resident, Simulation, Robot, Drill, BranchComparison, SpatialIntent, SpatialPreview, CommandReceipt } from '../domain/drill'
 import { createApiClient } from '../api/client'
 import { connectLive, isNewerState } from '../api/live'
+import type { AgentLiveState } from '../domain/agent'
 import { sendCommand } from '../api/commands'
 import { useDrillPreview } from '../composables/useDrillPreview'
 import ExecutionFeedback from './ExecutionFeedback.vue'
@@ -63,6 +64,7 @@ function cancelSceneLoad() {
   error.value='已取消现场读取。可以重试或返回项目，演练记录没有改变。'
 }
 const selectedSceneId = ref(''), current = ref<Drill | null>(null)
+const agentFeed = ref<AgentLiveState|null>(null)
 const loading = ref(true), busy = ref(false), isPreparingDemo = ref(false)
 const autoStartAttempted = ref(false)
 const error = ref(''), form = ref({ name: '安巷社区夜间充电棚火灾演练', time_scale: 1 })
@@ -224,13 +226,14 @@ async function loadParticipantInvite(): Promise<void> {
 }
 async function copyParticipantLink(): Promise<void> { if (!participantLink.value) return; try { await navigator.clipboard.writeText(participantLink.value); latestCue.value = '参演链接已复制，可在手机浏览器直接打开' } catch { error.value = '当前浏览器未开放剪贴板权限，请选中上方完整参演链接并手动复制。' } }
 function connectSocket(drillId: string): void {
-  desiredDrillId = drillId; stopLive?.()
+  desiredDrillId = drillId; stopLive?.(); agentFeed.value=null
   stopLive = connectLive<Drill>({
     getUrl: async () => {
       const { ticket } = await api.post<{ ticket: string }>(`/drills/${drillId}/socket-ticket`)
-      return api.websocketUrl(`/api/v1/ws/drills/${drillId}?ticket=${encodeURIComponent(ticket)}`)
+      return api.websocketUrl(`/api/v1/ws/drills/${drillId}?ticket=${encodeURIComponent(ticket)}&agent=1`)
     }, drillId,
     onState: value => { if (desiredDrillId === drillId) applyCurrent(value) },
+    onAgentState: value => { if(desiredDrillId===drillId && current.value?.id===drillId)agentFeed.value=value },
     onStatus: state => { socketState.value = state }, onError: message => { error.value = message },
     onRecovered: (count, complete) => { if (desiredDrillId === drillId && count) latestCue.value = complete ? `连接已恢复，补齐 ${count} 条现场事件` : '连接已恢复；历史事件较多，已通过完整快照校准现场' },
   })
@@ -359,6 +362,12 @@ function closeAssistant(): void { assistantOpen.value = false; void nextTick(() 
 async function assistantNavigate(action: AssistantAction): Promise<void> {
   const historical = directorMode.value === 'replay' || Boolean(replay.value)
   closeFloatingPanels()
+  if (action.kind === 'replay' && Number.isFinite(action.at_seconds)) {
+    directorMode.value = 'replay'
+    void router.replace({query:{scene:selectedSceneId.value,drill:current.value?.id,mode:'replay'}})
+    await seekReplay(action.at_seconds!)
+    return
+  }
   if (historical && ['events', 'report', 'branch', 'focus'].includes(action.kind)) {
     if (directorMode.value !== 'replay') await openReplay()
     await nextTick()
@@ -430,7 +439,7 @@ onBeforeUnmount(() => { desiredDrillId = ''; stopLive?.(); clearSpatialPreview()
     <template v-else-if="displayed">
       <ReplayWorkspace v-if="directorMode==='replay'" ref="replayWorkspace" :drill="current" :displayed="displayed" :at="replayAt" :playing="replayPlaying" :loading="replayLoading" :busy="busy" @back="exitReplay" @seek="seekReplay" @play="replayPlaying=!replayPlaying" @fork="forkReplay" @compare="compareBranches" @export="downloadReport" @assistant="openReplayAssistant"/>
       <UiToast v-if="directorMode==='replay'&&error" class="atlas-replay-error" :message="error" tone="danger" @dismiss="error=''"/>
-      <SceneAssistant :key="current.id" :open="assistantOpen" :api-base-url="apiBaseUrl" :access-token="accessToken" :drill-id="current.id" :drill-name="current.name" :live-seconds="current.elapsed_seconds" :at-seconds="directorMode === 'replay' ? replayAt : replay?.at_seconds ?? null" :focus-context="assistantFocus" @plan-preview="people=>routePreview=people" @close="closeAssistant" @navigate="assistantNavigate" />
+      <SceneAssistant :key="current.id" :open="assistantOpen" :api-base-url="apiBaseUrl" :access-token="accessToken" :drill-id="current.id" :drill-name="current.name" :live-seconds="current.elapsed_seconds" :at-seconds="directorMode === 'replay' ? replayAt : replay?.at_seconds ?? null" :focus-context="assistantFocus" :agent-feed="agentFeed" :connection="socketState" @plan-preview="people=>routePreview=people" @close="closeAssistant" @navigate="assistantNavigate" />
       <DirectorTopbar v-show="directorMode!=='replay'" :name="current.name" :subtitle="(current.engine_version ?? 1) >= 2 ? '场景配置已冻结 · 三维现场实时运行' : '历史场次 · 固定主案例模型'" :socket-state="socketState" :status-label="statusLabel" :display-clock="displayClock" :drill-status="current.status" :busy="busy" :coach-open="coachVisible" :replay="Boolean(replay)" @back="emit('back')" @toggle-coach="toggleCoach" @action="act" @create="createDrill" />
       <section v-show="directorMode!=='replay'" class="director-stage">
         <nav class="atlas-director-modes" aria-label="导演台模式"><button :aria-pressed="directorMode==='observe'" @click="directorMode='observe';closeFloatingPanels()"><AppIcon name="eye"/>观察</button><button :aria-pressed="directorMode==='command'" @click="directorMode='command';closeFloatingPanels()"><AppIcon name="robot"/>指挥</button><button @click="openReplay"><AppIcon name="history"/>复盘</button></nav>

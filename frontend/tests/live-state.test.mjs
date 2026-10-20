@@ -5,7 +5,19 @@ import ts from 'typescript'
 
 const source = fs.readFileSync(new URL('../src/api/live.ts', import.meta.url), 'utf8')
 const code = ts.transpileModule(source, { compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.ESNext } }).outputText
-const { applyLiveMessage, isNewerState } = await import('data:text/javascript;base64,' + Buffer.from(code).toString('base64'))
+const { applyLiveMessage, applyAgentMessage, isNewerState } = await import('data:text/javascript;base64,' + Buffer.from(code).toString('base64'))
+
+test('plan stream has an independent baseline and rejects missing revisions', () => {
+  const prior={id:'d',state_version:'agent:a',source_version:'1:0',runs:[{id:'r',candidates:[1,2],status:'awaiting_approval'}]}
+  const next=applyAgentMessage(prior,{type:'agent.delta',drill_id:'d',base_version:'agent:a',state_version:'agent:b',patch:[
+    {path:['state_version'],value:'agent:b'},
+    {path:['runs'],entities:{added:[],removed:[],updated:[{id:'r',set:{status:'executing'},unset:[]}]}}
+  ]})
+  assert.equal(next.runs[0].status,'executing')
+  assert.equal(next.runs[0].candidates,prior.runs[0].candidates)
+  assert.equal(next.source_version,prior.source_version)
+  assert.throws(()=>applyAgentMessage(null,{type:'agent.delta',drill_id:'d',base_version:'agent:a',state_version:'agent:b',patch:[]}))
+})
 
 test('entity fields retain unchanged actors and routes, and validate missing IDs', () => {
   const prior = { id: 'd', state_version: '1:0', simulation: { residents: [{ id: 'a', x: 0, old: true, route: [1, 2] }, { id: 'b', x: 0 }] } }

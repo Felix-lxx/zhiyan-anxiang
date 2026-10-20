@@ -4,7 +4,7 @@
   "version": "0.1.0",
   "type": "module",
   "scripts": {
-    "test": "node --test tests/api-client.test.mjs tests/three-models.test.mjs tests/live-state.test.mjs tests/commands.test.mjs",
+    "test": "node --test tests/api-client.test.mjs tests/three-models.test.mjs tests/live-state.test.mjs tests/commands.test.mjs tests/agent-state.test.mjs",
     "test:e2e:realtime": "node tests/realtime-flow.e2e.mjs",
     "test:e2e:account": "node tests/account-layout.e2e.mjs",
     "dev": "vite",

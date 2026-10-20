@@ -1,12 +1,12 @@
 <script setup lang="ts">
 import { createApiClient } from '../api/client'
 import AgentPlanWorkspace from './AgentPlanWorkspace.vue'
-import type { AgentAssignment } from '../domain/agent'
+import type { AgentAssignment, AgentLiveState } from '../domain/agent'
 
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import AppIcon from './AppIcon.vue'
 import '../assistant.css'
-export type AssistantAction = { kind: 'missions' | 'events' | 'report' | 'command' | 'rollcall' | 'branch' | 'focus' | 'plan'; label: string; resident_id?: string; object_kind?:'robot' }
+export type AssistantAction = { kind: 'missions' | 'events' | 'report' | 'command' | 'rollcall' | 'branch' | 'focus' | 'plan' | 'replay'; label: string; resident_id?: string; object_kind?:'robot'; at_seconds?:number }
 export interface AssistantFocusContext { kind: 'resident' | 'road' | 'robot' | 'object' | 'command' | 'score' | 'replay'; id?: string; label: string; type?: string; detail?: string; x?: number; y?: number }
 interface Reply {
   mode: 'offline' | 'model'; model: string | null; answer: string; notice: string
@@ -14,7 +14,7 @@ interface Reply {
   sources: Array<{ id: string; title: string; detail: string }>; actions: AssistantAction[]
 }
 interface Message { role: 'user' | 'assistant'; content: string; reply?: Reply }
-const props = defineProps<{ apiBaseUrl: string; accessToken: string; drillId: string; drillName: string; open: boolean; atSeconds: number | null; liveSeconds: number; focusContext?: AssistantFocusContext | null }>()
+const props = defineProps<{ apiBaseUrl: string; accessToken: string; drillId: string; drillName: string; open: boolean; atSeconds: number | null; liveSeconds: number; focusContext?: AssistantFocusContext | null; agentFeed?:AgentLiveState|null;connection?:'connecting'|'live'|'stale' }>()
 const api = createApiClient(props.apiBaseUrl, () => props.accessToken)
 const emit = defineEmits<{ close: []; navigate: [action: AssistantAction]; planPreview: [people: AgentAssignment[]] }>()
 const activeView = ref<'chat' | 'plan'>('chat')
@@ -123,7 +123,7 @@ function navigate(action: AssistantAction) {
 }
 watch(() => props.open, open => {
   confirmClear.value = false
-  if (open) { previousFocus = document.activeElement instanceof HTMLElement ? document.activeElement : null; updateViewport(); void nextTick(() => input.value?.focus({ preventScroll: true })); if (!pending.value) void loadStatus() }
+  if (open) { if(!messages.value.length && !props.focusContext && props.atSeconds===null)activeView.value='plan'; previousFocus = document.activeElement instanceof HTMLElement ? document.activeElement : null; updateViewport(); void nextTick(() => { if(activeView.value==='chat')input.value?.focus({ preventScroll: true }) }); if (!pending.value) void loadStatus() }
   else void nextTick(() => { if (previousFocus?.isConnected && !previousFocus.closest('[inert]') && previousFocus.getClientRects().length) previousFocus.focus({ preventScroll: true }) })
   if (!open) { if (!keepPlanPreview) emit('planPreview', []); keepPlanPreview = false }
 })
@@ -173,7 +173,7 @@ onBeforeUnmount(() => { for (const [element, wasInert] of inertSiblings) element
       </div>
       <div v-if="error" class="scene-assistant__error" role="alert"><p>{{ error }}</p><button type="button" :disabled="pending" @click="send(lastQuestion)">重试本次问题</button></div>
     </div>
-    <div v-show="activeView==='plan'" class="scene-assistant__log" aria-label="目标计划工作区"><AgentPlanWorkspace :api-base-url="apiBaseUrl" :access-token="accessToken" :drill-id="drillId" :active="open&&activeView==='plan'" :historical="atSeconds!==null" :model-available="!!provider?.configured" :focus-id="focusContext?.kind==='resident'?focusContext.id:undefined" @preview="previewPlan" @focus="id=>navigate({kind:'focus',label:'定位目标居民',resident_id:id})" @robot="navigate({kind:'focus',object_kind:'robot',label:'定位机器人'})" @rollcall="navigate({kind:'rollcall',label:'前往集合清点'})" /></div>
+    <div v-show="activeView==='plan'" class="scene-assistant__log" aria-label="目标计划工作区"><AgentPlanWorkspace :api-base-url="apiBaseUrl" :access-token="accessToken" :drill-id="drillId" :active="open&&activeView==='plan'" :historical="atSeconds!==null" :model-available="!!provider?.configured" :live-feed="agentFeed" :connection="connection" :focus-id="focusContext?.kind==='resident'?focusContext.id:undefined" @preview="previewPlan" @focus="id=>navigate({kind:'focus',label:'定位目标居民',resident_id:id})" @robot="navigate({kind:'focus',object_kind:'robot',label:'定位机器人'})" @rollcall="navigate({kind:'rollcall',label:'前往集合清点'})" @replay="at=>navigate({kind:'replay',label:'回看决策结果',at_seconds:at})" /></div>
     <div v-show="activeView==='chat'" class="scene-assistant__compose">
       <div class="scene-assistant__question-heading"><button type="button" :aria-expanded="questionsOpen || !messages.length" aria-controls="scene-assistant-questions" @click="toggleHelp('questions')">常见问题<AppIcon name="chevron" :size="14" /></button><span>{{ useModel && provider?.configured ? '本次发送给模型' : '本次为离线解读' }}</span></div>
       <form @submit.prevent="send()"><label class="sr-only" for="scene-assistant-question">向场景助手提问</label><textarea id="scene-assistant-question" ref="input" v-model="question" rows="2" maxlength="2000" placeholder="问问当前现场，例如：谁还没有到集合点？" :disabled="pending" aria-describedby="scene-assistant-input-hint" @keydown="onKey"></textarea><div class="scene-assistant__send"><span id="scene-assistant-input-hint">{{ question.length }}/2000 · Shift+Enter 换行</span><button v-if="pending" type="button" @click="stop">停止等待</button><button v-else type="submit" :disabled="!question.trim() || configurationLoading"><AppIcon name="send" :size="16" />{{ useModel && provider?.configured ? '发送给模型' : '离线解读' }}</button></div></form>

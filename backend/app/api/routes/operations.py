@@ -1944,7 +1944,7 @@ def execute_live_command(drill_id: str, payload: LiveCommand, identity: Authenti
 
 
 @router.websocket("/ws/drills/{drill_id}")
-async def drill_socket(websocket: WebSocket, drill_id: str, ticket: str | None = None, protocol: int = 3, after_sequence: int | None = None):
+async def drill_socket(websocket: WebSocket, drill_id: str, ticket: str | None = None, protocol: int = 3, after_sequence: int | None = None, agent: bool = False):
     username: str | None = None
     if protocol not in {2, 3}:
         await websocket.close(code=4400); return
@@ -1961,6 +1961,9 @@ async def drill_socket(websocket: WebSocket, drill_id: str, ticket: str | None =
     await websocket.accept()
     import asyncio
     previous = None
+    previous_agent = None
+    from app.services.agent_realtime import AgentProjection
+    agent_projection = AgentProjection() if agent and username and protocol == 3 else None
     heartbeat_at = 0.
 
     @serialized_command
@@ -2016,14 +2019,16 @@ async def drill_socket(websocket: WebSocket, drill_id: str, ticket: str | None =
                 # from frozen world/events without modifying the user's history.
                 simulation = (stored or {}).get("simulation", {})
                 return stored if simulation.get("rescue_projection_version") == 1 and simulation.get("navigation_geometry_version") == 1 and "response_staff" in simulation.get("environment", {}) else snapshot(session, drill)
-            return live_snapshots.get(drill_id, version, compatible_snapshot)
+            data = live_snapshots.get(drill_id, version, compatible_snapshot)
+            goal = agent_projection.read(session, drill, username, data) if agent_projection else None
+            return data, goal
 
     try:
         catchup = await asyncio.to_thread(read_catchup)
         if catchup:
             await websocket.send_json(catchup)
         while True:
-            data = await asyncio.to_thread(read_live)
+            data, goal = await asyncio.to_thread(read_live)
             now = asyncio.get_running_loop().time()
             if protocol not in {2, 3} or previous is None:
                 await websocket.send_json({"type": "drill.snapshot", "data": data})
@@ -2035,6 +2040,14 @@ async def drill_socket(websocket: WebSocket, drill_id: str, ticket: str | None =
                 await websocket.send_json({"type": "drill.heartbeat", "drill_id": drill_id, "state_version": data["state_version"]})
                 heartbeat_at = now
             previous = data
+            if goal is not None:
+                if previous_agent is None:
+                    await websocket.send_json({"type": "agent.snapshot", "data": goal})
+                elif goal["state_version"] != previous_agent["state_version"]:
+                    await websocket.send_json({"type": "agent.delta", "drill_id": drill_id,
+                        "base_version": previous_agent["state_version"], "state_version": goal["state_version"],
+                        "patch": snapshot_patch(previous_agent, goal, entities=True)})
+                previous_agent = goal
             await asyncio.sleep(.5)
     except HTTPException:
         await websocket.close(code=4404)

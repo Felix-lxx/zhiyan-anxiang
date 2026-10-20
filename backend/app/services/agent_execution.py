@@ -8,6 +8,88 @@ from sqlalchemy import select
 from app.models.operations import DrillCommand, DrillEvent
 
 
+def coordination_view(run, data, steps):
+    """Explain the actual orchestration using bounded, read-only observations.
+
+    Each lane describes existing deterministic services, not a fabricated model
+    conversation. An issue points to a resident so the UI can return to the same
+    authoritative 3D scene without creating another floating inspector.
+    """
+    ids = set(run.scope.get("resident_ids", []))
+    people = [p for p in data["simulation"]["residents"] if p["id"] in ids]
+    outstanding = [p for p in people if p["status"] != "evacuated"]
+    helpers = {h["resident_id"]: h for h in data["simulation"].get("helpers", [])}
+    # Count the whole target population; per-step attention is only a six-person
+    # display sample and must not become the supervisor's observation limit.
+    attention = {}
+    for person in people:
+        helper = helpers.get(person["id"])
+        arrived = person["status"] == "evacuated"
+        attention[person["id"]] = {"id": person["id"], "label": person.get("label", person["id"]),
+            "arrived": arrived, "blocked": not arrived and (person["status"] == "missing" or
+                not person.get("route_reachable", True) or bool(helper and helper["state"] == "blocked")),
+            "smoke_exposure": person.get("smoke_exposure", 0), "queue_seconds": person.get("queue_seconds", 0)}
+    bottlenecks = {}
+    spatial_edges = {e["id"]: e for e in data["simulation"].get("spatial_network", {}).get("edges", [])}
+    for person in outstanding:
+        edge_id = person.get("waiting_for_edge")
+        if not edge_id:
+            continue
+        edge = spatial_edges.get(edge_id, {})
+        group = bottlenecks.setdefault(edge_id, {"edge_id": edge_id,
+            "name": edge.get("name") or edge_id, "waiting": 0,
+            "resident_id": person["id"], "max_wait_seconds": 0})
+        group["waiting"] += 1
+        group["max_wait_seconds"] = max(group["max_wait_seconds"], round(person.get("queue_seconds", 0)))
+    critical = sorted(attention.values(), key=lambda p: (not p["blocked"], -p["smoke_exposure"], -p["queue_seconds"]))
+    robot = data.get("robot") or {}
+    robot_steps = [s for s in steps if s.get("kind") == "robot.command"]
+    completed = sum(s["status"] == "completed" for s in steps)
+    stalled = [s for s in steps if s["execution"]["stalled"]]
+    awaiting = run.status == "awaiting_approval"
+    state = "paused" if data["status"] == "paused" else run.status
+    issues = []
+    for person in critical:
+        if person["arrived"]:
+            continue
+        if person["blocked"] or person["smoke_exposure"] > 5:
+            issues.append({"id": person["id"], "resident_id": person["id"],
+                "label": person["label"], "severity": "danger" if person["blocked"] else "warning",
+                "reason": "路线受阻，请定位后核对通道" if person["blocked"] else "累计烟气暴露超过阈值，请检查护送与出口安排"})
+    if awaiting:
+        next_action = {"kind": "review", "label": "核对方案后确认执行", "reason": "当前只完成预演，尚未授权下令。"}
+    elif run.status == "needs_review":
+        next_action = {"kind": "replan", "label": "重新比较未完成部分", "reason": run.reason}
+    elif run.status == "awaiting_rollcall":
+        next_action = {"kind": "rollcall", "label": "前往集合清点", "reason": "行动已完成，等待参演人员核验到场名单。"}
+    elif issues:
+        next_action = {"kind": "focus", "label": "定位" + issues[0]["label"],
+            "resident_id": issues[0]["resident_id"], "reason": issues[0]["reason"]}
+    elif stalled:
+        step = stalled[0]
+        next_action = {"kind": "robot" if step.get("kind") == "robot.command" else "focus",
+            "label": "检查长时间未推进的步骤", "resident_id": next(iter(step.get("resident_ids", [])), None),
+            "reason": step["reason"]}
+    else:
+        next_action = {"kind": "observe", "label": "观察执行回执" if outstanding else "查看完成依据",
+            "reason": run.reason}
+    return {"status": state, "at_seconds": data["elapsed_seconds"],
+        "lanes": [
+            {"id": "perception", "label": "现场感知", "state": "observing" if data["status"] == "running" else "paused",
+             "detail": f"目标 {len(people)} 人，未到场 {len(outstanding)} 人；事件 {data['latest_event_sequence']}"},
+            {"id": "planning", "label": "疏散规划", "state": "review" if run.status == "needs_review" else "approval" if awaiting else "confirmed",
+             "detail": f"版本 {run.revision}，待确认 {len(run.candidates)} 个方案" if awaiting else run.reason},
+            {"id": "resources", "label": "资源协同", "state": "waiting" if any(s["status"] == "waiting" for s in steps) else "observing",
+             "detail": f"护送与分流 {len(steps)-len(robot_steps)} 项；机器人 {sum(s['status']=='completed' for s in robot_steps)}/{len(robot_steps)} 项完成"},
+            {"id": "supervision", "label": "执行监督", "state": "attention" if issues or stalled else "observing",
+             "detail": f"已完成 {completed}/{len(steps)} 项；{len(issues)} 项人员风险，{len(stalled)} 项长时间未推进"},
+        ], "issues": issues[:6], "issue_count": len(issues), "bottlenecks": sorted(bottlenecks.values(), key=lambda p: (-p["waiting"], -p["max_wait_seconds"]))[:4],
+        "robot": {"included": bool(robot_steps or run.scope.get("robot_broadcast")),
+            "state": robot.get("state"), "battery": robot.get("battery"), "reason": robot.get("reason"),
+            "steps_completed": sum(s["status"] == "completed" for s in robot_steps), "steps_total": len(robot_steps)},
+        "next_action": next_action}
+
+
 def execution_view(session, run, data):
     simulation = data["simulation"]
     people = {p["id"]: p for p in simulation["residents"]}
@@ -60,4 +142,5 @@ def execution_view(session, run, data):
     staff = simulation.get("environment", {}).get("response_staff", [])
     return {"steps": steps, "at_seconds": data["elapsed_seconds"],
             "event_sequence": data["latest_event_sequence"],
-            "staff": [{key: p.get(key) for key in ("id", "name", "state", "resident_id", "responsible", "completed_count")} for p in staff]}
+            "staff": [{key: p.get(key) for key in ("id", "name", "state", "resident_id", "responsible", "completed_count")} for p in staff],
+            "coordination": coordination_view(run, data, steps)}

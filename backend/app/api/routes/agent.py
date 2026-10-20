@@ -13,7 +13,7 @@ from app.models.agent import AgentRun
 from app.schemas.agent import GoalCreate, PlanAction
 from app.services.agent_planner import interpret_goal
 from app.services.agent_resources import completed_broadcast
-from app.services.agent_workflow import ACTIVE, OPERATING, advance_run, approve, buildings_for, build_candidates, note, resolve_scope, run_payload
+from app.services.agent_workflow import ACTIVE, OPERATING, advance_run, approve, buildings_for, build_candidates, note, relevant_changes, resolve_scope, run_payload
 
 router = APIRouter(tags=["goal workflows"])
 
@@ -93,6 +93,14 @@ def plan_action(drill_id: str, run_id: str, payload: PlanAction, identity: Authe
     if payload.action == "approve":
         approve(session, drill, run, payload.candidate_id, payload.revision, identity)
         advance_run(session, run, identity)
+    elif payload.action == "review":
+        if run.revision != payload.revision: raise HTTPException(409, "计划版本已变化，请重新读取。")
+        if drill.status == "ended": raise HTTPException(409, "本场已结束，请新开一轮。")
+        if run.status == "needs_review": return run_payload(session, run, operations.snapshot(session, drill))
+        if run.status not in OPERATING: raise HTTPException(409, "当前计划不在自动执行中，不能调整剩余行动。")
+        run.status, run.reason = "needs_review", "已暂停后续自动下令；已受理的人员与机器人行动继续。可按当前现场比较剩余行动，确认后接续执行。"
+        run.revision += 1
+        note(session, run, "review_requested", run.reason, operations.effective_elapsed(drill)); session.commit()
     elif payload.action == "stop":
         if run.revision != payload.revision: raise HTTPException(409, "计划版本已变化，请重新读取。")
         if run.status in {"completed", "stopped", "taken_over", "unfinished"}: return run_payload(session, run, operations.snapshot(session, drill))
@@ -103,21 +111,28 @@ def plan_action(drill_id: str, run_id: str, payload: PlanAction, identity: Authe
         if payload.revision != run.revision or run.status not in {"awaiting_approval", "needs_review"}: raise HTTPException(409, "请先停止或等待当前执行；已被人工接管的计划不能自动夺回控制。")
         if drill.status == "ended": raise HTTPException(409, "本场已结束，请新开一轮。")
         data = operations.snapshot(session, drill)
+        takeover = next((reason for state, reason in relevant_changes(session, run, run.observed_sequence) if state == "taken_over"), None)
+        if takeover:
+            run.status, run.reason = "taken_over", takeover
+            note(session, run, "taken_over", takeover, data["elapsed_seconds"]); session.commit()
+            raise HTTPException(409, takeover)
         remaining = [p["id"] for p in data["simulation"]["residents"] if p["id"] in run.scope["resident_ids"] and p["status"] != "evacuated"]
+        people = [p for p in data["simulation"]["residents"] if p["id"] in run.scope["resident_ids"]]
+        if run.scope["priority_assist"] and any(p["status"] == "evacuated" and p["vulnerable"] and not p.get("assisted") for p in people):
+            raise HTTPException(409, "已有重点人员到场但未完成计划护送，不能通过重规划抹去缺项。请核对现场，必要时停止本计划后重新制定目标。")
         evidence = completed_broadcast(session, run) if run.scope.get("robot_broadcast") else None
         if evidence:
             run.scope = {**run.scope, "robot_broadcast_evidence": evidence}
         if not remaining and (not run.scope.get("robot_broadcast") or evidence):
-            people = [p for p in data["simulation"]["residents"] if p["id"] in run.scope["resident_ids"]]
-            if run.scope["priority_assist"] and any(p["vulnerable"] and not p.get("assisted") for p in people):
-                raise HTTPException(409, "目标已到场但重点人员未完成计划护送，请人工核对。")
             run.status = "completed" if all(p.get("counted") for p in people) else "awaiting_rollcall"
             run.reason = "目标已到场，行动证据已满足；请完成集合清点。" if run.status == "awaiting_rollcall" else "目标行动与集合核验已完成。"
             note(session, run, run.status, run.reason, data["elapsed_seconds"]); session.commit()
             return run_payload(session, run, data)
         scope = {**run.scope, "resident_ids": remaining}
-        candidates = build_candidates(session, drill, data, scope)
-        run.evidence = [*run.evidence, {"revision": run.revision, "steps": deepcopy(run.steps), "scope": deepcopy(run.scope)}]
+        candidates = build_candidates(session, drill, data, scope, run)
+        run.evidence = [*run.evidence, {"revision": run.revision, "steps": deepcopy(run.steps), "scope": deepcopy(run.scope),
+            "recovery": {"at_seconds": data["elapsed_seconds"], "retained_arrived": len(run.scope["resident_ids"]) - len(remaining),
+                "remaining": len(remaining), "active_escorts": sum(h["state"] != "completed" and h["resident_id"] in remaining for h in data["simulation"].get("helpers", []))}}]
         run.candidates, run.steps = candidates, []
         run.revision += 1; run.approved_revision = None; run.selected_candidate = None
         run.status, run.reason, run.observed_sequence = "awaiting_approval", "未到场部分已重新预演，请确认新版本。", data["latest_event_sequence"]

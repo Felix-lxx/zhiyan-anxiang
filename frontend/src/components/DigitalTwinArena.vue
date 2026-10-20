@@ -10,12 +10,13 @@ import { createPerson, createPatrolRobot, posePerson } from '../three/actors'
 import { CrowdRenderer } from '../three/crowdRenderer'
 import { ActorAssets, type ActorAssetStatus } from '../three/actorAssets'
 import { ActorMotion } from '../three/actorMotion'
-import { helperIdentity, meetingRoute, presentHelpers, type HelperState } from '../three/helperPresentation'
+import { helperIdentity, helperPresentation, meetingRoute, presentHelpers, type HelperState } from '../three/helperPresentation'
 import { VehicleVisuals } from '../three/vehicleVisuals'
 import { RescueVisuals, type RescueResident } from '../three/rescueVisuals'
 import type { Vehicle } from '../domain/drill'
 import { FireEffects } from '../three/fireEffects'
 import { RoadVisuals } from '../three/roadVisuals'
+import { createRouteGuide } from '../three/routeGuide'
 import { assemblyAttendance, createAssemblyPoint, type AssemblyResident } from '../three/assemblyPoint'
 import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js'
 import AppIcon from './AppIcon.vue'
@@ -140,7 +141,6 @@ let crowdRenderer: CrowdRenderer | undefined
 const buildingMeshes = new Map<string, THREE.Object3D>()
 const residentTrails = new Map<string, THREE.Vector3[]>()
 const residentTrailLines = new Map<string, THREE.Line>()
-const residentHeadings = new Map<string, THREE.Vector3>()
 const helperLinkLines = new Map<string, THREE.Line>()
 const stairHeatMeshes = new Map<string, THREE.Mesh>()
 let roadHeatMesh: THREE.InstancedMesh | null = null
@@ -721,7 +721,9 @@ function updateCameraFollow(): void {
   if (viewMode.value === 'resident' && activeResident.value) {
     const mesh = residentMeshes.get(activeResident.value.id)
     if (mesh) {
-      const heading = residentHeadings.get(activeResident.value.id)?.clone() ?? new THREE.Vector3(0, 0, -1)
+      // Follow the rendered actor's route tangent at corridor corners. A vector
+      // towards the next snapshot cuts diagonally across turns and walls.
+      const heading = new THREE.Vector3(0, 0, -1).applyQuaternion(mesh.quaternion)
       if (heading.lengthSq() < .01) heading.set(0, 0, -1)
       heading.y = 0; heading.normalize()
       targetCameraPosition.copy(mesh.position).add(new THREE.Vector3(0, 1.6, 0)).addScaledVector(heading, .18)
@@ -812,7 +814,7 @@ function updateEntities(): void {
   }
   if (props.elapsedSeconds < lastEntitySeconds) {
     // A replay seek starts a new visible history; never draw trails from the future.
-    actorMotion.clear(); residentTrails.clear(); residentTrailLines.clear(); residentHeadings.clear()
+    actorMotion.clear(); residentTrails.clear(); residentTrailLines.clear()
     disposeLayer(residentTrailLayer)
   }
   lastEntitySeconds = props.elapsedSeconds
@@ -853,9 +855,13 @@ function updateEntities(): void {
       scene.add(mesh); helperMeshes.set(id, mesh); interactiveMeshes.push(mesh)
       void actorAssets.person(mesh, id, false, true)
     }
+    const presentation = helperPresentation(helper)
     const staffSelection:SelectedObject = {title:helper.staff_name??'护送员',type:'值守资源',residentId:helper.resident_id,x:helper.x,y:helper.y,
-      detail:[helper.responsible,helper.state==='completed'?'已完成护送，在集合区域待命':helper.behavior].filter(Boolean).join(' · ')}
+      detail:[helper.responsible,presentation.label,helper.behavior].filter(Boolean).join(' · ')}
     mesh.traverse(child=>{child.userData.selection=staffSelection})
+    if (selected.value?.type==='值守资源' && selected.value.title===staffSelection.title) selected.value=staffSelection
+    const staffRing=(mesh.userData.ring as THREE.Mesh|undefined)?.material as THREE.MeshBasicMaterial|undefined
+    if(staffRing){staffRing.color.setHex(presentation.color);staffRing.opacity=helper.state==='completed'?.4:.8}
     const next=worldPoint(helper.x, helper.y, helper.height ?? 0)
     const route = (helper.route_points ?? []).map(point => worldPoint(point.x, point.y, point.height))
     actorMotion.accept(mesh, next, route, props.elapsedSeconds, props.status === 'running')
@@ -879,7 +885,6 @@ function updateEntities(): void {
   for (const resident of props.simulation?.residents ?? []) {
     const mesh = residentMeshes.get(resident.id)
     if (mesh) {
-      const previousPosition = mesh.position.clone()
       const nextPosition=worldPoint(resident.x, resident.y, resident.height ?? 0)
       actorMotion.accept(mesh, nextPosition, (resident.route_points ?? []).map(p => worldPoint(p.x, p.y, p.height)), props.elapsedSeconds, props.status === 'running')
       mesh.userData.targetPosition=nextPosition; mesh.visible = indoorView.value || !resident.indoor_stage || resident.indoor_stage === 'outdoor'
@@ -900,8 +905,6 @@ function updateEntities(): void {
           mesh.userData.targetPosition=mesh.position.clone(); mesh.visible = true
         }
       }
-      const heading = nextPosition.clone().sub(previousPosition); heading.y = 0
-      if (heading.lengthSq() > .0025) residentHeadings.set(resident.id, heading.normalize())
       mesh.visible = mesh.visible && !(viewMode.value === 'resident' && activeResident.value?.id === resident.id)
       mesh.visible = mesh.visible && !['loading', 'onboard', 'handing_over'].includes(resident.medical_transfer?.phase ?? '')
       updateResidentTrail(resident, mesh.position)
@@ -975,11 +978,9 @@ function rebuildResidentRoutes(): void {
   disposeLayer(residentRouteLayer)
   for (const resident of routes) {
     if (!resident?.route_points || resident.route_points.length < 2) continue
-    const geometry = new THREE.BufferGeometry().setFromPoints(resident.route_points.map((point) => {const p=worldPoint(point.x, point.y, point.height??0);p.y+=.12;return p}))
+    const points = resident.route_points.map((point) => {const p=worldPoint(point.x, point.y, point.height??0);p.y+=.12;return p})
     const robotPreview = 'route_kind' in resident && resident.route_kind === 'robot'
-    const line = new THREE.Line(geometry, new THREE.LineDashedMaterial({ color: props.routePreview?.length ? robotPreview ? 0xd1b0ff : resident.exit === 'north' ? 0x85ddff : 0xffd789 : 0x8fe8da, dashSize: robotPreview ? 1.4 : .9, gapSize: .45, transparent: true, opacity: .9 }))
-    line.computeLineDistances()
-    residentRouteLayer.add(line)
+    residentRouteLayer.add(createRouteGuide(points,props.routePreview?.length ? robotPreview ? 0xd1b0ff : resident.exit === 'north' ? 0x85ddff : 0xffd789 : 0x8fe8da,robotPreview))
   }
 }
 

@@ -30,6 +30,12 @@ export function createPerson(id: string, vulnerable = false, helper = false): TH
     const reflect=new THREE.MeshStandardMaterial({color:0xe8e3b8,roughness:.65})
     part(torso,new THREE.BoxGeometry(.37,.07,.29),reflect,0,.23,0)
     part(torso,new THREE.SphereGeometry(.16,12,8,0,Math.PI*2,0,Math.PI/2),new THREE.MeshStandardMaterial({color:0xecc758,roughness:.5}),0,.79,0)
+    // Compact rescue pack and chest radio remain inside the existing shoulder
+    // footprint; visual equipment cannot enlarge or shift the physical actor.
+    part(torso,new THREE.BoxGeometry(.27,.31,.1),trousers,0,.1,.17)
+    for(const side of [-1,1])part(torso,new THREE.BoxGeometry(.035,.3,.015),reflect,side*.11,.18,-.15)
+    part(torso,new THREE.BoxGeometry(.07,.1,.035),shoes,.12,.32,-.17)
+    part(torso,new THREE.CylinderGeometry(.006,.006,.11,5),shoes,.13,.42,-.17)
   }
   if(vulnerable) {
     const cane=part(torso,new THREE.CylinderGeometry(.018,.023,.92,6),shoes,.32,-.54,-.13)

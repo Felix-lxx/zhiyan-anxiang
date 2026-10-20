@@ -44,3 +44,17 @@ class AgentRunEvent(Base):
     message: Mapped[str] = mapped_column(Text)
     elapsed_seconds: Mapped[int] = mapped_column(Integer)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(UTC))
+
+
+class AgentDecisionCheck(Base):
+    """One durable observation per approval, independent of workflow completion."""
+    __tablename__ = "agent_decision_checks"
+    __table_args__ = (UniqueConstraint("run_id", "revision", name="uq_agent_decision_check"),)
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid4()))
+    run_id: Mapped[str] = mapped_column(ForeignKey("agent_runs.id", ondelete="CASCADE"), index=True)
+    revision: Mapped[int] = mapped_column(Integer)
+    status: Mapped[str] = mapped_column(String(24), default="pending", index=True)
+    due_seconds: Mapped[int] = mapped_column(Integer)
+    basis: Mapped[dict[str, Any]] = mapped_column(JSON)
+    result: Mapped[dict[str, Any] | None] = mapped_column(JSON, nullable=True)

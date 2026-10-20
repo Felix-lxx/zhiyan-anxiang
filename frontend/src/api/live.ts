@@ -1,3 +1,5 @@
+import type { AgentLiveState } from '../domain/agent'
+
 export interface VersionedState { id: string; state_version?: string; latest_event_sequence?: number }
 export type ConnectionState = 'connecting' | 'live' | 'stale'
 interface EntityDelta { added: Array<Record<string, unknown> & { id: string }>; removed: string[]; updated: Array<{ id: string; set: Record<string, unknown>; unset: string[] }>; order?: string[] }
@@ -33,6 +35,16 @@ export type LiveMessage<T> =
   | { type: 'drill.delta'; drill_id: string; base_version: string; state_version: string; patch: StatePatch[] }
   | { type: 'drill.heartbeat'; drill_id: string; state_version: string }
   | { type: 'drill.catchup'; drill_id: string; after_sequence: number; latest_sequence: number; complete: boolean; events: Array<{ sequence: number }> }
+
+export type AgentLiveMessage =
+  | { type:'agent.snapshot';data:AgentLiveState }
+  | { type:'agent.delta';drill_id:string;base_version:string;state_version:string;patch:StatePatch[] }
+
+export function applyAgentMessage(previous:AgentLiveState|null, message:AgentLiveMessage):AgentLiveState|null {
+  return message.type==='agent.snapshot'
+    ? applyLiveMessage(previous,{type:'drill.snapshot',data:message.data})
+    : applyLiveMessage(previous,{...message,type:'drill.delta'})
+}
 
 export function isNewerState(candidate: VersionedState, current: VersionedState | null): boolean {
   if (!current || candidate.id !== current.id) return true
@@ -83,14 +95,17 @@ export function connectLive<T extends VersionedState>(options: {
   url?: string; getUrl?: () => Promise<string>; drillId: string; onState: (state: T) => void
   onStatus: (state: ConnectionState) => void; onError?: (message: string) => void
   onRecovered?: (count: number, complete: boolean) => void
+  onAgentState?: (state:AgentLiveState) => void
 }): () => void {
   let socket: WebSocket | null = null, stopped = false, attempt = 0
   let timer: ReturnType<typeof setTimeout> | undefined
   let stream: T | null = null, lastMessageAt = Date.now(), lastSequence: number | null = null
+  let agentStream:AgentLiveState|null=null
   async function open() {
     if (stopped) return
     options.onStatus(attempt ? 'stale' : 'connecting')
     stream = null
+    agentStream = null
     const cursor = lastSequence === null ? '' : `&after_sequence=${lastSequence}`
     let url: string
     try {
@@ -112,7 +127,14 @@ export function connectLive<T extends VersionedState>(options: {
     current.onmessage = event => {
       if (stopped || socket !== current) return
       try {
-        const message = JSON.parse(event.data) as LiveMessage<T>
+        const message = JSON.parse(event.data) as LiveMessage<T>|AgentLiveMessage
+        if (message.type==='agent.snapshot' || message.type==='agent.delta') {
+          agentStream=applyAgentMessage(agentStream,message)
+          if(agentStream?.id!==options.drillId)throw new Error('计划场次不一致')
+          lastMessageAt=Date.now()
+          options.onAgentState?.(agentStream)
+          return
+        }
         if (!['drill.snapshot', 'drill.delta', 'drill.heartbeat', 'drill.catchup'].includes(message.type)) return
         if (message.type === 'drill.catchup') {
           lastMessageAt = Date.now()

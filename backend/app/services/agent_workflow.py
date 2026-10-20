@@ -13,12 +13,14 @@ import hashlib
 
 from fastapi import HTTPException
 from sqlalchemy import or_, select, update
-from app.models.agent import AgentRun, AgentRunEvent
+from app.models.agent import AgentRun, AgentRunEvent, AgentDecisionCheck
 from app.models.operations import DrillCommand, DrillEvent, DrillSession
 from app.schemas.operations import LiveCommand, ResidentCommand
-from app.services.agent_resources import robot_support, robot_precondition
+from app.services.agent_resources import robot_support, robot_precondition, owned_steps
 from app.services.response_staff import capacity as staff_capacity
 from app.services.agent_execution import execution_view
+from app.services.agent_allocation import allocate_exits
+from app.services.agent_outcomes import register_check, settle_checks, outcome_payload
 
 ACTIVE = {"awaiting_approval", "executing", "waiting", "needs_review"}
 OPERATING = {"executing", "waiting"}
@@ -66,35 +68,33 @@ def resolve_scope(data, request, interpretation):
             "completion": "目标居民到达集合点；重点人员按计划会合护送；" + ("机器人真实到位并广播；" if request.robot_broadcast else "") + "清点由参演人员核验。"}
 
 
-def build_candidates(session, drill, data, scope):
+def build_candidates(session, drill, data, scope, run=None):
     operations = ops()
     capacity = staff_capacity(data["simulation"].get("world") or {})
     ids = scope["resident_ids"]
+    id_set = set(ids)
     at = data["elapsed_seconds"]
     events = events_for(session, drill)
     routes = {}
     for exit in ("north", "south"):
         preview = operations.spatial_preview(session, drill, ResidentCommand(resident_ids=ids, exit=exit), events) if ids else {"residents": []}
-        routes[exit] = {p["id"]: p for p in preview["residents"] if p["id"] in ids}
+        routes[exit] = {p["id"]: p for p in preview["residents"] if p["id"] in id_set}
     population = {p["id"]: p for p in data["simulation"]["residents"]}
     assist_required = sum(bool(scope["priority_assist"] and population[pid]["vulnerable"]) for pid in ids)
     busy_staff = sum(h["state"] != "completed" for h in data["simulation"].get("helpers", []))
     geometry_issues = [{"edge_id": edge["id"], "name": edge["name"], "reason": edge["blocked_reason"]}
                        for edge in data["simulation"].get("spatial_network", {}).get("edges", []) if edge.get("geometry_blocked")]
-    support, resource_steps = robot_support(operations, session, drill, data, scope)
-    def route_cost(person):
-        if not person.get("route_reachable"): return math.inf
-        return person.get("remaining_seconds") or sum(math.dist((a["x"], a["y"]), (b["x"], b["y"])) for a, b in zip(person.get("route_points", []), person.get("route_points", [])[1:]))
-    primary = {}
+    support, resource_steps = robot_support(operations, session, drill, data, scope, run)
     preference = scope["exit_preference"]
-    for index, pid in enumerate(ids):
-        costs = {exit: route_cost(routes[exit][pid]) for exit in routes}
-        primary[pid] = preference if preference in routes else min(costs, key=lambda exit: (costs[exit], exit != ("north" if index % 2 == 0 else "south")))
-    alternatives = [primary, {pid: "south" if exit == "north" else "north" for pid, exit in primary.items()}]
+    alternatives = allocate_exits(routes, population, data["simulation"].get("spatial_network", {}).get("edges", []), ids, preference)
     results = []
     baseline = operations.simulation_state(drill, events, at + 30, session=session)
     baseline_score = operations.calculate_score_data(session, drill, events, baseline)["total_score"]
-    for index, assignments in enumerate(alternatives):
+    baseline_people = [p for p in baseline["residents"] if p["id"] in id_set]
+    baseline_metrics = {"arrived": sum(p["status"] == "evacuated" for p in baseline_people),
+        "exposed": sum(p.get("smoke_exposure", 0) > 5 for p in baseline_people),
+        "queue_seconds": round(sum(p.get("queue_seconds", 0) for p in baseline_people))}
+    for index, (assignments, allocation) in enumerate(alternatives):
         groups, unresolved = [], []
         for exit in ("north", "south"):
             for assist in (False, True):
@@ -107,33 +107,38 @@ def build_candidates(session, drill, data, scope):
                                    "route_edge_ids": sorted({edge for pid in batch for edge in routes[exit][pid].get("route_edge_ids", [])})})
         # Same environment, official score function, bounded 30-second projection.
         # Only available escort slots are released in the forecast; future waves remain waiting.
-        simulated, free = list(events), capacity - sum(h["state"] != "completed" for h in data["simulation"].get("helpers", []))
+        escorted = {h["resident_id"] for h in data["simulation"].get("helpers", []) if h["state"] != "completed"}
+        simulated, free = list(events), max(0, capacity - len(escorted))
         sequence = data["latest_event_sequence"]
         for group in groups:
             if group["action"] == "priority_assist":
-                if len(group["resident_ids"]) > free: continue
-                free -= len(group["resident_ids"])
+                needed = set(group["resident_ids"]) - escorted
+                if len(needed) > free: continue
+                free -= len(needed)
+                escorted.update(needed)
             sequence += 1
             simulated.append(SimpleNamespace(id="agent-preview-" + group["id"], sequence=sequence, elapsed_seconds=at, event_type="resident.command",
                                              payload={k: group[k] for k in ("resident_ids", "exit", "action")}))
         if support and support["can_apply"] and not support.get("already_completed"):
-            sequence += 1
-            simulated.append(SimpleNamespace(id="agent-preview-robot", sequence=sequence, elapsed_seconds=at,
-                event_type="robot.target_assigned", payload={"target": support["target"], "target_x": support["x"], "target_y": support["y"],
-                "route_points": support["route_points"], "route_edge_ids": support["route_edge_ids"], "route": support["route"],
-                "planned_duration_seconds": support["duration_seconds"], "battery": support["battery_available"] - support["battery_required"] + 3}))
+            if not support.get("reusing_task"):
+                sequence += 1
+                simulated.append(SimpleNamespace(id="agent-preview-robot", sequence=sequence, elapsed_seconds=at,
+                    event_type="robot.target_assigned", payload={"target": support["target"], "target_x": support["x"], "target_y": support["y"],
+                    "route_points": support["route_points"], "route_edge_ids": support["route_edge_ids"], "route": support["route"],
+                    "planned_duration_seconds": support["duration_seconds"], "battery": support["battery_available"] - support["battery_required"] + 3}))
             if support["duration_seconds"] <= 30:
                 sequence += 1
                 simulated.append(SimpleNamespace(id="agent-preview-broadcast", sequence=sequence,
                     elapsed_seconds=at + support["duration_seconds"], event_type="robot.broadcast_completed",
                     payload={"x": support["x"], "y": support["y"], "target": support["target"], "battery": support["battery_available"] - support["battery_required"]}))
         forecast = operations.simulation_state(drill, simulated, at + 30, session=session)
-        predicted = [p for p in forecast["residents"] if p["id"] in ids]
+        predicted = [p for p in forecast["residents"] if p["id"] in id_set]
         score = operations.calculate_score_data(session, drill, simulated, forecast)["total_score"]
         assignment_list = [{"id": pid, "label": population[pid]["label"], "exit": assignments[pid], "vulnerable": population[pid]["vulnerable"],
                             "route_points": routes[assignments[pid]][pid].get("route_points", []), "route_edge_ids": routes[assignments[pid]][pid].get("route_edge_ids", []),
                             "route_reachable": routes[assignments[pid]][pid].get("route_reachable", False)} for pid in ids]
-        results.append({"id": "candidate-" + str(index + 1), "title": "当前偏好方案" if preference != "balanced" and index == 0 else "路径优先分流" if index == 0 else "另一出口对照",
+        results.append({"id": "candidate-" + str(index + 1), "title": "当前偏好方案" if preference != "balanced" and index == 0 else "路径优先分流" if index == 0 else "风险与容量分流",
+                        "allocation": allocation, "baseline_metrics": baseline_metrics,
                         "groups": groups + [{**deepcopy(step), "battery_required": support["battery_required"]} for step in resource_steps],
                         "robot_support": support, "assignments": assignment_list, "geometry_issues": geometry_issues, "navigation_geometry_version": 1,
                         "can_apply": not unresolved and (not assist_required or capacity > 0) and (not support or support["can_apply"]),
@@ -144,7 +149,7 @@ def build_candidates(session, drill, data, scope):
                                     "unreachable": len(unresolved), "arrived": sum(p["status"] == "evacuated" for p in predicted),
                                     "exposed": sum(p.get("smoke_exposure", 0) > 5 for p in predicted), "queue_seconds": round(sum(p.get("queue_seconds", 0) for p in predicted)),
                                     "score": score, "score_delta": score - baseline_score},
-                        "forecast_seconds": 30, "forecast_at": at,
+                        "forecast_seconds": 30, "forecast_at": at, "forecast_sequence": data["latest_event_sequence"],
                         "coverage": "30 秒居民与首批可用护送资源预演；" + ("机器人按预计到位时刻计入广播，居民不等待机器人；" if support else "") + "后续批次待资源释放，车辆与人工任务沿用当前安排。"})
     return sorted(results, key=lambda p: (not p["can_apply"], p["metrics"]["exposed"], -p["metrics"]["arrived"], p["metrics"]["queue_seconds"]))
 
@@ -152,7 +157,7 @@ def build_candidates(session, drill, data, scope):
 def relevant_changes(session, run, after):
     found = []
     ids = set(run.scope["resident_ids"])
-    own = {step["command_id"] for step in run.steps}
+    own = {step["command_id"] for step in owned_steps(run) if step.get("command_id")}
     robot_owned = run.scope.get("robot_broadcast") and not run.scope.get("robot_broadcast_evidence") and (
         not run.steps or any(s.get("kind") == "robot.command" and s["status"] != "completed" for s in run.steps))
     used_edges = {edge for step in run.steps for edge in step.get("route_edge_ids", [])}
@@ -180,11 +185,31 @@ def relevant_changes(session, run, after):
 
 
 def run_payload(session, run, data):
-    people = [p for p in data["simulation"]["residents"] if p["id"] in run.scope["resident_ids"]]
+    ids = set(run.scope["resident_ids"])
+    people = [p for p in data["simulation"]["residents"] if p["id"] in ids]
     history = list(session.scalars(select(AgentRunEvent).where(AgentRunEvent.run_id == run.id).order_by(AgentRunEvent.created_at.desc()).limit(16)))
     status = "paused" if data["status"] == "paused" and run.status in OPERATING else run.status
     execution = execution_view(session, run, data)
+    approval_guard = None
+    if run.status == "awaiting_approval":
+        age = max(0, data["elapsed_seconds"] - min((c["forecast_at"] for c in run.candidates), default=data["elapsed_seconds"]))
+        changes = relevant_changes(session, run, run.observed_sequence)
+        expired = age > 45 or any(c.get("navigation_geometry_version") != 1 for c in run.candidates)
+        review = bool(changes) or expired
+        reason = changes[0][1] if changes else "预演起点已超过45秒，请按当前现场重新比较。" if expired else "请先开始或继续演练，再确认执行。" if data["status"] != "running" else "现场条件有效，核对方案后可确认执行。"
+        approval_guard = {"can_approve": not review and data["status"] == "running", "needs_replan": review,
+                          "age_seconds": age, "reason": reason}
+        if review:
+            execution["coordination"]["next_action"] = {"kind": "replan", "label": "按当前现场重新比较", "reason": reason}
+            lane = next(l for l in execution["coordination"]["lanes"] if l["id"] == "planning")
+            lane.update(state="review", detail=reason)
     return {"id": run.id, "goal": run.goal, "status": status, "reason": run.reason, "revision": run.revision,
+            "outcomes": outcome_payload(session, run),
+            "decision": next((a["decision"] for a in reversed(run.evidence) if a.get("decision")), None),
+            "recovery": next((a["recovery"] for a in reversed(run.evidence) if a.get("recovery")), None),
+            "approval_guard": approval_guard,
+            "updated_at_us": int((run.updated_at if run.updated_at.tzinfo else run.updated_at.replace(tzinfo=UTC)).timestamp() * 1_000_000),
+            "created_at_us": int((run.created_at if run.created_at.tzinfo else run.created_at.replace(tzinfo=UTC)).timestamp() * 1_000_000),
             "approved_revision": run.approved_revision, "selected_candidate": run.selected_candidate, "scope": run.scope,
             "candidates": run.candidates if run.status in {"awaiting_approval", "needs_review"} else [], "steps": execution["steps"],
             "execution": {key: value for key, value in execution.items() if key != "steps"},
@@ -209,7 +234,7 @@ def approve(session, drill, run, candidate_id, revision, identity):
             raise HTTPException(409, "本场没有可用值守员，不能批准重点护送。")
     if run.scope.get("robot_broadcast"):
         fresh = operations.snapshot(session, drill)
-        support, _ = robot_support(operations, session, drill, fresh, run.scope)
+        support, _ = robot_support(operations, session, drill, fresh, run.scope, run)
         if not support["can_apply"]: raise HTTPException(409, support["notice"])
     at = operations.effective_elapsed(drill)
     if candidate.get("navigation_geometry_version") != 1 or at - candidate["forecast_at"] > 45 or relevant_changes(session, run, run.observed_sequence):
@@ -217,8 +242,13 @@ def approve(session, drill, run, candidate_id, revision, identity):
         note(session, run, "invalidated", run.reason, at); session.commit()
         raise HTTPException(409, run.reason)
     run.steps = [{**deepcopy(group), "command_id": "agent-" + group["id"], "status": "pending", "reason": "等待当前条件校验", "progress": 0, "last_progress_at": at} for group in candidate["groups"]]
+    run.evidence = [*run.evidence, {"decision": {"revision": revision, "candidate_id": candidate_id,
+        "title": candidate["title"], "approved_at": at, "forecast_at": candidate["forecast_at"],
+        "forecast_seconds": candidate["forecast_seconds"], "metrics": deepcopy(candidate["metrics"]),
+        "allocation": deepcopy(candidate.get("allocation")), "baseline_metrics": deepcopy(candidate.get("baseline_metrics"))}}]
     run.status, run.reason = "executing", "计划已确认，按现有命令接口逐步执行。"
     run.selected_candidate, run.approved_revision = candidate_id, revision
+    register_check(session, run, candidate, at)
     note(session, run, "approved", "已批准方案：" + candidate["title"], at)
     session.commit()  # Stable action IDs exist before any domain side effect.
 
@@ -351,7 +381,9 @@ def _advance_run(session, run, identity, controlled):
         escort_observed = [(pid, round(helpers[pid]["x"], 1), round(helpers[pid]["y"], 1),
                             round(helpers[pid].get("height", 0), 1), helpers[pid]["state"])
                            for pid in step.get("resident_ids", []) if pid in helpers]
-        signature = hashlib.sha256(repr((step["status"], round(step["progress"], 3), observed, escort_observed)).encode()).hexdigest()
+        robot = data.get("robot") or {}
+        robot_observed = (robot.get("state"), round(robot.get("x", 0), 1), round(robot.get("y", 0), 1)) if step.get("kind") == "robot.command" else None
+        signature = hashlib.sha256(repr((step["status"], round(step["progress"], 3), observed, escort_observed, robot_observed)).encode()).hexdigest()
         if signature != step.get("progress_signature"):
             step.update(progress_signature=signature, last_progress_at=at)
         if previous.get(step["id"]) != step["status"]:
@@ -363,7 +395,12 @@ def _advance_run(session, run, identity, controlled):
     run.observed_sequence = data["latest_event_sequence"]
     if run.status in OPERATING:
         all_arrived = all(people[pid]["status"] == "evacuated" for pid in run.scope["resident_ids"])
-        if all_arrived and all(s["status"] == "completed" for s in steps):
+        assist_missing = run.scope["priority_assist"] and any(people[pid]["status"] == "evacuated" and
+            people[pid]["vulnerable"] and not people[pid].get("assisted") for pid in run.scope["resident_ids"])
+        if assist_missing:
+            run.status, run.reason = "needs_review", "已有重点人员到场但缺少会合护送依据，请核对原计划，不能以重新分组替代护送证据。"
+            note(session, run, "needs_review", run.reason, at)
+        elif all_arrived and all(s["status"] == "completed" for s in steps):
             counted = all(people[pid].get("counted") for pid in run.scope["resident_ids"])
             run.status = "completed" if counted else "awaiting_rollcall"
             run.reason = "目标居民疏散、护送与集合核验完成。" if counted else "目标居民已到集合点；等待参演人员核验，助手不会代签清点。"
@@ -400,10 +437,13 @@ async def serve():
             identity = SimpleNamespace(username=run.actor)
             advance_run(session, run, identity)
             reconcile_rollcall(session, run, identity)
+            settle_checks(session, run, ops())
     while True:
         try:
             with SessionLocal() as session:
-                ids = list(session.scalars(select(AgentRun.id).where(AgentRun.status.in_([*OPERATING, "awaiting_rollcall"]))))
+                pending = select(AgentDecisionCheck.run_id).where(AgentDecisionCheck.status == "pending")
+                ids = list(session.scalars(select(AgentRun.id).where(or_(
+                    AgentRun.status.in_([*OPERATING, "awaiting_rollcall"]), AgentRun.id.in_(pending)))))
             for run_id in ids:
                 try: await asyncio.to_thread(tick_one, run_id)
                 except Exception: logging.getLogger(__name__).exception("目标计划 %s 推进失败，将从命令台账恢复", run_id)

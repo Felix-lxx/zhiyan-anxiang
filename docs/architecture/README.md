@@ -76,7 +76,28 @@ sequenceDiagram
 - `app.core.lifespan`：初始化表结构并托管演练调度、智能体监督任务；测试时不启动后台循环。
 - `engine_scheduler`：通过数据库租约推进运行中的场次，浏览器关闭不会停止演练。
 - `agent_workflow`：提出和监督目标计划；领域命令仍需经过人工确认与服务端校验。
+- `agent_allocation`：在冻结路网中计算路径优先与风险容量分流候选，不直接写入演练状态。
+- `agent_execution`、`agent_resources`：把已批准计划映射为可观察的执行步骤、值守资源和机器人任务回执。
+- `agent_outcomes`：按批准时冻结的人群、指标和观察时刻进行一次性结果核对；停止、完成或人工让权后仍保留观察。
+- `agent_realtime`：为导演账号生成私有的目标计划投影，不向手机参演端广播管理计划。
 - `realtime`：使用状态版本、实体补丁和追赶机制同步，不信任浏览器本地状态。
+
+## 智能体计划闭环
+
+```mermaid
+flowchart LR
+    Goal[导演提出目标] --> Candidate[候选方案与30秒预演]
+    Candidate --> Confirm{人工确认}
+    Confirm -->|确认| Commands[幂等领域命令]
+    Confirm -->|重新比较| Candidate
+    Commands --> Engine[连续空间与资源引擎]
+    Engine --> Evidence[事件、回执、评分证据]
+    Evidence --> Outcome[原定时刻的预测-实际核对]
+    Outcome --> Replay[对应时刻三维回放]
+    Replay --> Candidate
+```
+
+计划候选、人工确认、命令执行和结果观察具有不同职责。计划未确认不写入现场；结果核对只读取服务端权威历史状态，不反向修改人员、任务或得分。
 
 ## 渐进重构计划
 

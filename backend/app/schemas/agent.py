@@ -23,7 +23,7 @@ class PlanAction(BaseModel):
     model_config = ConfigDict(extra="forbid")
     revision: int = Field(ge=1)
     candidate_id: str | None = Field(default=None, max_length=40)
-    action: Literal["approve", "stop", "replan"]
+    action: Literal["approve", "stop", "replan", "review"]
 
 
 class GoalInterpretation(BaseModel):
