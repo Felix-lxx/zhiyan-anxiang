@@ -5,7 +5,8 @@ from datetime import UTC, datetime, timedelta
 
 from fastapi import HTTPException
 from sqlalchemy import delete, select, update
-from sqlalchemy.exc import IntegrityError
+from sqlalchemy.dialects.postgresql import insert as postgresql_insert
+from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 
 from app.models.operations import ParticipantInvitation, SecurityRateWindow, SocketTicket
 
@@ -43,12 +44,25 @@ def rate_limit(session, scope, subject, limit=60, seconds=60):
     window = int(now.timestamp()) // seconds
     key = digest(f"{scope}:{subject}:{window}")
     session.execute(delete(SecurityRateWindow).where(SecurityRateWindow.expires_at < now - timedelta(minutes=5)))
-    try:
-        with session.begin_nested():
-            session.add(SecurityRateWindow(key=key, count=0, expires_at=datetime.fromtimestamp((window + 1) * seconds, UTC)))
+    values = {"key": key, "count": 0, "expires_at": datetime.fromtimestamp((window + 1) * seconds, UTC)}
+    dialect = session.get_bind().dialect.name
+    # A savepoint around ``session.add`` is not enough for two requests sharing
+    # the same time window: SQLite may defer the unique-key error until the
+    # enclosing request transaction is flushed.  Let the database arbitrate
+    # window creation, then conditionally increment the single durable row.
+    if dialect == "sqlite":
+        session.execute(sqlite_insert(SecurityRateWindow).values(**values).on_conflict_do_nothing(
+            index_elements=[SecurityRateWindow.key]))
+    elif dialect == "postgresql":
+        session.execute(postgresql_insert(SecurityRateWindow).values(**values).on_conflict_do_nothing(
+            index_elements=[SecurityRateWindow.key]))
+    else:
+        # Current supported deployments use SQLite or PostgreSQL. Keep a
+        # portable path for development dialects without weakening the limit.
+        existing = session.get(SecurityRateWindow, key)
+        if existing is None:
+            session.add(SecurityRateWindow(**values))
             session.flush()
-    except IntegrityError:
-        pass
     result = session.execute(update(SecurityRateWindow).where(
         SecurityRateWindow.key == key, SecurityRateWindow.count < limit,
     ).values(count=SecurityRateWindow.count + 1))

@@ -7,8 +7,8 @@ from starlette.websockets import WebSocketDisconnect
 
 from app.api.routes import operations
 from app.core.config import Settings
-from app.models.operations import ParticipantInvitation
-from app.services.connection_security import rate_limit
+from app.models.operations import ParticipantInvitation, SecurityRateWindow
+from app.services.connection_security import digest, rate_limit
 from test_exercise_world import exercise
 
 
@@ -74,6 +74,19 @@ def test_expired_invite_and_atomic_admission_limit(exercise):
         assert socket.receive_json()["type"] == "drill.snapshot"
         client.post('/api/v1/auth/logout', headers=headers)
         with pytest.raises(WebSocketDisconnect): socket.receive_json()
+
+
+def test_rate_window_creation_is_idempotent_in_one_transaction(exercise):
+    """Same-key initialization must not defer a unique-key failure to commit."""
+    _, _, _, _, _, _, *_ = exercise
+    window = int(datetime.now(UTC).timestamp()) // 60
+    key = digest(f"socket-ticket:same-director:{window}")
+    with operations.SessionLocal() as session:
+        rate_limit(session, "socket-ticket", "same-director", limit=3)
+        rate_limit(session, "socket-ticket", "same-director", limit=3)
+        session.commit()
+        row = session.get(SecurityRateWindow, key)
+        assert row is not None and row.count == 2
 
 
 def test_staff_responsibility_is_exclusive_and_logged(exercise):
