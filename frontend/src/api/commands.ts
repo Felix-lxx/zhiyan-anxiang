@@ -4,6 +4,7 @@ export function commandForPath(path: string, arguments_: unknown) {
   const exact: Record<string, string> = { '/state': 'state', '/inject': 'event.inject', '/residents': 'residents.assign', '/robot': 'robot.command', '/searches': 'search.assign', '/participant-actions': 'participant.feedback', '/director/config': 'director.configure' }
   const road = path.match(/^\/roads\/([^/]+)\/reopen$/)
   exact['/vehicles'] = 'vehicle.command'
+  exact['/indoor/doors'] = 'indoor.door.set'
   const taskAction = path.match(/^\/tasks\/([^/]+)\/actions$/)
   const taskAssignment = path.match(/^\/tasks\/([^/]+)\/assign$/)
   const kind = exact[path] ?? (road ? 'road.reopen' : taskAction ? 'task.action' : taskAssignment ? 'task.assign' : undefined)
@@ -23,6 +24,14 @@ export async function sendCommand<T>(api: ApiClient, drillId: string, path: stri
     try { return await execute() }
     catch (retryError) {
       if (retryError instanceof ApiError && retryError.status < 500) throw retryError
+      // Reconcile a lost HTTP response using the durable receipt. A submitted
+      // action must not invite the user to issue it again with a different ID.
+      try {
+        const state=await api.get<T & {commands?:Array<{id:string;status:string;reason:string}>}>(`/drills/${drillId}`,{signal:AbortSignal.timeout(15000)})
+        const receipt=state.commands?.find(command=>command.id===id)
+        if(receipt && receipt.status!=='failed')return state
+        if(receipt)throw new ApiError(receipt.reason,409,receipt)
+      } catch(reconcileError) { if(reconcileError instanceof ApiError && reconcileError.status===409)throw reconcileError }
       throw new Error('连接中断，指令结果暂未确认。恢复连接后请在执行进度核对结果，再决定是否重新下令。')
     }
   }

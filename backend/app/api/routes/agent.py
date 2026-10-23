@@ -18,6 +18,16 @@ from app.services.agent_workflow import ACTIVE, OPERATING, advance_run, approve,
 router = APIRouter(tags=["goal workflows"])
 
 
+def pause_review(session, drill, enabled):
+    if enabled and drill.status == 'running':
+        drill.elapsed_seconds = operations.effective_elapsed(drill)
+        drill.started_at = None
+        drill.status = 'paused'
+        operations.append_event(session, drill, 'drill.paused', '方案审阅',
+            '已暂停现场供方案审阅；确认执行后自动继续。', {'reason': 'agent_review'})
+        session.flush()
+
+
 def request_fingerprint(payload):
     return hashlib.sha256(json.dumps(payload.model_dump(exclude={"request_id"}), sort_keys=True, ensure_ascii=False).encode()).hexdigest()
 
@@ -39,7 +49,7 @@ def owned_run(session, drill_id, run_id, identity):
 def list_runs(drill_id: str, identity: AuthenticatedIdentity = Depends(get_current_identity), session: Session = Depends(get_db)):
     drill = operations.require_drill(session, drill_id, identity.username)
     data = operations.snapshot(session, drill)
-    runs = session.scalars(select(AgentRun).where(AgentRun.drill_session_id == drill_id, AgentRun.actor == identity.username).order_by(AgentRun.created_at.desc()).limit(8)).all()
+    runs = session.scalars(select(AgentRun).where(AgentRun.drill_session_id == drill_id, AgentRun.actor == identity.username).order_by(AgentRun.status.in_([*ACTIVE, 'awaiting_rollcall']).desc(), AgentRun.created_at.desc()).limit(8)).all()
     return {"buildings": buildings_for(data), "runs": [run_payload(session, r, data) for r in runs], "drill_status": drill.status}
 
 
@@ -69,10 +79,15 @@ def _create_after_interpretation(session, drill_id, payload, interpretation, pla
         validate_retry(existing, payload, identity.username)
         return run_payload(session, existing, operations.snapshot(session, drill))
     if drill.status not in {"running", "paused", "ready"}: raise HTTPException(409, "本场已结束，请新开一轮。")
-    active = session.scalar(select(AgentRun).where(AgentRun.drill_session_id == drill_id, AgentRun.status.in_([*ACTIVE, "awaiting_rollcall"])))
-    if active: raise HTTPException(409, "本场已有目标计划，请先完成、停止或修改现有计划。")
+    pause_review(session, drill, payload.pause_for_review)
     data = operations.snapshot(session, drill)
     scope = resolve_scope(data, payload, interpretation)
+    scope.update(pause_for_review=payload.pause_for_review, include_case_tasks=payload.include_case_tasks)
+    active = list(session.scalars(select(AgentRun).where(AgentRun.drill_session_id == drill_id, AgentRun.status.in_([*ACTIVE, "awaiting_rollcall"])) ))
+    if len(active) >= 8:
+        raise HTTPException(409, '本场已有 8 个活动计划，请先完成或停止一个，避免遗漏未处理目标。')
+    if any(set(r.scope['resident_ids']).intersection(scope['resident_ids']) for r in active):
+        raise HTTPException(409, '目标居民已有活动计划，请先调整或停止原计划；不同居民范围可独立编排。')
     scope["request_fingerprint"] = request_fingerprint(payload)
     candidates = build_candidates(session, drill, data, scope)
     run = AgentRun(id=str(uuid4()), drill_session_id=drill_id, request_id=payload.request_id, actor=identity.username,
@@ -88,6 +103,7 @@ def _create_after_interpretation(session, drill_id, payload, interpretation, pla
 @operations.serialized_command
 def plan_action(drill_id: str, run_id: str, payload: PlanAction, identity: AuthenticatedIdentity = Depends(get_current_identity), session: Session = Depends(get_db)):
     drill, run = owned_run(session, drill_id, run_id, identity)
+    session.execute(select(type(drill).id).where(type(drill).id == drill_id).with_for_update())
     session.execute(select(AgentRun.id).where(AgentRun.id == run.id).with_for_update())
     session.refresh(run)
     if payload.action == "approve":
@@ -106,10 +122,13 @@ def plan_action(drill_id: str, run_id: str, payload: PlanAction, identity: Authe
         if run.status in {"completed", "stopped", "taken_over", "unfinished"}: return run_payload(session, run, operations.snapshot(session, drill))
         run.status, run.reason = "stopped", "已停止提交后续指令；已受理的人物行动仍继续，可在三维现场人工接管。"
         run.revision += 1
+        from app.services.agent_claims import release
+        release(session, run.id)
         note(session, run, "stopped", run.reason, operations.effective_elapsed(drill)); session.commit()
     else:
         if payload.revision != run.revision or run.status not in {"awaiting_approval", "needs_review"}: raise HTTPException(409, "请先停止或等待当前执行；已被人工接管的计划不能自动夺回控制。")
         if drill.status == "ended": raise HTTPException(409, "本场已结束，请新开一轮。")
+        pause_review(session, drill, run.scope.get('pause_for_review'))
         data = operations.snapshot(session, drill)
         takeover = next((reason for state, reason in relevant_changes(session, run, run.observed_sequence) if state == "taken_over"), None)
         if takeover:

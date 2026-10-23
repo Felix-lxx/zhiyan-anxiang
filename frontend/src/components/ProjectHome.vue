@@ -67,8 +67,26 @@ const accountName=computed(()=>accountProfile.value?.display_name||props.usernam
 const community=computed(()=>communities.value.find(c=>c.id===communityId.value))
 const scene=computed(()=>scenes.value.find(s=>s.id===sceneId.value))
 const scenePreview=ref<Simulation|null>(null)
+const previewLoading=ref(false)
 const previewMode=ref<'cover'|'spatial'|'plan'>('cover'), previewError=ref('')
+const caseReady=computed(()=>!loading.value&&!previewLoading.value&&!previewError.value&&Boolean(scenePreview.value)&&scene.value?.status==='published')
+const caseStateLabel=computed(()=>loading.value||previewLoading.value?'正在核对场景':previewError.value?'需要检查配置':caseReady.value?'可以创建演练':'等待准备')
+const caseStateDetail=computed(()=>loading.value||previewLoading.value?'正在读取配置与通行模型':previewError.value?'预览未通过，请先处理左侧提示':caseReady.value?'已发布配置将在新场次创建时冻结':'完成场景配置并发布后开始演练')
 const parameters=computed(()=>scene.value?.versions[scene.value.versions.length-1]?.parameters)
+const isKitchenCase=computed(()=>scene.value?.capabilities?.code==='kitchen_fire'||parameters.value?.fire_source_type==='kitchen')
+const caseDescription=computed(()=>isKitchenCase.value
+ ? '住宅厨房起火，烟气沿房间、走廊和楼梯传播。逐层查看居民，控制房门、安排护送，并核验燃气关闭和集合清点。'
+ : '居民区电动自行车充电棚突发火灾。查看火情与通道，组织人员疏散，调度机器人并记录每一次处置。')
+async function chooseCase(code:'kitchen_fire'|'night_charging_shed_fire') {
+ const matches=scenes.value.filter(item=>item.capabilities?.code===code)
+ const existing=matches.find(item=>item.status==='published')??matches[0]
+ if(existing){sceneId.value=existing.id;return}
+ busy.value=true;error.value=''
+ try{
+   const target=community.value??await api.post<Community>('/communities/demo')
+   await router.push({name:'scenes',params:{communityId:target.id},query:{case:code}})
+ }catch(cause){error.value=cause instanceof Error?cause.message:'案例准备入口暂时不可用，请重试。'}finally{busy.value=false}
+}
 let generation=0
 function navigate(value:string){void router.push({name:'projects',query:value==='home'?{}:{section:value}})}
 async function load(){
@@ -94,6 +112,7 @@ async function prepare(){
  catch(e){error.value=e instanceof Error?e.message:'创建失败。'}finally{busy.value=false}
 }
 async function enter(){
+ if(previewError.value){await prepare();return}
  if(scene.value?.status==='published'&&community.value){await router.push({name:'operations',params:{communityId:community.value.id},query:{scene:scene.value.id,autostart:'1'}});return}
  if(community.value&&scene.value){await prepare();return}
  busy.value=true;error.value=''
@@ -104,7 +123,7 @@ function replay(d:HistoryRow){if(community.value)void router.push({name:'operati
 function continueRun(d:HistoryRow){if(community.value)void router.push({name:'operations',params:{communityId:community.value.id},query:{scene:d.sceneId,drill:d.id}})}
 function date(v?:string){return v?new Date(v).toLocaleString('zh-CN',{hour12:false}):'尚未开始'}
 function resultLabel(d:DrillIndex){return d.score?.recommendations[0]||({running:'演练进行中',paused:'演练已暂停',ready:'等待启动'}[d.status]??'等待复盘')}
-watch([sceneId,section],async([id,current],_,onCleanup)=>{scenePreview.value=null;previewMode.value='cover';previewError.value='';if(!id||!['home','training'].includes(current))return;let cancelled=false;onCleanup(()=>{cancelled=true});try{const result=await api.get<{simulation:Simulation}>('/scenes/'+id+'/preview?minute=0');if(!cancelled)scenePreview.value=result.simulation}catch(cause){if(!cancelled)previewError.value=cause instanceof Error?cause.message:'场景预览读取失败，请在场景准备中检查配置。'}})
+watch([sceneId,section],async([id,current],_,onCleanup)=>{previewLoading.value=false;scenePreview.value=null;previewMode.value='cover';previewError.value='';if(!id||!['home','training'].includes(current))return;previewLoading.value=true;let cancelled=false;onCleanup(()=>{cancelled=true});try{const result=await api.get<{simulation:Simulation}>('/scenes/'+id+'/preview?minute=0');if(!cancelled){scenePreview.value=result.simulation;if(isKitchenCase.value)previewMode.value='spatial'}}catch(cause){if(!cancelled)previewError.value=cause instanceof Error?cause.message:'场景预览读取失败，请在场景准备中检查配置。'}finally{if(!cancelled)previewLoading.value=false}})
 watch(section,(v,previous)=>{if(previous==='account'&&accountProfile.value?.default_community_id)communityId.value=accountProfile.value.default_community_id;if(v==='home'||v==='history')void load()})
 onBeforeUnmount(()=>{generation++;historyRequest++;historyController?.abort();if(historyTimer)clearTimeout(historyTimer)})
 onMounted(load)
@@ -122,11 +141,15 @@ onMounted(load)
    <header class="atlas-home__title"><h1>{{section==='history'?'复盘记录':'演练工作台'}}</h1><p>以真实场景锻炼应急能力，让社区更安全</p><label v-if="communities.length>1" class="atlas-community-switch"><span>社区</span><select v-model="communityId" @change="loadScenes"><option v-for="c in communities" :key="c.id" :value="c.id">{{c.name}}</option></select></label></header>
    <p v-if="error" class="atlas-home__error" role="alert">{{error}}<button @click="load">重新加载</button></p>
    <div v-if="section!=='history'&&unfinished" class="home-resume"><div><strong>还有一场训练未完成</strong><p>{{unfinished.name}} · {{unfinished.status==='running'?'进行中':'已暂停'}} · 已推进 {{Math.floor(unfinished.elapsed_seconds/60)}} 分 {{unfinished.elapsed_seconds%60}} 秒</p></div><button type="button" @click="continueRun(unfinished)">继续这场演练<AppIcon name="arrowRight" :size="18"/></button></div>
+   <nav v-if="section!=='history'" class="home-case-switch" aria-label="选择火灾案例">
+     <button type="button" :disabled="loading||busy" :aria-pressed="Boolean(scene)&&!isKitchenCase" @click="chooseCase('night_charging_shed_fire')"><AppIcon name="fire"/><span><strong>充电棚火灾</strong><small>室外通道 · 资源调度 · 分流疏散</small></span></button>
+     <button type="button" :disabled="loading||busy" :aria-pressed="Boolean(scene)&&isKitchenCase" @click="chooseCase('kitchen_fire')"><AppIcon name="building"/><span><strong>住宅厨房火灾</strong><small>室内分区 · 房门控制 · 逐层护送</small></span></button>
+   </nav>
    <div v-if="section!=='history'" class="atlas-case">
-    <figure class="atlas-case__visual"><CommunityPlan v-if="previewMode==='plan'&&scenePreview" :simulation="scenePreview"/><DigitalTwinArena v-else-if="previewMode==='spatial'&&scenePreview" :key="sceneId" :simulation="scenePreview" :robot="null" status="paused" :elapsed-seconds="0" compact :interactive="false" :camera-enabled="false"/><img v-else src="/assets/atlas-community-night.png" alt="夜间充电棚火灾场景效果图" fetchpriority="high"/><span class="atlas-case__location"><AppIcon name="target" :size="16"/>{{community?.name.split(' · ')[0]||'安巷社区'}} · {{previewMode==='cover'?'场景效果图':previewMode==='spatial'?'实际配置 · 拖动旋转、滚轮缩放':'实际配置 · 平面路网'}}</span><div v-if="previewError" class="atlas-case__preview-error" role="status">{{previewError}}<button @click="prepare">检查场景配置</button></div><div class="atlas-case__views"><button :aria-pressed="previewMode==='cover'" @click="previewMode='cover'">效果图</button><button :aria-pressed="previewMode==='spatial'" :disabled="!scenePreview" @click="previewMode='spatial'">三维预览</button><button :aria-pressed="previewMode==='plan'" :disabled="!scenePreview" @click="previewMode='plan'">平面图</button></div></figure>
-    <article class="atlas-case__details"><div class="atlas-case__select"><span>预设场景</span><select v-if="scenes.length" v-model="sceneId" aria-label="更换场景"><option v-for="s in scenes" :key="s.id" :value="s.id">{{s.name}}</option></select><button v-else @click="prepare">准备场景<AppIcon name="arrowRight" :size="16"/></button></div><h2>{{scene?.name||'夜间充电棚火灾'}}</h2><p>居民区电动自行车充电棚突发火灾。查看火情与通道，组织人员疏散，调度机器人并记录每一次处置。</p>
+    <figure class="atlas-case__visual"><CommunityPlan v-if="previewMode==='plan'&&scenePreview" :simulation="scenePreview"/><DigitalTwinArena v-else-if="previewMode==='spatial'&&scenePreview" :key="sceneId" :simulation="scenePreview" :robot="null" status="paused" :elapsed-seconds="0" compact :interactive="false" :camera-enabled="false"/><img v-else-if="!isKitchenCase" src="/assets/atlas-community-night.png" alt="夜间充电棚火灾场景效果图" fetchpriority="high"/><div v-else class="home-case-loading" role="status">正在读取厨房空间…</div><span class="atlas-case__location"><AppIcon name="target" :size="16"/>{{community?.name.split(' · ')[0]||'安巷社区'}} · {{previewMode==='cover'?'场景效果图':previewMode==='spatial'?'实际配置 · 拖动旋转、滚轮缩放':'实际配置 · 平面路网'}}</span><div v-if="previewError" class="atlas-case__preview-error" role="status">{{previewError}}<button @click="prepare">检查场景配置</button></div><div class="atlas-case__views"><button v-if="!isKitchenCase" :aria-pressed="previewMode==='cover'" @click="previewMode='cover'">效果图</button><button :aria-pressed="previewMode==='spatial'" :disabled="!scenePreview" @click="previewMode='spatial'">三维预览</button><button :aria-pressed="previewMode==='plan'" :disabled="!scenePreview" @click="previewMode='plan'">平面图</button></div></figure>
+    <article class="atlas-case__details"><div class="atlas-case__select"><span>预设场景</span><select v-if="scenes.length" v-model="sceneId" aria-label="更换场景"><option v-for="s in scenes" :key="s.id" :value="s.id">{{s.name}}</option></select><button v-else @click="prepare">准备场景<AppIcon name="arrowRight" :size="16"/></button></div><h2>{{scene?.name||'夜间充电棚火灾'}}</h2><p>{{caseDescription}}</p>
      <dl><div><AppIcon name="users"/><dt>涉及人数</dt><dd>{{scenePreview?.summary.total??parameters?.resident_count??'—'}} <small>人</small></dd><span>含重点关注居民</span></div><div><AppIcon name="logout"/><dt>可用疏散出口</dt><dd>{{scenePreview?.road_network?.nodes.filter(n=>n.is_exit).length??'—'}} <small>个</small></dd><span>由社区路网确定</span></div><div><AppIcon name="robot"/><dt>机器人状态</dt><dd>{{scene?'1 台':'待部署'}}</dd><span>{{scene?'巡检广播机器人 · 场景预设':'开始后载入场景'}}</span></div></dl>
-     <div class="atlas-case__ready"><AppIcon :name="scene?.status==='published'?'check':'clock'" :size="25"/><strong>{{loading?'读取场景':scene?.status==='published'?'准备就绪':'等待准备'}}</strong><span>{{scene?.status==='published'?'场景已冻结，可以开始演练':'完成场景配置后开始演练'}}</span></div><button class="atlas-case__enter" :disabled="busy||loading" @click="enter"><AppIcon name="play"/>{{busy?'正在准备…':scene&&scene.status!=='published'?'继续场景准备':'进入演练'}}<AppIcon name="arrowRight"/></button>
+     <div class="atlas-case__ready"><AppIcon :name="caseReady?'check':'clock'" :size="25"/><strong>{{caseStateLabel}}</strong><span>{{caseStateDetail}}</span></div><button class="atlas-case__enter" :disabled="busy||loading||previewLoading" @click="enter"><AppIcon name="play"/>{{busy?'正在准备…':previewError?'检查场景配置':scene&&scene.status!=='published'?'继续场景准备':'进入演练'}}<AppIcon name="arrowRight"/></button>
     </article>
    </div>
    <CommunityReadiness v-if="section!=='history'&&community" :community-id="community.id" :api-base-url="apiBaseUrl" :access-token="accessToken"/>
@@ -146,6 +169,12 @@ onMounted(load)
 </template>
 
 <style scoped>
+.home-case-switch { display:flex; flex-wrap:wrap; gap:12px; margin-bottom:20px; }
+.home-case-switch button { flex:1 1 260px; display:flex; align-items:center; gap:14px; text-align:left; padding:14px 18px; min-height:64px; border:1px solid var(--border-default); border-radius:8px; background:var(--surface-panel); color:var(--text-primary); }
+.home-case-switch button[aria-pressed=true] { background:var(--color-brand-100); border-color:var(--action-primary); }
+.home-case-switch strong,.home-case-switch small { display:block; }
+.home-case-switch strong { font-size:18px; }.home-case-switch small { font-size:14px; margin-top:4px; }
+.home-case-loading { display:grid; place-content:center; height:100%; min-height:240px; color:var(--text-primary); background:var(--surface-page); }
 .home-resume{display:flex;align-items:center;justify-content:space-between;gap:20px;padding:18px 0;border-bottom:1px solid var(--border-default);font-size:var(--ui-body-size,16px)}.home-resume p{margin:4px 0 0;color:var(--text-secondary);overflow-wrap:anywhere}.home-resume button{display:flex;align-items:center;gap:8px;flex:none;min-height:44px;padding:8px 14px;background:var(--surface-panel);border:1px solid var(--border-default);border-radius:var(--radius-sm);color:var(--text-primary)}
 .atlas-history__filters{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:16px;align-items:end;margin-bottom:20px}.atlas-history__filters label{display:grid;gap:6px;min-width:0;font-size:var(--ui-meta-size,14px)}.atlas-history__filters input,.atlas-history__filters select{min-width:0;width:100%;min-height:44px;font-size:var(--ui-body-size,16px);padding:8px 12px;border:1px solid var(--border-default);border-radius:var(--radius-sm);background:var(--surface-panel);color:var(--text-primary)}
 .history-filter-actions{grid-column:1/-1;display:flex;align-items:center;gap:12px 24px;flex-wrap:wrap}.history-filter-actions span{margin-right:auto}.history-filter-actions button,.history-pagination button{min-height:44px;border:1px solid var(--border-default);border-radius:var(--radius-sm);padding:8px 14px;font-size:var(--ui-body-size,16px)}.history-pagination{display:flex;align-items:center;justify-content:flex-end;gap:12px;flex-wrap:wrap;margin-top:18px}.history-pagination span{margin-right:auto;font-size:var(--ui-meta-size,14px)}.history-scene-name{display:block;margin-top:4px;font-size:var(--ui-meta-size,14px);color:var(--text-secondary)}.atlas-history button:disabled{opacity:.5;cursor:not-allowed}

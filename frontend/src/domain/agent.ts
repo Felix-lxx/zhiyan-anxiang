@@ -1,12 +1,14 @@
 export interface AgentAssignment { id: string; label: string; exit: 'north' | 'south'; vulnerable: boolean; route_kind?: 'robot'; route_reachable: boolean; route_points: Array<{x:number;y:number;height?:number}> }
 export interface AgentRobotSupport {
   target:string; can_apply:boolean; notice:string; duration_seconds:number|null
+  target_count?:number
   already_completed?:boolean;reusing_task?:boolean;already_arrived?:boolean
   battery_required:number; battery_available?:number
   route_points:Array<{x:number;y:number;height?:number}>
 }
 export interface AgentCandidate {
-  allocation?:{rule:'path'|'risk_capacity';description:string;changed_residents:number;same_allocation:boolean;peak_risk:number;bottlenecks:Array<{edge_id:string;name:string;assigned:number;waiting:number;flow_capacity:number;risk_score:number;resident_id:string}>}
+  equivalent_rules?:string[]
+  allocation?:{rule:'path'|'risk_capacity'|'containment';description:string;changed_residents:number;same_allocation:boolean;peak_risk:number;bottlenecks:Array<{edge_id:string;name:string;assigned:number;waiting:number;flow_capacity:number;risk_score:number;resident_id:string}>}
   baseline_metrics?:{arrived:number;exposed:number;queue_seconds:number}
   id:string; title:string; can_apply:boolean; reason:string; coverage:string; forecast_at:number; forecast_seconds:number
   assignments:AgentAssignment[]
@@ -21,16 +23,20 @@ export interface AgentStepExecution {
   attention:Array<{id:string;label:string;location:string;behavior:string;arrived:boolean;blocked:boolean;counted:boolean;queue_seconds:number;smoke_exposure:number;bottleneck:string|null;staff_name:string|null;responsible:string|null;escort_state:string|null}>
   evidence:Array<{id:string;sequence:number;at_seconds:number;message:string}>
 }
-export interface AgentStep { id:string;label:string;resident_ids:string[];exit?:'north'|'south';action?:string;kind?:'robot.command';depends_on?:string[];command_id:string;status:string;reason:string;progress:number;execution?:AgentStepExecution }
+export interface AgentStep { id:string;label:string;resident_ids:string[];exit?:'north'|'south';action?:string;kind?:'robot.command'|'residents.assign'|'indoor.door.set';depends_on?:string[];completion_rule?:string;command_id:string;status:string;reason:string;progress:number;execution?:AgentStepExecution }
 export interface AgentCoordination {
   status:string;at_seconds:number
   lanes:Array<{id:string;label:string;state:string;detail:string}>
   issues:Array<{id:string;resident_id:string;label:string;severity:'danger'|'warning';reason:string}>;issue_count?:number
   bottlenecks:Array<{edge_id:string;name:string;waiting:number;resident_id:string;max_wait_seconds:number}>
   robot:{included:boolean;state:string|null;battery:number|null;reason:string|null;steps_completed:number;steps_total:number}
-  next_action:{kind:'review'|'replan'|'rollcall'|'focus'|'robot'|'observe';label:string;reason:string;resident_id?:string|null}
+  next_action:{kind:'review'|'replan'|'rollcall'|'focus'|'robot'|'observe'|'missions';label:string;reason:string;resident_id?:string|null}
 }
+export interface AgentCaseTask { id:string;label:string;state:string;responsible_role:string;remaining_seconds:number|null;overdue:boolean;blockers:string[];verification_ready:boolean }
 export interface AgentRun {
+  drill_status?:string
+  task_graph?:{version:number;case_tasks?:AgentCaseTask[];nodes:Array<{id:string;label:string;state:string;depends_on:string[];completion_rule:string}>;human_gate:{label:string;state:string;reason:string}}
+  resources?:{version:number;resident_count:number;items:Array<{key:string;name:string;kind:string;state:'owned'|'occupied'|'released';revision:number|null}>}
   outcomes?:AgentOutcome[]
   decision?:{revision:number;candidate_id:string;title:string;approved_at:number;forecast_at:number;forecast_seconds:number;metrics:AgentCandidate['metrics'];allocation:AgentCandidate['allocation'];baseline_metrics:AgentCandidate['baseline_metrics']}|null
   recovery?:{at_seconds:number;retained_arrived:number;remaining:number;active_escorts:number}|null

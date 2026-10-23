@@ -21,6 +21,10 @@ from app.services.response_staff import capacity as staff_capacity
 from app.services.agent_execution import execution_view
 from app.services.agent_allocation import allocate_exits
 from app.services.agent_outcomes import register_check, settle_checks, outcome_payload
+from app.application.drill_commands import CommandOrigin, CommandRejected
+from app.bootstrap.commands import command_application
+from app.services import agent_claims
+from app.services.agent_task_graph import compile_graph, distinct_candidates, graph_view, validate_graph
 
 ACTIVE = {"awaiting_approval", "executing", "waiting", "needs_review"}
 OPERATING = {"executing", "waiting"}
@@ -56,14 +60,17 @@ def resolve_scope(data, request, interpretation):
     selected = [p for p in people if (not request.resident_ids or p["id"] in request.resident_ids) and (not building or p.get("building_id") == building)]
     selected = [p for p in selected if p["status"] != "evacuated"]
     if not selected: raise HTTPException(409, "该范围内没有待撤离居民，请核对建筑或到集合点执行清点。")
-    resident_buildings = {p.get("building_id") for p in selected}
-    if request.robot_broadcast and len(resident_buildings) != 1:
-        raise HTTPException(422, "机器人楼门广播需要明确一栋目标建筑，请先选择楼栋或同楼居民。")
+    resident_buildings = sorted({p.get("building_id") for p in selected if p.get("building_id")})
     return {"resident_ids": [p["id"] for p in selected], "building_id": building,
             "building_name": next((b["name"] for b in buildings_for(data) if b["id"] == building), "当前选定居民" if request.resident_ids else "全部待撤离居民"),
             "priority_assist": request.priority_assist and interpretation["priority_assist"], "exit_preference": interpretation["exit_preference"],
             "robot_broadcast": request.robot_broadcast,
-            "robot_building_id": next(iter(resident_buildings)) if request.robot_broadcast else None,
+            # Keep the singular field for historical runs while new runs retain
+            # every affected building. The robot compiler turns this into a
+            # sequential move/broadcast chain instead of rejecting a community-
+            # wide evacuation goal.
+            "robot_building_id": resident_buildings[0] if request.robot_broadcast and resident_buildings else None,
+            "robot_building_ids": resident_buildings if request.robot_broadcast else [],
             "scene_version_id": data["simulation"]["world"]["scene_version_id"],
             "completion": "目标居民到达集合点；重点人员按计划会合护送；" + ("机器人真实到位并广播；" if request.robot_broadcast else "") + "清点由参演人员核验。"}
 
@@ -87,6 +94,14 @@ def build_candidates(session, drill, data, scope, run=None):
     support, resource_steps = robot_support(operations, session, drill, data, scope, run)
     preference = scope["exit_preference"]
     alternatives = allocate_exits(routes, population, data["simulation"].get("spatial_network", {}).get("edges", []), ids, preference)
+    from app.services.agent_containment import source_door, occupied
+    door = source_door(data)
+    if door and door['state'] != 'closed':
+        # Compare a different environmental action, even when both exit policies
+        # resolve to the same route. Occupancy is checked again during execution.
+        alternatives.append((deepcopy(alternatives[-1][0]), {**deepcopy(alternatives[-1][1]),
+            'rule': 'containment', 'description': '居民先撤离起火房间，安全条件满足后关闭房门，限制烟气向走廊交换。',
+            'door_id': door['id']}))
     results = []
     baseline = operations.simulation_state(drill, events, at + 30, session=session)
     baseline_score = operations.calculate_score_data(session, drill, events, baseline)["total_score"]
@@ -126,20 +141,30 @@ def build_candidates(session, drill, data, scope, run=None):
                     event_type="robot.target_assigned", payload={"target": support["target"], "target_x": support["x"], "target_y": support["y"],
                     "route_points": support["route_points"], "route_edge_ids": support["route_edge_ids"], "route": support["route"],
                     "planned_duration_seconds": support["duration_seconds"], "battery": support["battery_available"] - support["battery_required"] + 3}))
-            if support["duration_seconds"] <= 30:
+            if support.get("target_count", 1) == 1 and support["duration_seconds"] <= 30:
                 sequence += 1
                 simulated.append(SimpleNamespace(id="agent-preview-broadcast", sequence=sequence,
                     elapsed_seconds=at + support["duration_seconds"], event_type="robot.broadcast_completed",
                     payload={"x": support["x"], "y": support["y"], "target": support["target"], "battery": support["battery_available"] - support["battery_required"]}))
+        containment = []
+        if allocation.get('rule') == 'containment':
+            containment = [{'id': str(uuid4()), 'label': '起火房间撤空后关闭房门',
+                'kind': 'indoor.door.set', 'arguments': {'door_id': door['id'], 'state': 'closed'},
+                'resident_ids': [], 'depends_on': [], 'route_edge_ids': []}]
+            interim = operations.simulation_state(drill, simulated, at + 15, session=session)
+            if not occupied({'simulation': interim}, door):
+                sequence += 1
+                simulated.append(SimpleNamespace(id='agent-preview-containment', sequence=sequence, elapsed_seconds=at+15,
+                    event_type='indoor.door_changed', payload={'door_id': door['id'], 'room_id': door['room_id'], 'state': 'closed'}))
         forecast = operations.simulation_state(drill, simulated, at + 30, session=session)
         predicted = [p for p in forecast["residents"] if p["id"] in id_set]
         score = operations.calculate_score_data(session, drill, simulated, forecast)["total_score"]
         assignment_list = [{"id": pid, "label": population[pid]["label"], "exit": assignments[pid], "vulnerable": population[pid]["vulnerable"],
                             "route_points": routes[assignments[pid]][pid].get("route_points", []), "route_edge_ids": routes[assignments[pid]][pid].get("route_edge_ids", []),
                             "route_reachable": routes[assignments[pid]][pid].get("route_reachable", False)} for pid in ids]
-        results.append({"id": "candidate-" + str(index + 1), "title": "当前偏好方案" if preference != "balanced" and index == 0 else "路径优先分流" if index == 0 else "风险与容量分流",
+        results.append({"id": "candidate-" + str(index + 1), "title": '安全撤空与房门控烟' if containment else "当前偏好方案" if preference != "balanced" and index == 0 else "路径优先分流" if index == 0 else "风险与容量分流",
                         "allocation": allocation, "baseline_metrics": baseline_metrics,
-                        "groups": groups + [{**deepcopy(step), "battery_required": support["battery_required"]} for step in resource_steps],
+                        "groups": groups + containment + [{**deepcopy(step), "battery_required": step.get("battery_required", support["battery_required"])} for step in resource_steps],
                         "robot_support": support, "assignments": assignment_list, "geometry_issues": geometry_issues, "navigation_geometry_version": 1,
                         "can_apply": not unresolved and (not assist_required or capacity > 0) and (not support or support["can_apply"]),
                         "assist_resource": {"capacity": capacity, "busy": busy_staff, "required": assist_required,
@@ -151,7 +176,7 @@ def build_candidates(session, drill, data, scope, run=None):
                                     "score": score, "score_delta": score - baseline_score},
                         "forecast_seconds": 30, "forecast_at": at, "forecast_sequence": data["latest_event_sequence"],
                         "coverage": "30 秒居民与首批可用护送资源预演；" + ("机器人按预计到位时刻计入广播，居民不等待机器人；" if support else "") + "后续批次待资源释放，车辆与人工任务沿用当前安排。"})
-    return sorted(results, key=lambda p: (not p["can_apply"], p["metrics"]["exposed"], -p["metrics"]["arrived"], p["metrics"]["queue_seconds"]))
+    return distinct_candidates(sorted(results, key=lambda p: (not p["can_apply"], p["metrics"]["exposed"], -p["metrics"]["arrived"], p["metrics"]["queue_seconds"])))
 
 
 def relevant_changes(session, run, after):
@@ -173,14 +198,23 @@ def relevant_changes(session, run, after):
         elif event.event_type == "command.accepted" and event.payload.get("kind") == "residents.assign":
             if ids.intersection(event.payload.get("arguments", {}).get("resident_ids", [])) and event.payload.get("command_id") not in own:
                 found.append(("taken_over", "目标居民收到人工或其他计划的新指令，自动执行已让出控制。"))
+        elif event.event_type == "robot.alarm_confirmed" and run.scope.get("robot_broadcast") and not any(c.get("can_apply") for c in run.candidates):
+            found.append(("needs_review", "自动火情巡检已完成，请按当前机器人位置重新比较并确认楼门广播任务。"))
         elif robot_owned and event.id not in own_events and event.event_type == "robot.replanned":
             found.append(("needs_review", "机器人的路线已调整，请核对新的到位条件后重新比较。"))
         elif robot_owned and event.id not in own_events and event.event_type in {"robot.target_assigned", "robot.task_cancelled", "robot.broadcast_completed"}:
+            # Automatic fire inspection is a system prerequisite, not a human
+            # takeover of the evacuation plan. Its completion invalidates the
+            # old preview through robot.alarm_confirmed and asks for replan.
+            if event.event_type == "robot.target_assigned" and event.payload.get("purpose") == "inspection":
+                continue
             found.append(("taken_over", "机器人收到外部调度或任务调整，本计划已让出控制，请核对现场。"))
         elif event.event_type in {"inject.channel_blocked", "road.reopened", "inject.resident_missing"}:
             affected = event.payload.get("resident_id") in ids if event.event_type == "inject.resident_missing" else event.payload.get("blocked_edge_id") in used_edges
             if affected:
                 found.append(("needs_review", "路网或目标人员状态变化，请重新比较未完成部分。"))
+        elif event.event_type == 'indoor.door_changed' and event.id not in own_events and not run.steps:
+            found.append(('needs_review', '室内房门已变化，通行与烟气条件需要重新比较。'))
     return found
 
 
@@ -196,14 +230,16 @@ def run_payload(session, run, data):
         changes = relevant_changes(session, run, run.observed_sequence)
         expired = age > 45 or any(c.get("navigation_geometry_version") != 1 for c in run.candidates)
         review = bool(changes) or expired
-        reason = changes[0][1] if changes else "预演起点已超过45秒，请按当前现场重新比较。" if expired else "请先开始或继续演练，再确认执行。" if data["status"] != "running" else "现场条件有效，核对方案后可确认执行。"
-        approval_guard = {"can_approve": not review and data["status"] == "running", "needs_replan": review,
+        reason = changes[0][1] if changes else "预演起点已超过45秒，请按当前现场重新比较。" if expired else "确认方案后继续演练并执行。" if data['status'] == 'paused' else "请先开始演练，再确认执行。" if data["status"] != "running" else "现场条件有效，核对方案后可确认执行。"
+        approval_guard = {"can_approve": not review and data["status"] in {"running", "paused"}, "needs_replan": review,
                           "age_seconds": age, "reason": reason}
         if review:
             execution["coordination"]["next_action"] = {"kind": "replan", "label": "按当前现场重新比较", "reason": reason}
             lane = next(l for l in execution["coordination"]["lanes"] if l["id"] == "planning")
             lane.update(state="review", detail=reason)
-    return {"id": run.id, "goal": run.goal, "status": status, "reason": run.reason, "revision": run.revision,
+    return {"id": run.id, "goal": run.goal, "status": status, "drill_status": data['status'], "reason": run.reason, "revision": run.revision,
+            "task_graph": graph_view(execution['steps'], data, run.scope['resident_ids']),
+            "resources": agent_claims.resource_view(session, run),
             "outcomes": outcome_payload(session, run),
             "decision": next((a["decision"] for a in reversed(run.evidence) if a.get("decision")), None),
             "recovery": next((a["recovery"] for a in reversed(run.evidence) if a.get("recovery")), None),
@@ -223,9 +259,10 @@ def run_payload(session, run, data):
 
 def approve(session, drill, run, candidate_id, revision, identity):
     operations = ops()
+    session.execute(select(DrillSession.id).where(DrillSession.id == drill.id).with_for_update())
     if run.status in {*OPERATING, "completed", "awaiting_rollcall", "unfinished"} and run.approved_revision == revision and run.selected_candidate == candidate_id: return
     if run.status != "awaiting_approval" or run.revision != revision: raise HTTPException(409, "计划已变化，请重新读取方案。")
-    if drill.status != "running": raise HTTPException(409, "请先开始或继续演练，再确认执行。")
+    if drill.status not in {'running', 'paused'}: raise HTTPException(409, "请先开始演练，再确认执行。")
     candidate = next((p for p in run.candidates if p["id"] == candidate_id), None)
     if not candidate or not candidate["can_apply"]: raise HTTPException(409, "该方案当前不可执行。")
     if any(g.get("action") == "priority_assist" for g in candidate["groups"]):
@@ -241,15 +278,23 @@ def approve(session, drill, run, candidate_id, revision, identity):
         run.status, run.reason = "needs_review", "现场或方案时效已变化，尚未执行。请重新预演。"
         note(session, run, "invalidated", run.reason, at); session.commit()
         raise HTTPException(409, run.reason)
-    run.steps = [{**deepcopy(group), "command_id": "agent-" + group["id"], "status": "pending", "reason": "等待当前条件校验", "progress": 0, "last_progress_at": at} for group in candidate["groups"]]
+    run.steps = compile_graph(candidate['groups'], at)
     run.evidence = [*run.evidence, {"decision": {"revision": revision, "candidate_id": candidate_id,
         "title": candidate["title"], "approved_at": at, "forecast_at": candidate["forecast_at"],
         "forecast_seconds": candidate["forecast_seconds"], "metrics": deepcopy(candidate["metrics"]),
         "allocation": deepcopy(candidate.get("allocation")), "baseline_metrics": deepcopy(candidate.get("baseline_metrics"))}}]
     run.status, run.reason = "executing", "计划已确认，按现有命令接口逐步执行。"
     run.selected_candidate, run.approved_revision = candidate_id, revision
+    acquired, resource_reason = agent_claims.acquire(session, run, operations.snapshot(session, drill))
+    if not acquired:
+        run.status, run.reason = 'waiting', resource_reason
+    note(session, run, 'resources.owned' if acquired else 'resources.waiting', resource_reason, at)
     register_check(session, run, candidate, at)
     note(session, run, "approved", "已批准方案：" + candidate["title"], at)
+    if drill.status == 'paused':
+        drill.status, drill.started_at = 'running', datetime.now(UTC)
+        operations.append_event(session, drill, 'drill.resumed', identity.username,
+            '方案已批准，现场继续并开始执行。', {'reason': 'agent_approved', 'run_id': run.id})
     session.commit()  # Stable action IDs exist before any domain side effect.
 
 
@@ -284,18 +329,32 @@ def _advance_run(session, run, identity, controlled):
     operations = ops()
     if run.status not in OPERATING: return
     drill = operations.require_drill(session, run.drill_session_id, identity.username)
+    session.execute(select(DrillSession.id).where(DrillSession.id == drill.id).with_for_update())
     data = operations.snapshot(session, drill)
     at = data["elapsed_seconds"]
     if drill.status == "paused": return
     if drill.status == "ended":
-        run.status, run.reason = "unfinished", "本场已结束，未完成步骤已冻结。"
-        note(session, run, "ended", run.reason, at); session.commit(); return
+        finalize_run(session, run, data)
+        session.commit(); return
     if drill.status != "running": return
     changes = relevant_changes(session, run, run.observed_sequence)
     if changes:
         status, reason = next((c for c in changes if c[0] == "taken_over"), changes[0])
         run.status, run.reason = status, reason
+        if status == 'taken_over': agent_claims.release(session, run.id)
         note(session, run, status, reason, at); session.commit(); return
+    try:
+        validate_graph(run.steps)
+    except ValueError as error:
+        run.status, run.reason = 'needs_review', str(error) + ' 自动下令已暂停，请重新比较。'
+        note(session, run, 'graph.invalid', run.reason, at)
+        session.commit(); return
+    acquired, resource_reason = agent_claims.acquire(session, run, data)
+    if not acquired:
+        changed = run.reason != resource_reason
+        run.status, run.reason = 'waiting', resource_reason
+        if changed: note(session, run, 'resources.waiting', resource_reason, at)
+        session.commit(); return
     steps = deepcopy(run.steps)
     people = {p["id"]: p for p in data["simulation"]["residents"]}
     receipts = {c["id"]: c for c in data.get("commands", [])}
@@ -313,6 +372,31 @@ def _advance_run(session, run, identity, controlled):
         if step["status"] in {"superseded", "cancelled", "failed", "unfinished"}:
             outcome = ("taken_over", "步骤已被替代或结束，自动执行已停止。")
             break
+        dependencies = [s for s in steps if s['id'] in step.get('depends_on', [])]
+        if not receipt and any(s['status'] != 'completed' for s in dependencies):
+            step.update(status='waiting', progress=0, reason='等待前置步骤：' + '、'.join(s['label'] for s in dependencies if s['status'] != 'completed'))
+            continue
+        if step.get('kind') == 'indoor.door.set':
+            if receipt:
+                continue
+            from app.services.agent_containment import source_door, occupied
+            door = source_door(data)
+            if not door or door['id'] != step['arguments']['door_id']:
+                outcome = ('needs_review', '起火房门已变化，请重新比较。'); break
+            if occupied(data, door):
+                step.update(status='waiting', reason='等待起火房间及门洞撤空；保留居民和护送员通路。')
+                continue
+            if door['state'] == 'closed':
+                step.update(status='completed', progress=1, reason='现场房门已关闭，已核对状态。'); continue
+            if not controlled(): return
+            try:
+                data = command_application().execute(session, drill.id, LiveCommand(command_id=step['command_id'],
+                    kind='indoor.door.set', arguments=step['arguments']), identity,
+                    CommandOrigin('agent', run.id, run.approved_revision, step['id']))
+                step.update(status='completed', progress=1, reason='已确认无人占用并关闭房门；烟气与通行同步改变。')
+            except CommandRejected as error:
+                outcome = ('needs_review', str(error.detail)); break
+            continue
         if step.get("kind") == "robot.command":
             if step["status"] == "blocked":
                 outcome = ("needs_review", step["reason"]); break
@@ -329,8 +413,9 @@ def _advance_run(session, run, identity, controlled):
             live = LiveCommand(command_id=step["command_id"], kind="robot.command", arguments=step["arguments"], expected_sequence=data["latest_event_sequence"])
             if not controlled(): return
             try:
-                data = operations.execute_live_command(drill.id, live, identity, session)
-            except HTTPException as error:
+                data = command_application().execute(session, drill.id, live, identity,
+                    CommandOrigin('agent', run.id, run.approved_revision, step['id']))
+            except CommandRejected as error:
                 step.update(status="blocked", reason=str(error.detail))
                 outcome = ("needs_review", "机器人实时校验未通过：" + str(error.detail)); break
             receipt = next((c for c in data["commands"] if c["id"] == step["command_id"]), None)
@@ -359,8 +444,9 @@ def _advance_run(session, run, identity, controlled):
                            arguments={k: step[k] for k in ("resident_ids", "exit", "action")})
         if not controlled(): return
         try:
-            data = operations.execute_live_command(drill.id, live, identity, session)
-        except HTTPException as error:
+            data = command_application().execute(session, drill.id, live, identity,
+                CommandOrigin('agent', run.id, run.approved_revision, step['id']))
+        except CommandRejected as error:
             session.refresh(run)
             step.update(status="blocked", reason=str(error.detail))
             outcome = ("needs_review", "实时校验未通过：" + str(error.detail))
@@ -391,6 +477,7 @@ def _advance_run(session, run, identity, controlled):
     run.steps = steps
     if outcome:
         run.status, run.reason = outcome
+        if run.status == 'taken_over': agent_claims.release(session, run.id)
         note(session, run, run.status, run.reason, at)
     run.observed_sequence = data["latest_event_sequence"]
     if run.status in OPERATING:
@@ -402,8 +489,10 @@ def _advance_run(session, run, identity, controlled):
             note(session, run, "needs_review", run.reason, at)
         elif all_arrived and all(s["status"] == "completed" for s in steps):
             counted = all(people[pid].get("counted") for pid in run.scope["resident_ids"])
-            run.status = "completed" if counted else "awaiting_rollcall"
-            run.reason = "目标居民疏散、护送与集合核验完成。" if counted else "目标居民已到集合点；等待参演人员核验，助手不会代签清点。"
+            tasks_done = not run.scope.get('include_case_tasks') or all(t['status'] == 'completed' for t in data.get('tasks', []))
+            run.status = "completed" if counted and tasks_done else "awaiting_rollcall"
+            agent_claims.release(session, run.id)
+            run.reason = "目标行动、责任任务与集合核验完成。" if counted and tasks_done else "人员行动已完成；请完成案例责任任务和集合清点。"
             note(session, run, run.status, run.reason, at)
         else:
             run.status = "waiting" if any(s["status"] == "waiting" for s in steps) else "executing"
@@ -412,11 +501,63 @@ def _advance_run(session, run, identity, controlled):
     session.commit()
 
 
+def finalize_run(session, run, data):
+    """Freeze one plan from authoritative receipts and the final world.
+
+    Ending a drill can race the two-second agent scheduler. Re-read every
+    receipt and resident result before assigning the terminal plan status so a
+    completed plan cannot be frozen as unfinished merely because the next
+    scheduler tick has not happened yet.
+    """
+    execution = execution_view(session, run, data)
+    refreshed = {step["id"]: step for step in execution["steps"]}
+    steps = deepcopy(run.steps)
+    for step in steps:
+        view = refreshed.get(step["id"])
+        if view:
+            step.update({key: view[key] for key in ("status", "progress", "reason") if key in view})
+    run.steps = steps
+    people_by_id = {person["id"]: person for person in data["simulation"]["residents"]}
+    people = [people_by_id[pid] for pid in run.scope.get("resident_ids", []) if pid in people_by_id]
+    all_steps = bool(steps) and all(step["status"] == "completed" for step in steps)
+    all_arrived = bool(people) and all(person["status"] == "evacuated" for person in people)
+    all_counted = all_arrived and all(person.get("counted") for person in people)
+    assist_ok = not run.scope.get("priority_assist") or all(
+        not person.get("vulnerable") or person.get("assisted") for person in people)
+    agent_claims.release(session, run.id)
+    tasks_ok = not run.scope.get('include_case_tasks') or all(t['status'] == 'completed' for t in data.get('tasks', []))
+    if all_steps and all_counted and assist_ok and tasks_ok:
+        run.status, run.reason = "completed", "目标居民疏散、护送、机器人协同与集合核验均已完成，结果已冻结。"
+        event_kind = "completed"
+    else:
+        missing = sum(person["status"] != "evacuated" for person in people)
+        unchecked = sum(person["status"] == "evacuated" and not person.get("counted") for person in people)
+        incomplete_steps = sum(step["status"] != "completed" for step in steps)
+        run.status = "unfinished"
+        run.reason = f"本场结果已冻结：未完成步骤 {incomplete_steps} 项、未到场 {missing} 人、未清点 {unchecked} 人。"
+        event_kind = "unfinished"
+    run.observed_sequence = data["latest_event_sequence"]
+    note(session, run, event_kind, run.reason, data["elapsed_seconds"])
+
+
+def finalize_runs_for_end(session, drill, identity):
+    """Synchronously settle active plans before the score and snapshot freeze."""
+    data = ops().snapshot(session, drill)
+    runs = list(session.scalars(select(AgentRun).where(
+        AgentRun.drill_session_id == drill.id,
+        AgentRun.status.in_([*ACTIVE, *OPERATING, "awaiting_rollcall"]),
+    )))
+    for run in runs:
+        finalize_run(session, run, data)
+
+
 def reconcile_rollcall(session, run, identity):
     if run.status != "awaiting_rollcall": return
     data = ops().snapshot(session, ops().require_drill(session, run.drill_session_id, identity.username))
     selected = [p for p in data["simulation"]["residents"] if p["id"] in run.scope["resident_ids"]]
-    if all(p.get("counted") for p in selected):
+    tasks_done = not run.scope.get('include_case_tasks') or all(t['status'] == 'completed' for t in data.get('tasks', []))
+    if all(p.get("counted") for p in selected) and tasks_done:
+        agent_claims.release(session, run.id)
         run.status, run.reason = "completed", "目标居民疏散、护送与集合核验完成。"
         note(session, run, "completed", run.reason, data["elapsed_seconds"]); session.commit()
     elif data["status"] == "ended":

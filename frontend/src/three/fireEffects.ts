@@ -29,11 +29,12 @@ export class FireEffects {
     this.smoke=new THREE.InstancedMesh(geometry,makeMaterial(false),88)
     for(const mesh of [this.flame,this.smoke]) { mesh.frustumCulled=false;mesh.instanceMatrix.setUsage(THREE.DynamicDrawUsage); for(let i=0;i<mesh.count;i++)mesh.setColorAt(i,new THREE.Color(1,1,1)); this.group.add(mesh) }
   }
-  update(seconds:number,intensity:number,radius:number,wind:string,camera:THREE.Camera,quality:number) {
+  update(seconds:number,intensity:number,radius:number,wind:string,camera:THREE.Camera,quality:number,indoor=false) {
     const strength=THREE.MathUtils.clamp(intensity/100,0,1)
     this.group.visible=strength>0
     const direction=new THREE.Vector3(wind.includes('东')?-1:wind.includes('西')?1:.2,0,wind.includes('北')?1:wind.includes('南')?-1:.1).normalize()
     for(const [mesh,isFlame,max] of [[this.flame,true,64],[this.smoke,false,88]] as const) {
+      mesh.visible=isFlame||!indoor
       mesh.count=Math.round(max*quality)
       for(let i=0;i<mesh.count;i++) {
         const phase=(seconds*(isFlame?.4:.095)+i*.61803398875)%1

@@ -31,7 +31,7 @@ const emit = defineEmits<{
       <div><strong>三维导演台</strong><span :title="props.subtitle">{{ props.name }}</span></div>
     </div>
     <div class="director-status" aria-label="演练状态">
-      <UiStatus class="sync-indicator" :tone="props.socketState === 'live' ? 'success' : 'warning'" live>{{ props.socketState === 'live' ? '实时同步' : '连接恢复中' }}</UiStatus>
+      <UiStatus class="sync-indicator" :tone="props.drillStatus === 'ended' || props.socketState === 'live' ? 'success' : 'warning'" live>{{ props.drillStatus === 'ended' ? '结果已冻结' : props.socketState === 'live' ? '实时同步' : '连接恢复中' }}</UiStatus>
       <span>{{ props.replay ? '历史回放' : props.statusLabel }}</span>
       <strong>{{ props.displayClock }}</strong>
     </div>

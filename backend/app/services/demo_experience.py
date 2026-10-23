@@ -13,7 +13,6 @@ from app.models.domain import (
     SceneTemplate,
 )
 from app.models.operations import DrillEvent, DrillSession, RobotAgent
-from app.models.tasks import DecisionTask
 from app.services.demo_community import get_or_create_demo_community
 from app.services.scenes import create_scene, ensure_templates, update_charging_shed_parameters
 from app.services.exercise_world import capture_world
@@ -88,15 +87,8 @@ def ensure_demo_experience(session: Session, owner_username: str) -> tuple:
             DecisionOption(decision_point_id=point.id, label="继续现场复核", consequence="机器人再次采样，响应时间延长并增加烟气暴露风险"),
         ])
 
-    tasks = [
-        ("切断充电棚电源", "物业人员到达充电棚配电箱完成断电", 90),
-        ("疏散 3 号楼重点人员", "优先协助 2 名独居老人和 1 名行动不便人员撤离", 180),
-        ("机器人执行入口广播", "R-01 到达 3 号楼入口循环播放疏散指令", 120),
-    ]
-    existing_titles = set(session.scalars(select(DecisionTask.title).where(DecisionTask.scene_version_id == version.id)))
-    for title, target, deadline in tasks:
-        if title not in existing_titles:
-            session.add(DecisionTask(decision_point_id=point.id, scene_version_id=version.id, title=title, target=target, deadline_seconds=deadline))
+    from app.services.scenario_tasks import ensure_standard_tasks
+    ensure_standard_tasks(session, version, 'night_charging_shed_fire')
 
     scene.status = SceneStatus.PUBLISHED
     version.status = SceneStatus.PUBLISHED

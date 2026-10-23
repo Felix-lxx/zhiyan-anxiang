@@ -76,6 +76,9 @@ def build_context(data: dict, scene_name: str, historical: bool, question: str =
         sources.append({"id": "S7", "title": "最近指令回执", "detail": f"{command_summary.get('label')}；状态 {command_summary.get('status')}；{command_summary.get('reason')}"})
     if vehicles:
         sources.append({"id": "S8", "title": "车辆与现场处置", "detail": "；".join(f"{v['name']}：{v['service']['reason'] if v['service'] else v['reason']}" for v in vehicles)})
+    if sim.get('environment', {}).get('indoor'):
+        indoor = sim['environment']['indoor']
+        sources.append({'id':'S9', 'title':'楼内分区烟气与房门', 'detail':indoor['source_label']+'；'+'；'.join(f"{zone['name']}烟气{round(zone['smoke_density']*100)}%" for zone in sorted(indoor['zones'],key=lambda zone:-zone['smoke_density'])[:4])})
     if not spatial_supported:
         sources[0]["detail"] = f"历史模型：居民 {counts['total']} 人；记录撤离 {counts['arrived']} 人；未提供集合点核验数据，不能将撤离计数当作真实清点。"
     return {"drill_id": data["id"], "scene_name": scene_name[:160], "drill_name": data["name"][:160],
@@ -84,10 +87,18 @@ def build_context(data: dict, scene_name: str, historical: bool, question: str =
             "roads": roads[:40], "tasks": tasks, "robot": robot_summary, "events": events,
             "score": score, "sources": sources, "spatial_supported": spatial_supported, "requested_residents": sorted(requested),
             "selection": selection, "latest_command": command_summary, "vehicles": vehicles,
+            "indoor": ({'source_label': sim['environment']['indoor']['source_label'],
+                        'zones': sorted(sim['environment']['indoor']['zones'], key=lambda zone: -zone['smoke_density'])[:12],
+                        'doors': sim['environment']['indoor']['doors'][:40]} if sim.get('environment', {}).get('indoor') else None),
             "fire": sim.get("fire"), "water_suppression": sim.get("environment", {}).get("water_suppression", False)}
 
 
 def offline_reply(question: str, context: dict) -> tuple[str, list[dict]]:
+    if context.get('indoor') and any(word in question for word in ('厨房', '房门', '烟气', '楼层')):
+        indoor = context['indoor']
+        zones = '；'.join(f"{zone['name']}烟气{round(zone['smoke_density']*100)}%" for zone in indoor['zones'][:4])
+        closed = sum(door['state'] == 'closed' for door in indoor['doors'])
+        return (f"当前火点：{indoor['source_label']}。{zones}。当前关闭房门{closed}扇。房门关闭会减少烟气交换，同时阻断人员通行；请在「楼内烟气与门控」核对房内人员并操作，系统不会把尚未到场当作已完成。[S9]", [])
     c = context["counts"]
     unarrived = c["total"] - c["arrived"]
     people = context["residents"]

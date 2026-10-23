@@ -24,8 +24,8 @@ const time = (seconds: number) => `${String(Math.floor(seconds / 60)).padStart(2
   <section class="execution-feedback" aria-label="指令执行进度">
     <header><h3>指令执行进度</h3><span>{{ paused ? '演练暂停' : '随现场同步' }}</span></header>
     <nav v-if="commands.length" class="execution-feedback__filters" aria-label="筛选演练指令">
-      <button type="button" :aria-pressed="filter === 'active'" @click="filter = 'active'; showAll = false">待完成 {{ activeCount }}</button>
-      <button type="button" :aria-pressed="filter === 'all'" @click="filter = 'all'; showAll = false">全部记录 {{ commands.length }}</button>
+      <button type="button" :aria-pressed="filter === 'active'" @click="filter = 'active'; showAll = false">运行中指令 {{ activeCount }}</button>
+      <button type="button" :aria-pressed="filter === 'all'" @click="filter = 'all'; showAll = false">指令记录 {{ commands.length }}</button>
       <span v-if="blockedCount" role="status">{{ blockedCount }} 条受阻，优先处理</span>
     </nav>
     <p v-if="!commands.length" class="execution-feedback__empty">选择居民、道路或机器人并确认操作后，这里会显示实际执行进度、等待原因和结果证据。</p>
@@ -34,6 +34,8 @@ const time = (seconds: number) => `${String(Math.floor(seconds / 60)).padStart(2
       <li v-for="command in visible" :key="command.id" :data-status="command.status">
         <div class="execution-feedback__status"><time>{{ time(command.accepted_at) }}</time><strong>{{ labels[command.status] }}</strong><span v-if="command.remaining_seconds && command.remaining_seconds < 9999">行程估计 {{ Math.ceil(command.remaining_seconds) }} 秒</span><span v-if="command.score_before !== null && command.score_after_acceptance !== null && command.score_after_acceptance !== command.score_before">预计评分 {{ command.score_after_acceptance > command.score_before ? '+' : '' }}{{ command.score_after_acceptance - command.score_before }}</span></div>
         <h4>{{ command.label }}</h4><p>{{ command.reason }}</p>
+        <p v-if="command.origin" class="execution-feedback__origin"><AppIcon :name="command.origin.kind==='agent'?'brain':'users'" :size="16"/><span>{{command.origin.kind==='agent'?`智能体计划 · 批准版本 ${command.origin.revision}`:'人工下令'}} · {{command.actor}}</span></p>
+        <details class="execution-feedback__receipt"><summary>查看执行回执</summary><dl><div><dt>指令编号</dt><dd>{{command.id}}</dd></div><div><dt>受理时刻</dt><dd>{{time(command.accepted_at)}}</dd></div><div v-if="command.origin?.plan_id"><dt>关联计划</dt><dd>{{command.origin.plan_id}}</dd></div><div v-if="command.origin?.step_id"><dt>计划步骤</dt><dd>{{command.origin.step_id}}</dd></div><div v-if="command.failure_code"><dt>未执行原因码</dt><dd>{{command.failure_code}}</dd></div></dl></details>
         <progress v-if="command.kind === 'residents.assign' || command.kind === 'robot.command' || command.kind === 'search.assign'" :value="command.progress" max="1" :aria-label="command.label + '执行进度'"></progress>
         <div class="execution-feedback__actions"><span v-if="command.selected_count">到达 {{ command.completed_count }}/{{ command.selected_count }} 人</span><span v-else>{{ command.event_ids.length }} 条关联证据</span><button type="button" @click="emit('ask', command)"><AppIcon name="brain" :size="15" />分析原因</button><button v-if="command.resident_ids[0]" type="button" @click="emit('focus', command.resident_ids[0])"><AppIcon name="target" :size="15" />定位人员</button><button v-if="command.event_ids.length" type="button" @click="emit('evidence', command.accepted_at)">{{ command.status === 'failed' ? '查看失败记录' : '回看决定' }}<AppIcon name="arrowRight" :size="15" /></button></div>
       </li>
@@ -57,6 +59,12 @@ const time = (seconds: number) => `${String(Math.floor(seconds / 60)).padStart(2
 .execution-feedback__status{display:flex;flex-wrap:wrap;align-items:center;gap:8px;font-size:var(--ui-meta-size,14px);margin-bottom:6px;font-variant-numeric:tabular-nums;color:var(--text-secondary)}
 .execution-feedback__status time{flex-shrink:0;white-space:nowrap}
 .execution-feedback__status strong{color:var(--text-primary)}
+.execution-feedback .execution-feedback__origin{display:flex;align-items:flex-start;gap:8px;font-size:var(--ui-meta-size,14px);color:var(--text-secondary)}
+.execution-feedback__origin svg{flex-shrink:0;margin-top:4px}
+.execution-feedback__receipt{min-width:0;margin-block:8px;font-size:var(--ui-meta-size,14px);color:var(--text-secondary)}
+.execution-feedback__receipt summary{min-height:44px;align-content:center;cursor:pointer;overflow-wrap:anywhere}
+.execution-feedback__receipt dl{display:grid;gap:8px;margin:8px 0 16px}.execution-feedback__receipt dl>div{display:grid;grid-template-columns:90px minmax(0,1fr);gap:10px}
+.execution-feedback__receipt dd{margin:0;overflow-wrap:anywhere;font-variant-numeric:tabular-nums}
 [data-status=blocked] .execution-feedback__status strong,[data-status=unfinished] .execution-feedback__status strong{color:var(--status-warning)}
 [data-status=failed] .execution-feedback__status strong{color:var(--status-danger)}
 [data-status=failed]{background:color-mix(in srgb,var(--status-danger) 8%,transparent)}

@@ -52,6 +52,8 @@ try {
           bottlenecks:[{edge_id:'stairs',name:'二层楼梯',waiting:1,resident_id:'resident-test',max_wait_seconds:18}],
           robot:{included:true,state:'moving',battery:77,reason:'前往楼门',steps_completed:0,steps_total:2},
           next_action:{kind:'observe',label:'观察执行回执',reason:'人员和机器人正在按已确认路线执行。'}}}}
+      run.resources={version:1,resident_count:1,items:[{key:'staff:escort-1',name:'模拟值守员 1',kind:'staff',state:'owned',revision:run.revision},{key:'robot:R-01',name:'巡检广播机器人 R-01',kind:'robot',state:'owned',revision:run.revision}]}
+      run.task_graph={version:1,nodes:run.steps.map(s=>({id:s.id,label:s.label,state:s.status,depends_on:s.depends_on??[],completion_rule:'领域执行回执'})),human_gate:{label:'集合到场核验',state:'waiting',reason:'等待目标居民实际到场'}}
       return route.fulfill({json:run})
     }
     if(request.method()==='POST'){

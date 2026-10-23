@@ -56,10 +56,15 @@ def coordination_view(run, data, steps):
             issues.append({"id": person["id"], "resident_id": person["id"],
                 "label": person["label"], "severity": "danger" if person["blocked"] else "warning",
                 "reason": "路线受阻，请定位后核对通道" if person["blocked"] else "累计烟气暴露超过阈值，请检查护送与出口安排"})
+    case_pending = [t for t in data.get('tasks', []) if t['status'] != 'completed' and t['status'] != 'waiting'] if run.scope.get('include_case_tasks') else []
     if awaiting:
         next_action = {"kind": "review", "label": "核对方案后确认执行", "reason": "当前只完成预演，尚未授权下令。"}
     elif run.status == "needs_review":
         next_action = {"kind": "replan", "label": "重新比较未完成部分", "reason": run.reason}
+    elif case_pending:
+        task = min(case_pending, key=lambda t: (not t.get('verification_ready'), t.get('remaining_seconds', 9999)))
+        next_action = {'kind': 'missions', 'label': '处置：'+task['title'],
+            'reason': '等待责任人核验；'+('；'.join(task.get('blockers', [])) or '请提交操作证据')}
     elif run.status == "awaiting_rollcall":
         next_action = {"kind": "rollcall", "label": "前往集合清点", "reason": "行动已完成，等待参演人员核验到场名单。"}
     elif issues:
@@ -76,7 +81,7 @@ def coordination_view(run, data, steps):
     return {"status": state, "at_seconds": data["elapsed_seconds"],
         "lanes": [
             {"id": "perception", "label": "现场感知", "state": "observing" if data["status"] == "running" else "paused",
-             "detail": f"目标 {len(people)} 人，未到场 {len(outstanding)} 人；事件 {data['latest_event_sequence']}"},
+             "detail": f"目标 {len(people)} 人，未到场 {len(outstanding)} 人；事件 {data['latest_event_sequence']}" + (f"；厨房分区 {len(data['simulation']['environment']['indoor']['zones'])} 个" if data['simulation'].get('environment', {}).get('indoor') else '')},
             {"id": "planning", "label": "疏散规划", "state": "review" if run.status == "needs_review" else "approval" if awaiting else "confirmed",
              "detail": f"版本 {run.revision}，待确认 {len(run.candidates)} 个方案" if awaiting else run.reason},
             {"id": "resources", "label": "资源协同", "state": "waiting" if any(s["status"] == "waiting" for s in steps) else "observing",

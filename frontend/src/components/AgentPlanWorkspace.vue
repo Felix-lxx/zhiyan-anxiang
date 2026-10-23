@@ -6,7 +6,7 @@ import AppIcon from './AppIcon.vue'
 import AgentOutcomeReview from './AgentOutcomeReview.vue'
 
 const props = defineProps<{ apiBaseUrl:string;accessToken:string;drillId:string;active:boolean;historical:boolean;modelAvailable:boolean;focusId?:string;liveFeed?:AgentLiveState|null;connection?:'connecting'|'live'|'stale' }>()
-const emit = defineEmits<{ preview:[people:AgentAssignment[]];focus:[id:string];robot:[];rollcall:[];replay:[at:number] }>()
+const emit = defineEmits<{ preview:[people:AgentAssignment[]];focus:[id:string];robot:[];rollcall:[];missions:[];replay:[at:number] }>()
 const api = createApiClient(props.apiBaseUrl, () => props.accessToken)
 const goal = ref('将目标居民分流疏散，重点人员安排护送'), building = ref(''), assist = ref(true), useModel = ref(false)
 const robotBroadcast = ref(false)
@@ -15,13 +15,16 @@ const buildings = ref<Array<{id:string;name:string}>>([]), runs = ref<AgentRun[]
 const loading = ref(false), busy = ref(false), error = ref(''), syncError = ref(''), chosen = ref(''), detail = ref<'plan'|'execution'|'evidence'>('plan')
 let timer:ReturnType<typeof setTimeout>|undefined, generation=0, pollEpoch=0, requestId='', disposed=false
 let readController:AbortController|null=null
-const run = computed(() => runs.value[0])
+const selectedRunId = ref('')
+const composing = ref(false)
+const run = computed(() => runs.value.find(item=>item.id===selectedRunId.value) ?? runs.value[0])
 const streamReady=computed(()=>props.connection==='live' && props.liveFeed?.id===props.drillId)
+const syncLabel=computed(()=>drillStatus.value==='ended'?'本场结果已冻结，计划与证据保持只读':streamReady.value?'与三维现场实时联动':props.connection==='stale'?'连接恢复中，定时核对最近状态':'正在连接现场，暂用状态读取')
 const coordination = computed(() => run.value?.execution?.coordination)
 const laneLabels:Record<string,string> = { observing:'持续核对',paused:'现场冻结',review:'需要复核',approval:'待人工确认',confirmed:'已确认',waiting:'等待条件',attention:'需要关注' }
 const candidate = computed(() => run.value?.candidates.find(p => p.id===chosen.value) ?? run.value?.candidates[0])
-const live = computed(() => !props.historical && drillStatus.value==='running')
-const canCreate = computed(() => !run.value || ['completed','stopped','taken_over','unfinished'].includes(run.value.status))
+const live = computed(() => !props.historical && ['running','paused'].includes(drillStatus.value))
+const canCreate = computed(() => composing.value || !run.value || ['completed','stopped','taken_over','unfinished'].includes(run.value.status))
 const labels:Record<string,string> = { awaiting_approval:'待确认方案',executing:'执行中',waiting:'等待条件',needs_review:'现场变化，待调整',paused:'演练已暂停',awaiting_rollcall:'到场，待人工清点',completed:'目标完成',stopped:'已停止自动下令',taken_over:'已让出控制',unfinished:'本场已结束',pending:'等待条件',accepted:'已受理',queued:'排队',blocked:'受阻',superseded:'已被替代',cancelled:'已取消',failed:'执行失败' }
 const stepSummary = computed(() => {
   const steps = run.value?.steps ?? []
@@ -37,20 +40,28 @@ function nextAction() {
   if (!action || busy.value || syncError.value) return
   if (action.kind==='replan') void act('replan')
   else if (action.kind==='rollcall') emit('rollcall')
+  else if (action.kind==='missions') emit('missions')
   else if (action.kind==='robot') emit('robot')
   else if (action.kind==='focus' && action.resident_id) emit('focus', action.resident_id)
   else detail.value=action.kind==='review'?'plan':run.value?.status==='completed'?'evidence':'execution'
 }
+function focusResource(key:string) {
+  if(key.startsWith('robot:')){emit('robot');return}
+  const person=run.value?.execution?.staff.find(staff=>key==='staff:'+staff.id)?.resident_id
+  if(person)emit('focus',person)
+}
 function setRun(value:AgentRun) {
+  if(value.drill_status)drillStatus.value=value.drill_status
   const changed = run.value?.id !== value.id
   runs.value = [value,...runs.value.filter(r => r.id!==value.id)]
+  if(!selectedRunId.value || changed)selectedRunId.value=value.id
   if (!value.candidates.some(p => p.id===chosen.value)) chosen.value=value.candidates[0]?.id ?? ''
   if (changed) detail.value=value.steps.length?'execution':'plan'
   if (!value.steps.some(step => step.id===expandedStep.value)) expandedStep.value=(value.steps.find(step=>['blocked','waiting','executing'].includes(step.status))??value.steps[0])?.id??''
 }
 function applyStream() {
   if(!streamReady.value || !props.liveFeed || !props.active || props.historical || busy.value || disposed)return
-  const value=props.liveFeed, incoming=value.runs[0]
+  const value=props.liveFeed, incoming=value.runs.find(r=>r.id===run.value?.id) ?? value.runs[0]
   if(incoming && !canApplyAgentRun(incoming,run.value))return
   // An in-flight pre-creation frame cannot erase an HTTP-confirmed new plan.
   if(!incoming && run.value)return
@@ -69,7 +80,8 @@ async function read(initial=false, reconcile=false) {
     const value=await api.get<{buildings:Array<{id:string;name:string}>;runs:AgentRun[];drill_status:string}>(`/drills/${scope}/agent/runs`,{signal:AbortSignal.any([controller.signal,AbortSignal.timeout(10000)])})
     if (version!==generation || scope!==props.drillId || disposed) return
     buildings.value=value.buildings;drillStatus.value=value.drill_status;syncError.value=''
-    if(value.runs[0])setRun(value.runs[0])
+    const incoming=value.runs.find(r=>r.id===run.value?.id)??value.runs[0]
+    if(incoming)setRun(incoming)
     runs.value=value.runs
     if (run.value?.candidates.length && !run.value.candidates.some(p=>p.id===chosen.value)) chosen.value=run.value.candidates[0]!.id
   } catch(cause) { if (version===generation && !controller.signal.aborted) syncError.value=cause instanceof Error?cause.message:'目标计划读取失败，请重试。' }
@@ -84,9 +96,9 @@ async function create() {
   busy.value=true;error.value='';generation++;readController?.abort();const version=generation,scope=props.drillId
   requestId ||= globalThis.crypto?.randomUUID?.() ?? `goal-${Date.now()}-${Math.random().toString(36).slice(2)}`
   try {
-    const value=await api.post<AgentRun>(`/drills/${scope}/agent/runs`,{request_id:requestId,goal:goal.value,building_id:building.value||null,resident_ids:!building.value&&props.focusId?.startsWith('resident-')?[props.focusId]:[],priority_assist:assist.value,robot_broadcast:robotBroadcast.value,use_model:useModel.value&&props.modelAvailable},{signal:AbortSignal.timeout(60000)})
+    const value=await api.post<AgentRun>(`/drills/${scope}/agent/runs`,{request_id:requestId,goal:goal.value,building_id:building.value||null,resident_ids:!building.value&&props.focusId?.startsWith('resident-')?[props.focusId]:[],priority_assist:assist.value,robot_broadcast:robotBroadcast.value,pause_for_review:true,include_case_tasks:true,use_model:useModel.value&&props.modelAvailable},{signal:AbortSignal.timeout(60000)})
     if(version!==generation||disposed)return
-    setRun(value);detail.value='plan';requestId=''
+    setRun(value);detail.value='plan';requestId='';composing.value=false
   } catch(cause){if(version===generation)error.value=cause instanceof Error?cause.message:'方案生成失败，请重试。'}
   finally{if(version===generation)busy.value=false}
 }
@@ -118,6 +130,7 @@ watch([goal,building,assist,useModel,robotBroadcast,()=>props.focusId],()=>{requ
 watch([()=>props.liveFeed,streamReady,()=>props.active,()=>props.historical,busy],applyStream,{flush:'post'})
 watch(chosen,()=>emit('preview',[]),{flush:'sync'})
 watch(()=>props.drillId,()=>{runs.value=[];buildings.value=[];chosen.value='';expandedStep.value='';building.value='';requestId='';error.value='';syncError.value='';drillStatus.value=''})
+watch(selectedRunId,()=>{chosen.value=run.value?.candidates[0]?.id??'';expandedStep.value='';emit('preview',[]);detail.value=run.value?.steps.length?'execution':'plan'})
 watch([()=>props.active,()=>props.historical,()=>props.drillId],()=>{
   generation++;pollEpoch++;busy.value=false;loading.value=false;readController?.abort();clearTimeout(timer)
   if(props.historical)emit('preview',[])
@@ -130,17 +143,24 @@ onBeforeUnmount(()=>{disposed=true;generation++;pollEpoch++;clearTimeout(timer);
   <section class="agent-workspace" aria-label="疏散目标计划" :aria-busy="busy||loading">
     <p v-if="historical" class="agent-workspace__notice">正在查看历史现场。返回实时现场后可制定或执行目标计划，历史解读仍在对话中查看。</p>
     <template v-else>
-      <div class="agent-workspace__intro"><h3>疏散协同智能体</h3><p>设定目标，比较出口方案，确认后持续监督居民、护送员与机器人。现场变化时提示复核，到场后转交人工清点。</p></div>
-      <p v-if="connection" class="agent-workspace__sync" role="status"><AppIcon :name="streamReady?'pulse':'refresh'" :size="17" />{{streamReady?'与三维现场实时联动':connection==='stale'?'连接恢复中，定时核对最近状态':'正在连接现场，暂用状态读取'}}</p>
+      <div class="agent-workspace__intro"><h3>疏散协同智能体</h3><p>目标解析 → 仿真比较 → 人工确认 → 工具执行 → 结果核对。生成与重算方案会暂停现场，确认执行后继续。燃气、电源和证据核验由责任人操作。</p></div>
+      <p v-if="connection" class="agent-workspace__sync" role="status"><AppIcon :name="drillStatus==='ended'?'tasks':streamReady?'pulse':'refresh'" :size="17" />{{syncLabel}}</p>
       <p v-if="syncError" class="agent-workspace__error" role="alert">{{syncError}} <button type="button" @click="read(true)">重新连接</button></p>
       <p v-if="loading&&!run" role="status">正在恢复本场目标计划…</p>
+      <button v-if="!canCreate && !loading" type="button" :disabled="busy" @click="composing=true">另建独立范围目标</button>
+      <button v-if="composing" type="button" @click="composing=false">返回当前计划</button>
+      <section v-if="run?.task_graph?.case_tasks?.length" class="agent-workspace__case-tasks" aria-label="案例责任任务">
+        <h4>本次案例还需要做什么</h4><p>自动行动与人工处置共同构成完成条件。</p>
+        <button v-for="task in run.task_graph.case_tasks" :key="task.id" type="button" @click="emit('missions')"><strong>{{task.label}}</strong><span>{{task.state==='completed'?'已核验':task.verification_ready?'立即核验':task.overdue?'已超时，可补救':`剩余 ${task.remaining_seconds ?? '—'} 秒`}} · {{task.responsible_role}}</span><small v-if="task.state!=='completed'">{{task.blockers.join('；')}}</small></button>
+      </section>
+      <label v-if="runs.length>1" class="agent-workspace__plan-select">当前计划<select v-model="selectedRunId" :disabled="busy"><option v-for="item in runs" :key="item.id" :value="item.id">{{labels[item.status]||item.status}} · {{item.scope.building_name}} · {{item.goal}}</option></select></label>
       <form v-if="canCreate&&!loading" class="agent-workspace__form" @submit.prevent="create">
         <label>演练目标<textarea v-model="goal" rows="3" maxlength="2000" :disabled="busy" placeholder="例如：将三号楼居民分流疏散，并护送重点人员" /></label>
         <label>目标范围<select v-model="building" :disabled="busy"><option value="">{{focusId?.startsWith('resident-')?'当前选中居民':'全部待撤离居民（或按目标解析建筑）'}}</option><option v-for="item in buildings" :key="item.id" :value="item.id">{{item.name}}</option></select></label>
         <label class="agent-workspace__check"><input type="checkbox" v-model="assist" :disabled="busy" />重点人员安排护送</label>
         <div class="agent-workspace__resource-option">
           <label class="agent-workspace__check"><input type="checkbox" v-model="robotBroadcast" :disabled="busy" />机器人到楼门广播</label>
-          <p class="agent-workspace__meta">需明确一栋建筑；与居民撤离并行，不会覆盖已有机器人任务。</p>
+          <p class="agent-workspace__meta">选择单栋时直达该楼门；选择全部居民时按涉及楼栋拆成顺序任务。居民撤离并行，机器人每次真实到位后才广播。</p>
         </div>
         <label v-if="modelAvailable" class="agent-workspace__check"><input type="checkbox" v-model="useModel" :disabled="busy" />授权模型解析目标与建筑清单</label>
         <p class="agent-workspace__meta">{{useModel&&modelAvailable?'模型解析目标，本地校验和仿真规划。':'本地目标解析与仿真规划，不调用大模型。'}} 生成方案不会下达指令。</p>
@@ -179,6 +199,7 @@ onBeforeUnmount(()=>{disposed=true;generation++;pollEpoch++;clearTimeout(timer);
               <label class="agent-workspace__check"><input type="radio" :name="'candidate-'+run.id" :value="item.id" v-model="chosen" :disabled="busy" /><strong>{{item.title}}</strong></label>
               <p v-if="candidate?.id!==item.id" class="agent-workspace__meta">北 {{item.metrics.north}} · 南 {{item.metrics.south}} · 不可达 {{item.metrics.unreachable}} 人；选中查看预演。</p>
               <template v-if="candidate?.id===item.id">
+              <p v-if="item.equivalent_rules?.length" class="agent-workspace__equivalent">{{item.equivalent_rules.join('、')}}产生完全相同的人员分配与机器人动作，系统已合并为一个可执行方案。</p>
               <section v-if="item.allocation" class="agent-workspace__decision" aria-label="出口分配依据">
                 <h4>为什么这样分流</h4><p>{{item.allocation.description}}</p>
                 <p v-if="item.allocation.rule==='risk_capacity'" class="agent-workspace__meta">相对路径优先方案，{{item.allocation.changed_residents}} 人调整出口。{{item.allocation.same_allocation?'当前两种规则得到相同分配，不人为制造方案差异。':''}}</p>
@@ -209,6 +230,7 @@ onBeforeUnmount(()=>{disposed=true;generation++;pollEpoch++;clearTimeout(timer);
           </div>
           <p v-if="candidate" class="agent-workspace__meta">预演起点 {{clock(candidate.forecast_at)}} · {{candidate.coverage}}</p>
           <button v-if="run.candidates.length" type="button" @click="emit('preview',[])">清除现场方案路线</button>
+          <p v-if="run.candidates.length===1" class="agent-workspace__meta">当前只有一个不同的可比较方案；等价的分流结果已合并，不重复展示。</p>
           <div class="agent-workspace__actions">
             <button v-if="run.status==='awaiting_approval'" type="button" class="agent-workspace__primary" :disabled="busy||!live||!candidate?.can_apply||!!syncError||run.approval_guard?.can_approve===false" @click="act('approve')">确认方案并执行</button>
             <button v-if="['awaiting_approval','needs_review'].includes(run.status)" type="button" :disabled="busy||drillStatus==='ended'" @click="act('replan')">按当前现场重新比较</button>
@@ -218,6 +240,7 @@ onBeforeUnmount(()=>{disposed=true;generation++;pollEpoch++;clearTimeout(timer);
           <p v-if="!run.candidates.length">{{run.scope.completion}}</p>
         </section>
         <section v-else-if="detail==='execution'" aria-label="目标执行步骤">
+          <section v-if="run.resources" class="agent-workspace__ownership" aria-label="资源归属"><h4>本计划资源</h4><p class="agent-workspace__meta">已登记 {{run.resources.resident_count}} 名居民；资源归属写入数据库，刷新或重启不会重复派遣。</p><ul v-if="run.resources.items.length"><li v-for="resource in run.resources.items" :key="resource.key"><strong>{{resource.name}}</strong><span>{{({owned:'本计划占用',occupied:'其他计划占用',released:'已释放'} as Record<string,string>)[resource.state]}}<template v-if="resource.revision"> · 版本 {{resource.revision}}</template></span><button v-if="resource.kind==='robot'||run.execution?.staff.some(staff=>resource.key==='staff:'+staff.id&&staff.resident_id)" type="button" @click="focusResource(resource.key)">定位现场</button></li></ul><p v-else class="agent-workspace__meta">当前没有独占资源；护送与机器人资源在批准时校验登记。</p></section>
           <p v-if="run.decision" class="agent-workspace__meta">执行依据：{{run.decision.title}} · 批准版本 {{run.decision.revision}} · {{clock(run.decision.approved_at)}} 确认。完整分流依据保留在“依据”中。</p>
           <button v-if="run.outcomes?.length" type="button" class="agent-workspace__disclosure" @click="detail='evidence'">{{run.outcomes[0]?.result?'查看预测与实际结果差异':`查看 ${clock(run.outcomes[0]!.due_seconds)} 结果核对计划`}}<AppIcon name="arrowRight" :size="18" /></button>
           <section v-if="coordination && (coordination.issues.length || coordination.bottlenecks.length)" class="agent-workspace__attention" aria-label="需要关注的现场">
@@ -239,6 +262,7 @@ onBeforeUnmount(()=>{disposed=true;generation++;pollEpoch++;clearTimeout(timer);
             <li v-for="step in run.steps" :key="step.id">
               <div class="agent-workspace__step-heading"><strong>{{step.label}}</strong><span>{{labels[step.status]||step.status}}</span></div>
               <p v-if="dependencyLabel(step)" class="agent-workspace__meta">前置步骤：{{ dependencyLabel(step) }}</p>
+              <p v-if="step.completion_rule" class="agent-workspace__meta">完成依据：{{step.completion_rule}}</p>
               <progress :value="step.progress" max="1" :aria-label="step.label+'进度'" />
               <p>{{step.reason}}</p>
               <p v-if="step.execution?.stalled" class="agent-workspace__notice">已 {{step.execution.idle_seconds}} 秒未观察到位置或命令进度变化，请定位现场检查。原指令继续保留。</p>
@@ -263,6 +287,7 @@ onBeforeUnmount(()=>{disposed=true;generation++;pollEpoch++;clearTimeout(timer);
               </template>
             </li>
           </ol>
+          <p v-if="run.task_graph" class="agent-workspace__flow">{{run.task_graph.human_gate.label}}：{{run.task_graph.human_gate.reason}}。系统不会代签清点。</p>
           <button v-if="run.status==='awaiting_rollcall'" type="button" @click="emit('rollcall')">前往集合清点</button>
         </section>
         <section v-else aria-label="计划过程证据">
@@ -288,6 +313,13 @@ onBeforeUnmount(()=>{disposed=true;generation++;pollEpoch++;clearTimeout(timer);
 </template>
 
 <style scoped>
+.agent-workspace__case-tasks{display:grid;gap:10px;margin-block:20px;min-width:0}.agent-workspace__case-tasks h4,.agent-workspace__case-tasks p{margin:0}.agent-workspace__case-tasks button{display:grid;gap:6px;width:100%;padding:12px;text-align:start;white-space:normal;overflow-wrap:anywhere;font-size:16px}.agent-workspace__case-tasks span,.agent-workspace__case-tasks small{font-size:14px;line-height:1.6}
+.agent-workspace__plan-select{margin-block:var(--space-3)}
+.agent-workspace__ownership{min-width:0;margin-block:var(--space-4);padding-block:var(--space-3);border-block:1px solid var(--border-default)}
+.agent-workspace__ownership h4{margin:0;font-size:16px}
+.agent-workspace__ownership ul{padding:0;list-style:none;margin:0}
+.agent-workspace__ownership li{display:flex;flex-wrap:wrap;justify-content:space-between;gap:var(--space-2);padding-block:var(--space-2);overflow-wrap:anywhere}
+.agent-workspace__ownership li span{font-size:14px;color:var(--text-secondary)}
 .agent-workspace{min-width:0;font-size:16px;line-height:1.65;color:#e9f1e8}
 .agent-workspace h3{font-size:20px;margin:0 0 8px}.agent-workspace p{margin:8px 0 12px;overflow-wrap:anywhere}
 .agent-workspace__intro{padding-bottom:16px;border-bottom:1px solid #335347;margin-bottom:18px}
@@ -323,6 +355,7 @@ onBeforeUnmount(()=>{disposed=true;generation++;pollEpoch++;clearTimeout(timer);
 .agent-workspace__counts>div{display:block!important}.agent-workspace__counts dd{text-align:left;font-size:20px}
 .agent-workspace__tabs{display:flex;gap:6px;margin:18px 0}.agent-workspace__tabs button{flex:1;background:transparent}.agent-workspace__tabs button[aria-pressed=true]{background:#315647;border-color:#a4c5a1}
 .agent-workspace__candidates{display:grid;gap:18px}.agent-workspace__candidates>article{padding:14px;border:1px solid #476653;border-radius:8px}.agent-workspace__candidates>article[data-selected=true]{border-color:#b6d6a6}.agent-workspace__candidates button{width:100%}
+.agent-workspace__equivalent{padding-block:var(--space-3);border-block:1px solid var(--border-default);color:#d9e8ca}
 .agent-workspace__actions{display:grid;gap:10px;margin-top:16px}.agent-workspace__steps{padding:0;list-style:none;margin:0}.agent-workspace__steps>li{padding:16px 0;border-bottom:1px solid #335347}.agent-workspace__step-heading{display:flex;flex-wrap:wrap;gap:6px 14px;justify-content:space-between}.agent-workspace__steps span{font-size:14px;color:#cce9a9}.agent-workspace progress{display:block;width:100%;height:6px;margin:12px 0;accent-color:#b4ddb1}
 .agent-workspace__evidence{padding:0;list-style:none}.agent-workspace__evidence>li{display:grid;grid-template-columns:56px minmax(0,1fr);gap:10px;padding:10px 0;border-bottom:1px solid #335347}.agent-workspace__evidence time{font-size:14px;color:#b4ddb1;font-variant-numeric:tabular-nums}.agent-workspace__evidence p{margin:0}
 .agent-workspace__stop{margin-top:22px;padding-top:16px;border-top:1px solid #476653}.agent-workspace__stop p{font-size:14px;color:#c1d3c4}.agent-workspace__stop button{width:100%}

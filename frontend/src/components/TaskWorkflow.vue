@@ -9,15 +9,19 @@ const props = defineProps<{ task: ExerciseTask; running: boolean; busy: boolean;
 const emit = defineEmits<{ action: [action: 'accept' | 'arrive' | 'submit', evidence: string]; assign: [participantId: string]; locate: []; dispatch: [] }>()
 const evidence = ref('')
 const label = computed(() => ({ waiting: '等待火情确认', pending: '待接收', executing: '前往目标', verifying: '处置与核验', completed: '已完成' }[props.task.status] ?? '历史任务'))
+const urgency = computed(() => props.task.status === 'completed' ? 'done' : props.task.overdue ? 'overdue' : (props.task.remaining_seconds ?? Number.POSITIVE_INFINITY) <= 10 ? 'critical' : (props.task.remaining_seconds ?? Number.POSITIVE_INFINITY) <= 30 ? 'warning' : 'normal')
 </script>
 
 <template>
-  <article class="task-workflow" :data-completed="task.status === 'completed'">
+  <article class="task-workflow" :data-completed="task.status === 'completed'" :data-urgency="urgency">
+    <p v-if="running && ['warning','critical'].includes(urgency)" class="task-workflow__deadline" role="status"><AppIcon name="clock" />{{urgency==='critical'?'即将超时':'注意时限'}}：还剩 {{task.remaining_seconds}} 秒。{{task.verification_ready?'立即提交核验证据，提交时间决定按时得分。':'先完成当前到位或处置步骤。'}}</p>
+    <p v-if="task.verification_ready && running && !readonly" class="task-workflow__verification" role="status">操作条件已满足，请提交核验证据。{{task.overdue?'已超时，仍可补救。':`剩余 ${task.remaining_seconds} 秒；动作完成不等于任务已核验。`}}</p>
     <header><span>{{ task.responsible_role ?? '历史处置任务' }}</span><strong :data-overdue="task.overdue">{{ task.status === 'completed' ? '已核验' : task.overdue ? '已超时 · 可补救' : `${task.remaining_seconds ?? task.deadline_seconds} 秒` }}</strong></header>
     <h3>{{ task.title }}</h3><p>{{ task.target }}</p>
     <div class="task-workflow__state"><AppIcon :name="task.status === 'completed' ? 'tasks' : 'target'" /><span>{{ label }}<template v-if="task.assignee"> · {{ task.assignee }}</template></span></div>
     <ol v-if="task.kind" class="task-workflow__steps" aria-label="任务处置步骤"><li :data-done="!['waiting','pending'].includes(task.status)">接收</li><li :data-done="['verifying','completed'].includes(task.status)">到位</li><li :data-done="task.status === 'completed'">核验</li></ol>
     <p v-if="task.evidence" class="task-workflow__evidence">结果证据：{{ task.evidence }}</p>
+    <p v-if="task.completed_on_time===false" class="task-workflow__hint">核验晚于截止时间，已保留处置证据，但不计按时得分。</p>
     <p v-if="!running && task.status !== 'completed'">当前不可提交。{{ readonly ? '正在查看历史过程或其他角色任务。' : '请等待导演开始或继续演练。' }}</p>
     <template v-if="!readonly && running && task.kind && task.status !== 'completed'">
       <div v-if="director && ['waiting','pending'].includes(task.status) && !task.assignment_locked" class="task-workflow__assignment">

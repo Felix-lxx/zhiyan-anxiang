@@ -17,17 +17,17 @@ class AgentProjection:
         self._value = None
 
     def read(self, session, drill, username: str, data: dict):
-        from app.services.agent_workflow import buildings_for, run_payload
+        from app.services.agent_workflow import ACTIVE, buildings_for, run_payload
 
-        run = session.scalar(select(AgentRun).where(
+        runs = list(session.scalars(select(AgentRun).where(
             AgentRun.drill_session_id == drill.id, AgentRun.actor == username,
-        ).order_by(AgentRun.created_at.desc(), AgentRun.id.desc()).limit(1))
+        ).order_by(AgentRun.status.in_([*ACTIVE, 'awaiting_rollcall']).desc(), AgentRun.created_at.desc(), AgentRun.id.desc()).limit(8)))
         key = (drill.id, username, data["state_version"], data["status"],
-               (run.id, run.revision, run.status, run.updated_at.isoformat()) if run else None)
+               tuple((run.id, run.revision, run.status, run.updated_at.isoformat()) for run in runs))
         if key == self._key:
             return self._value
         value = {"id": drill.id, "state_version": "agent:" + sha256(repr(key).encode()).hexdigest(),
                  "source_version": data["state_version"], "drill_status": data["status"],
-                 "buildings": buildings_for(data), "runs": [run_payload(session, run, data)] if run else []}
+                 "buildings": buildings_for(data), "runs": [run_payload(session, run, data) for run in runs]}
         self._key, self._value = key, value
         return value

@@ -5,10 +5,13 @@ from sqlalchemy.orm import Session
 
 from app.api.routes.auth import AuthenticatedIdentity, get_current_identity
 from app.core.database import get_db
-from app.models.domain import MapObject, MapObjectType, Scene
-from app.schemas.scene import ChargingShedParametersUpdate, SceneCreate, SceneRead, SceneTemplateRead, SimulationPreviewRead
+from app.models.domain import Scene, MapObject, MapObjectType
+from app.schemas.scene import ChargingShedParametersUpdate, KitchenParametersUpdate, SceneCreate, SceneRead, SceneTemplateRead, SimulationPreviewRead, ScenarioCapabilitiesRead, FireSourceCandidateRead
 from app.services.communities import get_community_or_none
-from app.services.scenes import create_scene, list_scenes, list_templates, update_charging_shed_parameters
+from app.services.scenes import create_scene, list_scenes, list_templates, update_scene_parameters
+from app.services.scenario_contracts import scene_contract, ScenarioUnavailable
+from app.services.fire_sources import InvalidFireSource
+from app.services.command_lock import serialized_command
 
 router = APIRouter(tags=["scenes"])
 
@@ -19,7 +22,7 @@ def owned_community(session: Session, community_id: str, username: str):
     return community
 
 def serialize(scene: Scene) -> SceneRead:
-    return SceneRead.model_validate(scene)
+    return SceneRead.model_validate(scene).model_copy(update={"capabilities": ScenarioCapabilitiesRead.model_validate(scene_contract(scene).payload())})
 
 @router.get("/scene-templates", response_model=list[SceneTemplateRead])
 def get_templates(identity: AuthenticatedIdentity = Depends(get_current_identity), session: Session = Depends(get_db)):
@@ -40,26 +43,76 @@ def post_scene(community_id: str, payload: SceneCreate, identity: AuthenticatedI
         scene = create_scene(session, community=community, template_id=payload.template_id, name=payload.name)
         if scene is None: raise HTTPException(status_code=422, detail="模板不存在或社区尚无可用版本。")
         return serialize(scene)
+    except ScenarioUnavailable as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
     except HTTPException: raise
     except SQLAlchemyError as exc:
         session.rollback()
         raise HTTPException(status_code=503, detail="场景草稿保存失败。") from exc
 
 @router.patch("/scenes/{scene_id}/charging-shed-parameters", response_model=SceneRead)
-def patch_charging_shed_parameters(scene_id: str, payload: ChargingShedParametersUpdate, identity: AuthenticatedIdentity = Depends(get_current_identity), session: Session = Depends(get_db)):
+@router.patch("/scenes/{scene_id}/parameters", response_model=SceneRead)
+def patch_charging_shed_parameters(scene_id: str, payload: ChargingShedParametersUpdate | KitchenParametersUpdate, identity: AuthenticatedIdentity = Depends(get_current_identity), session: Session = Depends(get_db)):
     try:
         scene = session.get(Scene, scene_id)
         if scene is None:
             raise HTTPException(status_code=404, detail="未找到该场景草稿。")
         owned_community(session, scene.community_id, identity.username)
-        updated = update_charging_shed_parameters(session, scene=scene, parameters=payload.model_dump())
+        updated = update_scene_parameters(session, scene=scene, parameters=payload.model_dump())
         if updated is None:
             raise HTTPException(status_code=422, detail="起火点必须是该场景社区版本中的充电棚对象。")
         return serialize(updated)
+    except InvalidFireSource as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    except ScenarioUnavailable as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
     except HTTPException: raise
     except SQLAlchemyError as exc:
         session.rollback()
         raise HTTPException(status_code=503, detail="场景参数保存失败。") from exc
+
+
+@router.get("/scenes/{scene_id}/fire-sources", response_model=list[FireSourceCandidateRead])
+def get_fire_sources(scene_id: str, identity: AuthenticatedIdentity = Depends(get_current_identity), session: Session = Depends(get_db)):
+    scene = session.get(Scene, scene_id)
+    if scene is None:
+        raise HTTPException(status_code=404, detail="未找到该场景。")
+    owned_community(session, scene.community_id, identity.username)
+    version = max(scene.versions, key=lambda item: item.version_number, default=None)
+    if version is None or not scene_contract(scene).available:
+        return []
+    from app.services.fire_sources import resolve_fire_source
+    result = []
+    kitchen = scene_contract(scene).code == 'kitchen_fire'
+    for obj in session.scalars(select(MapObject).where(MapObject.community_version_id == version.community_version_id,
+                                                      MapObject.object_type == (MapObjectType.BUILDING if kitchen else MapObjectType.CHARGING_SHED)).order_by(MapObject.created_at)):
+        try:
+            resolve_fire_source(session, version.community_version_id, {"fire_source_object_id": obj.id, 'fire_source_type': 'kitchen' if kitchen else 'charging_shed', 'fire_floor': 1, 'fire_room': 'east'})
+        except InvalidFireSource:
+            continue
+        result.append({"id": obj.id, "name": obj.name, "object_type": obj.object_type.value, 'floors': max(1, min(20, int(obj.properties.get('floors', 6)))) if kitchen else 1})
+    return result
+
+
+@router.post('/scenes/{scene_id}/repair-tasks', response_model=SceneRead)
+@serialized_command
+def repair_scene_tasks(scene_id: str, identity: AuthenticatedIdentity = Depends(get_current_identity), session: Session = Depends(get_db)):
+    scene = session.get(Scene, scene_id)
+    if scene is None:
+        raise HTTPException(404, '未找到该场景。')
+    owned_community(session, scene.community_id, identity.username)
+    session.execute(select(Scene.id).where(Scene.id == scene.id).with_for_update())
+    version = max(scene.versions, key=lambda v: v.version_number)
+    from app.services.scenario_tasks import missing_tasks, ensure_standard_tasks
+    if not missing_tasks(session, version, scene_contract(scene).code):
+        return serialize(scene)
+    # Never mutate a published version or any frozen drill world.
+    if scene.status.value == 'published' or version.status.value == 'published':
+        scene = update_scene_parameters(session, scene=scene, parameters=dict(version.parameters))
+        version = max(scene.versions, key=lambda v: v.version_number)
+    ensure_standard_tasks(session, version, scene_contract(scene).code)
+    session.commit()
+    return serialize(scene)
 
 def build_preview(session: Session, scene: Scene, minute: int, parameter_override: dict | None = None) -> SimulationPreviewRead:
     if minute < 0 or minute > 10:
@@ -68,11 +121,10 @@ def build_preview(session: Session, scene: Scene, minute: int, parameter_overrid
         raise HTTPException(status_code=422, detail="场景尚无可预览版本。")
     version = scene.versions[-1]
     parameters = {**version.parameters, **(parameter_override or {})}
-    if parameter_override:
-        parameters["fire_source_type"] = "charging_shed"
-    source = session.scalar(select(MapObject).where(MapObject.id == parameters.get("fire_source_object_id"), MapObject.community_version_id == version.community_version_id))
-    if source is None or source.object_type != MapObjectType.CHARGING_SHED:
-        raise HTTPException(status_code=422, detail="起火点必须是当前社区版本中的充电棚对象。")
+    from app.services.scene_validation import validate_configuration
+    validation = validate_configuration(session, scene, parameters)
+    if not validation['passed']:
+        raise HTTPException(status_code=422, detail='；'.join(validation['issues']))
     from app.services.exercise_world import capture_world
     from app.services.drill_simulation import simulate_residents
     import math
@@ -95,13 +147,11 @@ def get_preview(scene_id: str, minute: int = 0, identity: AuthenticatedIdentity 
     scene = session.get(Scene, scene_id)
     if scene is None: raise HTTPException(status_code=404, detail="未找到该场景草稿。")
     owned_community(session, scene.community_id, identity.username)
-    parameters = scene.versions[-1].parameters if scene.versions else {}
-    if parameters.get("fire_source_type") != "charging_shed": raise HTTPException(status_code=422, detail="请先保存充电棚火灾参数后再预览。")
     return build_preview(session, scene, minute)
 
 
 @router.post("/scenes/{scene_id}/preview", response_model=SimulationPreviewRead)
-def post_preview(scene_id: str, payload: ChargingShedParametersUpdate, minute: int = 0, identity: AuthenticatedIdentity = Depends(get_current_identity), session: Session = Depends(get_db)):
+def post_preview(scene_id: str, payload: ChargingShedParametersUpdate | KitchenParametersUpdate, minute: int = 0, identity: AuthenticatedIdentity = Depends(get_current_identity), session: Session = Depends(get_db)):
     scene = session.get(Scene, scene_id)
     if scene is None:
         raise HTTPException(status_code=404, detail="未找到该场景草稿。")

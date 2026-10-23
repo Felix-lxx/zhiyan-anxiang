@@ -5,7 +5,7 @@ import { useSceneOverlayLayout } from '../composables/useSceneOverlayLayout'
 const sceneUtilities = useSceneOverlayLayout()
 import * as THREE from 'three'
 import { createApartment, createChargingShed, createFireStation, createStreet, createStreetFurniture, createRoadBarrier } from '../three/communityModels'
-import { SceneMaterials, displayHeight } from '../three/sceneMaterials'
+import { SceneMaterials, displayHeight as legacyDisplayHeight } from '../three/sceneMaterials'
 import { createPerson, createPatrolRobot, posePerson } from '../three/actors'
 import { CrowdRenderer } from '../three/crowdRenderer'
 import { ActorAssets, type ActorAssetStatus } from '../three/actorAssets'
@@ -15,6 +15,9 @@ import { VehicleVisuals } from '../three/vehicleVisuals'
 import { RescueVisuals, type RescueResident } from '../three/rescueVisuals'
 import type { Vehicle } from '../domain/drill'
 import { FireEffects } from '../three/fireEffects'
+import { IndoorFireVisuals } from '../three/indoorFireVisuals'
+import { cutFloor, stairOpenings, floorContainsHeight } from '../three/indoorGeometry'
+import type { IndoorState } from '../domain/indoor'
 import { RoadVisuals } from '../three/roadVisuals'
 import { createRouteGuide } from '../three/routeGuide'
 import { assemblyAttendance, createAssemblyPoint, type AssemblyResident } from '../three/assemblyPoint'
@@ -27,10 +30,10 @@ interface RoadEdgeState { geometry_blocked?: boolean; blocked_reason?: string; r
 interface Simulation {
   vehicles?: Vehicle[]
   spatial_network?: { nodes: Array<{id:string;name:string;x:number;y:number;height:number;kind:string;floor:number;is_exit?:boolean;building_id?:string}>; edges: SpatialEdgeState[] }
-  world?: { schema_version?: number; parameters?: { start_time?: string; wind_direction?: string }; objects: Array<{ id: string; name: string; type: string; x: number; y: number; width: number; depth: number; floors: number; entry: { x: number; y: number } }>; fire_origin: { x: number; y: number } } | null
+  world?: { schema_version?: number; spatial_units?:{height_mode?:string}; parameters?: { start_time?: string; wind_direction?: string; fire_floor?:number }; fire_source?: { location: { object_id: string } }; objects: Array<{ id: string; name: string; type: string; x: number; y: number; width: number; depth: number; floors: number; entry: { x: number; y: number } }>; fire_origin: { x: number; y: number; height?:number } } | null
   helpers?: HelperState[]
   fire: { intensity: number; smoke_radius: number; temperature: number }
-  environment: { south_lane: string; east_hydrant: string; visibility: number; blockages?: Array<{ x: number; y: number; target: string; road_edge_id?: string }> }
+  environment: { indoor?:IndoorState; south_lane: string; east_hydrant: string; visibility: number; blockages?: Array<{ x: number; y: number; target: string; road_edge_id?: string }> }
   sensors: { temperature: number; smoke_ppm: number; alarm: boolean }
   residents: Resident[]
   summary: { total: number; evacuated: number; moving: number; vulnerable: number; missing?: number; smoke_exposed?: number; congested?: number; north_load?: number; south_load?: number }
@@ -71,6 +74,9 @@ const props = defineProps<{
   effectsEnabled?: boolean
   highContrast?: boolean
   cameraEnabled?: boolean
+  fireSourceSelection?: { enabled: boolean; selectedId: string; eligibleIds: string[] }
+  roomSelection?: boolean
+  indoorFloor?: number
 }>()
 const emit = defineEmits<{
   inject: [eventType: 'channel_blocked' | 'hydrant_failure' | 'resident_missing', context?: { x?: number; y?: number; target?: string; road_edge_id?: string }]
@@ -85,6 +91,10 @@ const emit = defineEmits<{
   contextSelection: [context: AssistantSceneContext | null]
   askAssistant: [context: AssistantSceneContext]
   dispatchVehicle: [id: string]
+  fireSourcePick: [objectId: string]
+  fireRoomPick: [selection:{floor:number;room:string}]
+  inspectIndoor: []
+  indoorFocus: [value: { buildingId: string; floor: number }]
 }>()
 
 const host = ref<HTMLDivElement | null>(null)
@@ -139,12 +149,24 @@ const quality = ref<'low' | 'medium' | 'high'>(window.innerWidth < 760 ? 'low' :
 const residentMeshes = new Map<string, THREE.Group>()
 let crowdRenderer: CrowdRenderer | undefined
 const buildingMeshes = new Map<string, THREE.Object3D>()
+const fireSourceMarkers = new Map<string, THREE.Mesh<THREE.RingGeometry, THREE.MeshBasicMaterial>>()
+let fireCore: THREE.Mesh
+let indoorFireVisuals: IndoorFireVisuals | undefined
+const visibleIndoorFloor = ref<number>()
+const visibleIndoorBuilding = ref('')
+const indoorBuildings = computed(() => props.simulation?.world?.objects.filter(object => object.type === 'building' &&
+  props.simulation?.spatial_network?.nodes.some(node => node.kind === 'corridor' && node.building_id === object.id)) ?? [])
+const indoorFloors = computed(() => [...new Set(props.simulation?.spatial_network?.nodes.filter(node =>
+  node.kind === 'corridor' && node.building_id === visibleIndoorBuilding.value).map(node => node.floor) ?? [])].sort((a, b) => a - b))
 const residentTrails = new Map<string, THREE.Vector3[]>()
 const residentTrailLines = new Map<string, THREE.Line>()
 const helperLinkLines = new Map<string, THREE.Line>()
 const stairHeatMeshes = new Map<string, THREE.Mesh>()
 let roadHeatMesh: THREE.InstancedMesh | null = null
 const indoorView = ref(false)
+const showFireSource = computed(() => !props.simulation?.environment.indoor || !indoorView.value ||
+  (visibleIndoorBuilding.value === props.simulation.environment.indoor.building_id && visibleIndoorFloor.value === props.simulation.world?.parameters?.fire_floor))
+const displayToolsOpen = ref(false)
 const interactiveMeshes: THREE.Object3D[] = []
 const roadInteractiveMeshes = new Set<THREE.Object3D>()
 const targetCameraPosition = new THREE.Vector3(66, 76, 74)
@@ -224,6 +246,8 @@ const accessibleObjects = computed(() => [
   ...(props.simulation?.residents.map((resident) => ({ key: resident.id, label: `${resident.label}${resident.vulnerable ? '（重点人员）' : ''}` })) ?? []),
 ])
 
+function displayHeight(height=0):number { return props.simulation?.world?.spatial_units?.height_mode==='meters'?height:legacyDisplayHeight(height) }
+function floorHeight(floor:number):number { return props.simulation?.world?.spatial_units?.height_mode==='meters'?(floor-1)*3.2+.18:floor*1.92 }
 function worldPoint(x: number, y: number, height = 0): THREE.Vector3 {
   return new THREE.Vector3(x - 50, displayHeight(height), y - 50)
 }
@@ -240,7 +264,7 @@ function roadDetail(edge: RoadEdgeState): string {
   return `${edge.width_meters} 米 · ${status} · 综合风险 ${edge.risk_score} · 密度 ${edge.density_percent ?? 0}% · 通行 ${edge.live_occupancy ?? 0} 人 · 排队 ${edge.waiting_count ?? 0} 人${capacity}${flow}`
 }
 
-function register(object: THREE.Object3D, data: { title: string; type: string; detail: string; action?: string; residentId?: string; x?: number; y?: number }): void {
+function register(object: THREE.Object3D, data: { title: string; type: string; detail: string; action?: string; residentId?: string; objectId?: string; fireRoom?:{floor:number;room:string}; x?: number; y?: number }): void {
   object.userData.selection = data
   object.traverse((child) => { child.userData.selection = data })
   interactiveMeshes.push(object)
@@ -383,9 +407,9 @@ function addExit(name: string, x: number, z: number): void {
 function createFireSystem(): void {
   const origin = props.simulation?.world?.fire_origin
   const fx = origin ? origin.x - 50 : 13, fz = origin ? origin.y - 50 : -1
-  const core = new THREE.Mesh(new THREE.BoxGeometry(3,3,3), new THREE.MeshBasicMaterial({ visible: false }))
+  const core = fireCore = new THREE.Mesh(new THREE.BoxGeometry(3,3,3), new THREE.MeshBasicMaterial({ visible: false }))
   core.position.set(fx, 1.5, fz); scene.add(core)
-  register(core, { title: '充电棚起火点', type: '锂电池火灾', detail: '火势和烟气随服务端统一演练时钟演化' })
+  register(core, { title: props.simulation?.environment.indoor ? '厨房起火点' : '充电棚起火点', type: props.simulation?.environment.indoor?'厨房火灾':'锂电池火灾', detail: '火势和烟气随服务端统一演练时钟演化' })
   fireLight = new THREE.PointLight(0xff4d1f, 7, 34, 1.4); fireLight.position.set(fx, 7, fz); scene.add(fireLight)
   fireEffects = new FireEffects(); fireEffects.group.position.set(fx,0,fz);scene.add(fireEffects.group)
 }
@@ -456,6 +480,10 @@ function buildScene(): void {
   addParkedVehicle(-8, -7, 0x6e8f8b, Math.PI / 2); addParkedVehicle(8, 8, 0x9c6d5e, Math.PI / 2); addParkedVehicle(-20, 7, 0x66717b, 0)
   }
   createFireSystem(); createRobot(); createResidents(); updateEntities(); indoorGeometry.visible = false
+  if(props.simulation?.environment.indoor) {
+    indoorFireVisuals=new IndoorFireVisuals(props.simulation.environment.indoor,worldPoint,(object,data)=>register(object,data as Parameters<typeof register>[1]),props.simulation.spatial_network?.edges);scene.add(indoorFireVisuals.group)
+    focusIndoorFloor(props.indoorFloor??props.simulation.world?.parameters?.fire_floor??1)
+  }
   void loadEnvironmentAssets().catch(() => {
     if (!destroyed) flashNotice('精细环境资源暂不可用，基础现场和演练操作仍可使用。')
   })
@@ -508,7 +536,14 @@ function buildFrozenCommunity(): void {
     else if (['charging_shed', 'micro_fire_station'].includes(object.type)) {
       const mesh = object.type === 'charging_shed' ? createChargingShed(object.width,object.depth) : createFireStation(object.width,object.depth)
       mesh.position.set(x, 0, z); scene.add(mesh)
-      register(mesh, { title: object.name, type: object.type === 'charging_shed' ? '充电棚' : '微型消防站', detail: '本场次冻结地图对象 · 点击可指派机器人到接入点', x: object.entry.x, y: object.entry.y })
+      register(mesh, { title: object.name, type: object.type === 'charging_shed' ? '充电棚' : '微型消防站', detail: '本场次冻结地图对象 · 点击可指派机器人到接入点', objectId: object.id, x: object.entry.x, y: object.entry.y })
+      if (object.type === 'charging_shed') {
+        const radius = Math.max(object.width, object.depth) * .65 + 1
+        const marker = new THREE.Mesh(new THREE.RingGeometry(radius, radius + .35, 48), new THREE.MeshBasicMaterial({ color: 0x95e5c6, side: THREE.DoubleSide, depthTest: false }))
+        marker.rotation.x = -Math.PI / 2; marker.position.set(x, .25, z); marker.renderOrder = 20
+        marker.userData.selection = { objectId: object.id }; marker.visible = false
+        scene.add(marker); fireSourceMarkers.set(object.id, marker); interactiveMeshes.push(marker)
+      }
     } else if (object.type === 'assembly_point' && !assemblyNodes.value.length) {
       const marker = createAssemblyPoint(object.name)
       marker.group.position.set(x, 0, z); scene.add(marker.group)
@@ -521,6 +556,7 @@ function buildFrozenCommunity(): void {
       const label = new THREE.Sprite(new THREE.SpriteMaterial({ map: new THREE.CanvasTexture(canvas), depthTest: true, transparent: true }))
       label.userData.buildingLabel = object.id
       label.position.set(x, object.type === 'building' ? object.floors * 3.2 + 2 : 4, z); label.scale.set(9, 1.7, 1); scene.add(label)
+      if (object.type === 'charging_shed') register(label, { title: object.name, type: '充电棚', detail: '起火候选对象', objectId: object.id, x: object.entry.x, y: object.entry.y })
     }
   }
 }
@@ -535,22 +571,31 @@ function buildSpatialGeometry(): void {
     const levels=[...new Set(graph.nodes.filter(n=>n.kind==='corridor' && belongs(n)).map(n=>n.height))]
     for(const height of levels) {
       // Open stairwell on the west side; partial-height partitions retain a readable cutaway.
-      const floor=new THREE.Mesh(new THREE.BoxGeometry(home.width*.63,.12,home.depth*.92),sceneMaterials.surface('paving',0xafa994,2,2))
-      floor.position.copy(worldPoint(home.x+home.width*.16,home.y,height));floor.position.y-=.07;floor.receiveShadow=true;indoorGeometry.add(floor)
+      const floor = new THREE.Group()
+      const pieces = cutFloor({x:home.x,y:home.y,width:home.width*.96,depth:home.depth*.92},stairOpenings(graph.edges,height))
+      for (const piece of pieces) {
+        const slab = new THREE.Mesh(new THREE.BoxGeometry(piece.width,.12,piece.depth),sceneMaterials.surface('paving',0xafa994,2,2))
+        slab.position.copy(worldPoint(piece.x,piece.y,height));slab.position.y-=.07;slab.receiveShadow=true;floor.add(slab)
+      }
+      floor.userData.slice={buildingId:home.id,low:height,high:height};indoorGeometry.add(floor)
       for(const side of [-1,1]) {
         const wall=new THREE.Mesh(new THREE.BoxGeometry(home.width*.63,.85,.1),material(0xbeb9a6))
-        wall.position.copy(floor.position);wall.position.z+=side*home.depth*.46;wall.position.y+=.49;indoorGeometry.add(wall)
+        wall.position.copy(worldPoint(home.x+home.width*.16,home.y+side*home.depth*.46,height));wall.position.y+=.42;wall.userData.slice={buildingId:home.id,low:height,high:height};indoorGeometry.add(wall)
       }
       const rooms=graph.nodes.filter(n=>n.kind==='room'&&n.height===height&&belongs(n))
       const seenRooms = new Set<string>()
       for(const room of rooms) {
+        if(props.simulation?.environment.indoor?.building_id===home.id)continue
         const key = `${room.x}:${room.y}:${room.height}`
         if (seenRooms.has(key)) continue
         seenRooms.add(key)
         const door=new THREE.Group(),frameMaterial=material(0x8b7257,.75)
         for(const side of [-1,1]){const jamb=new THREE.Mesh(new THREE.BoxGeometry(.065,2.1,.12),frameMaterial);jamb.position.set(side*.43,1.05,0);door.add(jamb)}
         const lintel=new THREE.Mesh(new THREE.BoxGeometry(.92,.08,.12),frameMaterial);lintel.position.y=2.12;door.add(lintel)
-        door.position.copy(worldPoint(room.x,room.y,room.height));indoorGeometry.add(door)
+        const hall=graph.nodes.find(n=>n.kind==='corridor'&&n.height===height&&belongs(n))
+        if(hall){door.position.copy(worldPoint((room.x+hall.x)/2,(room.y+hall.y)/2,room.height));door.rotation.y=Math.atan2(hall.x-room.x,hall.y-room.y)}
+        else door.position.copy(worldPoint(room.x,room.y,room.height))
+        door.userData.slice={buildingId:home.id,low:height,high:height};indoorGeometry.add(door)
       }
     }
   }
@@ -559,6 +604,7 @@ function buildSpatialGeometry(): void {
     const visualKey=JSON.stringify([edge.kind,edge.start,edge.end,edge.width_meters])
     if (drawnConnections.has(visualKey)) continue
     drawnConnections.add(visualKey)
+    const firstChild = indoorGeometry.children.length
     const a=worldPoint(edge.start.x,edge.start.y,edge.start.height), b=worldPoint(edge.end.x,edge.end.y,edge.end.height)
     a.y+=.035;b.y+=.035
     const horizontal=Math.hypot(b.x-a.x,b.z-a.z), rise=Math.abs(b.y-a.y)
@@ -590,6 +636,8 @@ function buildSpatialGeometry(): void {
       const heat = new THREE.Mesh(new THREE.CylinderGeometry(Math.max(.28, edge.width_meters * .3), Math.max(.28, edge.width_meters * .3), a.distanceTo(b), 8, 1, true), heatMaterial)
       heat.position.copy(a).lerp(b,.5); heat.quaternion.setFromUnitVectors(new THREE.Vector3(0,1,0),b.clone().sub(a).normalize()); heat.userData.density = 0; indoorGeometry.add(heat); stairHeatMeshes.set(edge.id, heat)
     }
+    const node=graph.nodes.find(n=>n.x===edge.start.x&&n.y===edge.start.y&&n.height===edge.start.height)
+    for(const child of indoorGeometry.children.slice(firstChild))child.userData.slice={buildingId:node?.building_id,low:Math.min(edge.start.height,edge.end.height),high:Math.max(edge.start.height,edge.end.height)}
   }
   for (const node of assemblyNodes.value) {
     const marker=createAssemblyPoint(node.name)
@@ -599,11 +647,17 @@ function buildSpatialGeometry(): void {
   }
   for(const n of graph.nodes.filter(n=>n.kind==='corridor')) {
     const disk=new THREE.Mesh(new THREE.CircleGeometry(n.kind==='assembly'?1.7:.45,24),new THREE.MeshBasicMaterial({color:n.kind==='assembly'?0x8fe8ae:0x74a9c5,side:THREE.DoubleSide,transparent:true,opacity:.7}))
-    disk.rotation.x=-Math.PI/2;disk.position.copy(worldPoint(n.x,n.y,n.height));disk.position.y+=.04;indoorGeometry.add(disk)
+    disk.rotation.x=-Math.PI/2;disk.position.copy(worldPoint(n.x,n.y,n.height));disk.position.y+=.04;disk.userData.slice={buildingId:n.building_id,low:n.height,high:n.height};indoorGeometry.add(disk)
     if(n.kind==='assembly')register(disk,{title:n.name,type:'集合点',detail:'人员必须沿集合通道到达后才能清点。',x:n.x,y:n.y})
   }
 }
 function showIndoor(): void {
+  if(indoorView.value){toggleIndoor(false);return}
+  const person=activeResident.value
+  focusIndoorFloor(person?.current_floor ? Math.max(1,Math.ceil(person.current_floor)) : person?.floor ?? props.simulation?.world?.parameters?.fire_floor ?? 1,
+    person?.building_id || visibleIndoorBuilding.value || props.simulation?.environment.indoor?.building_id || indoorBuildings.value[0]?.id)
+}
+function toggleIndoor(silent:boolean): void {
   indoorView.value = !indoorView.value
   if(indoorGeometry) indoorGeometry.visible=indoorView.value
   const person = activeResident.value ?? props.simulation?.residents.find(p => p.floor)
@@ -622,8 +676,38 @@ function showIndoor(): void {
     viewMode.value = 'director'; targetLookAt.set(home.x - 50, home.floors * 1.5, home.y - 50)
     targetCameraPosition.copy(targetLookAt).add(new THREE.Vector3(20, 10, 26)); controls.enabled = true
   }
+  if(!indoorView.value)for(const child of indoorGeometry.children){child.visible=true;child.userData.sliceVisible=true}
   updateEntities()
-  flashNotice(indoorView.value ? '楼内示意剖面：人物按服务端三维通道位置行走，不是真实户型或实测楼梯' : '已恢复建筑外观')
+  if(!silent)flashNotice(indoorView.value ? '楼内示意剖面：人物按服务端三维通道位置行走，不是真实户型或实测楼梯' : '已恢复建筑外观')
+}
+function focusIndoorFloor(floor:number,buildingId?:string):void {
+  const id=buildingId||props.simulation?.environment.indoor?.building_id||visibleIndoorBuilding.value||indoorBuildings.value[0]?.id
+  const building=props.simulation?.world?.objects.find(object=>object.id===id)
+  if(!building)return
+  floor=Math.max(1,Math.min(building.floors,Math.round(floor)))
+  visibleIndoorFloor.value=floor;visibleIndoorBuilding.value=building.id
+  if(!scene)return
+  if(!indoorView.value)toggleIndoor(true)
+  viewMode.value='director';controls.enabled=true
+  for(const [modelId,model] of buildingMeshes)model.visible=modelId!==building.id
+  targetLookAt.copy(worldPoint(building.x,building.y,floorHeight(floor)));targetCameraPosition.copy(targetLookAt).add(new THREE.Vector3(10,13,16))
+  for(const child of indoorGeometry.children){
+    const slice=child.userData.slice
+    child.userData.sliceVisible=Boolean(slice&&slice.buildingId===building.id&&slice.high<=floorHeight(floor)+.01&&slice.high>=floorHeight(floor)-.01)
+    child.visible=child.userData.sliceVisible
+  }
+  updateEntities();emit('indoorFocus',{buildingId:building.id,floor});renderDirty=true
+}
+function indoorActorVisible(person:{height?:number;building_id?:string;x:number;y:number}):boolean {
+  if(!indoorView.value)return (person.height??0)===0
+  if(!visibleIndoorFloor.value)return true
+  if(person.building_id&&person.building_id!==visibleIndoorBuilding.value)return (person.height??0)===0
+  if(!person.building_id&&(person.height??0)>0){
+    const home=indoorBuildings.value.find(b=>b.id===visibleIndoorBuilding.value)
+    if(home&&(Math.abs(person.x-home.x)>home.width/2+1||Math.abs(person.y-home.y)>home.depth/2+1))return false
+  }
+  const height=person.height??0, level=floorHeight(visibleIndoorFloor.value)
+  return height===0||floorContainsHeight(height,level,visibleIndoorFloor.value===1?0:floorHeight(visibleIndoorFloor.value-1)+.06)
 }
 function focusPoint(x: number, y: number): void {
   viewMode.value = 'director'; controls.enabled = true
@@ -631,7 +715,7 @@ function focusPoint(x: number, y: number): void {
 }
 function focusResident(id: string): void {
   const person = props.simulation?.residents.find(p => p.id === id)
-  if (person?.indoor_stage && person.indoor_stage !== 'outdoor' && !indoorView.value) showIndoor()
+  if (person?.indoor_stage && person.indoor_stage !== 'outdoor') focusIndoorFloor(Math.max(1,Math.ceil(person.current_floor??person.floor??1)),person.building_id)
   selectAccessibleObject({ target: { value: id } } as unknown as Event)
 }
 function pointRobotAtSelection(): void {
@@ -647,7 +731,7 @@ function selectCurrentResident(): void {
   selectedResidents.value = [id]; toolMode.value = 'residents'; controls.enabled = false
   emit('selection', selectedResidents.value); updateEntities()
 }
-defineExpose({ focusPoint, focusResident, showIndoor, selectResidents })
+defineExpose({ focusPoint, focusResident, showIndoor, selectResidents, focusIndoorFloor })
 
 function animate(time = 0): void {
   animationFrame = requestAnimationFrame(animate)
@@ -662,7 +746,9 @@ function animate(time = 0): void {
   const fireScale = .8 + (props.simulation?.fire.intensity ?? 20) / 115
   if(activelyAnimating)visualSeconds+=delta
   const wind = props.simulation?.world?.parameters?.wind_direction ?? '微风'
-  fireEffects?.update(reducedMotion ? 0 : visualSeconds, props.simulation?.fire.intensity ?? 0, props.simulation?.fire.smoke_radius ?? 8, wind, camera, qualityFactor)
+  fireEffects?.update(reducedMotion ? 0 : visualSeconds, showFireSource.value ? props.simulation?.fire.intensity ?? 0 : 0, props.simulation?.fire.smoke_radius ?? 8, wind, camera, qualityFactor,Boolean(props.simulation?.environment.indoor))
+  if(fireLight)fireLight.visible=showFireSource.value
+  if(fireCore)fireCore.visible=showFireSource.value
   for(const mesh of [...residentMeshes.values(),...helperMeshes.values()]) {
     const distance = actorMotion.step(mesh, delta, activelyAnimating)
     mesh.userData.frameDistance = distance; mesh.userData.moved = distance > .00001
@@ -696,7 +782,7 @@ function animate(time = 0): void {
   }
   updateCameraFollow()
   if (!userOrbiting) {
-    if (reducedMotion) { camera.position.copy(targetCameraPosition); controls.target.copy(targetLookAt) }
+    if (reducedMotion || viewMode.value==='resident') { camera.position.copy(targetCameraPosition); controls.target.copy(targetLookAt) }
     else { camera.position.lerp(targetCameraPosition, .045); controls.target.lerp(targetLookAt, .055) }
   }
   controls.update()
@@ -784,11 +870,25 @@ function updateStairHeat(): void {
     heat.userData.density = density
     const color = new THREE.Color(density > 70 ? 0xff4935 : density > 35 ? 0xffb43d : 0x54d4a4)
     ;(heat.material as THREE.MeshBasicMaterial).color.copy(color)
-    heat.visible = density > 0
+    heat.visible = density > 0 && heat.userData.sliceVisible !== false
   }
 }
 
 function updateEntities(): void {
+  if (scene && props.simulation?.world) {
+    const origin = props.simulation.world.fire_origin
+    if (fireEffects) { fireEffects.group.position.copy(worldPoint(origin.x, origin.y,origin.height));if(props.simulation.environment.indoor){fireEffects.group.scale.setScalar(.32);fireEffects.group.position.y+=.8;fireEffects.group.visible=visibleIndoorFloor.value===props.simulation.world.parameters?.fire_floor} }
+    if (fireLight) fireLight.position.copy(worldPoint(origin.x, origin.y,origin.height)).add(new THREE.Vector3(0,2,0))
+    if(indoorFireVisuals&&props.simulation.environment.indoor){indoorFireVisuals.group.visible=indoorView.value&&visibleIndoorBuilding.value===props.simulation.environment.indoor.building_id;if(indoorFireVisuals.group.visible)indoorFireVisuals.update(props.simulation.environment.indoor,visibleIndoorFloor.value)}
+    if (fireCore) {
+      fireCore.position.copy(worldPoint(origin.x, origin.y,origin.height)).add(new THREE.Vector3(0,1.5,0))
+      fireCore.userData.selection.objectId = props.simulation.world.fire_source?.location.object_id ?? props.simulation.world.objects.find(object => object.type === 'charging_shed' && object.x === origin.x && object.y === origin.y)?.id
+    }
+    for (const [id, marker] of fireSourceMarkers) {
+      marker.visible = Boolean(props.fireSourceSelection?.enabled && props.fireSourceSelection.eligibleIds.includes(id))
+      marker.material.color.setHex(id === props.fireSourceSelection?.selectedId ? 0xffca70 : 0x95e5c6)
+    }
+  }
   if (scene && props.simulation) {
     if (!vehicleVisuals) { vehicleVisuals = new VehicleVisuals(object => interactiveMeshes.push(object), () => { renderDirty = true }); scene.add(vehicleVisuals.layer) }
     vehicleVisuals.update(props.simulation.vehicles ?? [], props.elapsedSeconds, props.status === 'running')
@@ -867,7 +967,7 @@ function updateEntities(): void {
     actorMotion.accept(mesh, next, route, props.elapsedSeconds, props.status === 'running')
     mesh.userData.behaviorState = helper.state
     mesh.userData.crowded = (helper.congestion ?? 0) > 55
-    mesh.userData.targetPosition=next;mesh.visible = (helper.height??0)===0 || indoorView.value
+    mesh.userData.targetPosition=next;mesh.visible = indoorActorVisible(helper)
   }
   const visibleStaff = new Set(displayedHelpers.value.map(helperIdentity))
   for (const [id, mesh] of helperMeshes) if (!visibleStaff.has(id)) mesh.visible = false
@@ -907,6 +1007,7 @@ function updateEntities(): void {
       }
       mesh.visible = mesh.visible && !(viewMode.value === 'resident' && activeResident.value?.id === resident.id)
       mesh.visible = mesh.visible && !['loading', 'onboard', 'handing_over'].includes(resident.medical_transfer?.phase ?? '')
+      if(indoorView.value)mesh.visible=mesh.visible&&indoorActorVisible(resident)
       updateResidentTrail(resident, mesh.position)
     }
   }
@@ -1046,6 +1147,14 @@ function onPointerUp(event: PointerEvent): void {
     while (object) { if (!object.visible) return false; object = object.parent }
     return true
   })
+  if(props.roomSelection){const room=hit?.object.userData.selection?.fireRoom;if(room)emit('fireRoomPick',room);else flashNotice('请选择当前楼层的厨房台面，或使用右侧房间列表。');return}
+  if (props.fireSourceSelection?.enabled) {
+    const id = hit?.object.userData.selection?.objectId as string | undefined
+    if (id && props.fireSourceSelection.eligibleIds.includes(id)) emit('fireSourcePick', id)
+    else flashNotice('请选择高亮的充电棚；楼栋与空地不能设为本案例火源。')
+    return
+  }
+  if (props.interactive === false) return
    const roadHit = hit?.object.userData.selection?.roadEdgeId ? hit : undefined
   const groundHit = raycaster.intersectObject(groundPlane)[0]
   const selection = (hit?.object.userData.crowd?.selection(hit.instanceId) ?? hit?.object.userData.selection) as typeof selected.value
@@ -1199,6 +1308,16 @@ function onContextRestored(): void { recoveringContext.value = false; renderErro
 // Live messages replace the affected state branches; avoid traversing every route
 // and frozen model twice for each population tick.
 watch(() => [props.robot, props.simulation, props.highContrast, props.status, props.elapsedSeconds], () => { void nextTick(updateEntities) })
+watch(() => props.fireSourceSelection, () => updateEntities(), { deep: true })
+watch(()=>props.indoorFloor,value=>{if(value!==undefined&&scene)focusIndoorFloor(value)})
+watch(()=>[viewMode.value,activeResident.value?.id,activeResident.value?.current_floor,activeResident.value?.building_id],()=>{
+  const person=activeResident.value
+  if(!scene||viewMode.value!=='resident'||!person||person.indoor_stage==='outdoor')return
+  const floor=Math.max(1,Math.ceil((person.current_floor??person.floor??1)-.00001))
+  if(!indoorView.value||floor!==visibleIndoorFloor.value||person.building_id!==visibleIndoorBuilding.value){
+    focusIndoorFloor(floor,person.building_id);viewMode.value='resident';controls.enabled=false
+  }
+})
 watch(quality,applyQuality)
 watch(() => props.elapsedSeconds,value=>{visualSeconds=value;renderDirty=true},{immediate:true})
 watch(() => props.events?.[0]?.sequence, () => {
@@ -1291,9 +1410,15 @@ watch(() => [props.routePreview, props.robotRoutePreview], () => updateEntities(
       </div>
 
       <div v-if="!compact" ref="sceneUtilities" class="scene-utilities" role="group" aria-label="现场显示与车辆工具">
-        <label class="scene-quality">画面品质<select v-model="quality" aria-label="三维画质"><option value="high">精细</option><option value="medium">均衡</option><option value="low">流畅</option></select><small role="status" :title="actorAssetLabel">{{ actorAssetStatus === 'loading' ? '模型加载中' : actorAssetStatus === 'fallback' ? '轻量模型' : status === 'running' && fps ? fps + ' fps' : '静止省电' }}</small></label>
+        <label v-if="displayToolsOpen" class="scene-quality">画面品质<select v-model="quality" aria-label="三维画质"><option value="high">精细</option><option value="medium">均衡</option><option value="low">流畅</option></select><small role="status" :title="actorAssetLabel">{{ actorAssetStatus === 'loading' ? '模型加载中' : actorAssetStatus === 'fallback' ? '轻量模型' : status === 'running' && fps ? fps + ' fps' : '静止省电' }}</small></label>
         <button type="button" :disabled="!simulation?.spatial_network" :title="simulation?.spatial_network ? '显示楼内通道、楼梯与居民位置' : '当前历史场次没有室内空间，请新建连续空间演练'" :aria-pressed="indoorView" @click="showIndoor"><AppIcon name="building" :size="18" />{{ indoorView ? '恢复建筑外观' : '查看楼内透视' }}</button>
+        <button v-if="simulation?.environment.indoor" type="button" @click="emit('inspectIndoor')"><AppIcon name="fire" :size="18"/>楼内烟气与门控</button>
+        <div v-if="indoorView && indoorBuildings.length" class="scene-floor-controls">
+          <select aria-label="观察楼栋" :value="visibleIndoorBuilding" @change="focusIndoorFloor(visibleIndoorFloor??1,($event.target as HTMLSelectElement).value)"><option v-for="building in indoorBuildings" :key="building.id" :value="building.id">{{building.name}}</option></select>
+          <select aria-label="透视楼层" :value="visibleIndoorFloor" @change="focusIndoorFloor(Number(($event.target as HTMLSelectElement).value),visibleIndoorBuilding)"><option v-for="floor in indoorFloors" :key="floor" :value="floor">{{floor}} 层</option></select>
+        </div>
         <button type="button" :disabled="!simulation?.vehicles?.length" @click="emit('dispatchVehicle', simulation?.vehicles?.[0]?.id ?? '')"><AppIcon name="route" :size="18" />车辆调度</button>
+        <button type="button" :aria-expanded="displayToolsOpen" @click="displayToolsOpen=!displayToolsOpen"><AppIcon name="eye" :size="18"/>画面设置</button>
       </div>
       <nav v-if="!compact" class="twin-views" aria-label="沙盘视角">
         <button type="button" title="总控鸟瞰" aria-label="总控鸟瞰" :data-active="viewMode === 'director'" :aria-pressed="viewMode === 'director'" @click="setView('director')"><AppIcon name="eye" />总控鸟瞰</button>

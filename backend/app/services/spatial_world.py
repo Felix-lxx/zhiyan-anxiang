@@ -5,6 +5,7 @@ No surveyed building or life-safety accuracy is implied by this example layout.
 from copy import deepcopy
 import math
 from app.services.navigation_geometry import building_obstacles, outdoor_connector
+from app.services.indoor_layout import kitchen_rooms
 
 
 def add_spatial_layout(world: dict, home: dict) -> dict:
@@ -21,6 +22,11 @@ def add_spatial_layout(world: dict, home: dict) -> dict:
     obstacles = building_obstacles(world)
     roads["obstacles"] = obstacles
     active_building = home.get("id")
+    kitchen = world['parameters'].get('fire_source_type') == 'kitchen'
+    if kitchen:
+        world['spatial_units'] = {'horizontal_meters_per_unit': 1, 'height_mode': 'meters', 'floor_height_meters': 3.2, 'ground_floor_height_meters': .18}
+        world['model_notice'] = '厨房示例户型，平面每单位按1米、高程按米冻结；非实测建筑，烟气为分区训练规则。'
+    def floor_height(floor): return round((floor-1)*3.2+.18, 4) if kitchen else floor*1.92
 
     def node(key, label, px, py, height=0, kind="outdoor", floor=0):
         value = dict(id=key, name=label, x=px, y=py, height=height, kind=kind, floor=floor, is_exit=False, building_id=active_building)
@@ -41,6 +47,14 @@ def add_spatial_layout(world: dict, home: dict) -> dict:
         w, d = building.get("width", 5), building.get("depth", 3)
         floors = max(1, building.get("floors", 1))
         stair_width = max(.4, float(building.get("properties", {}).get("stair_width", width)))
+        room_geometry = None
+        if kitchen:
+            try:
+                room_geometry = kitchen_rooms(building, stair_width)
+            except ValueError:
+                if active_building == home.get('id'):
+                    raise
+                # Other buildings can retain their ordinary residential topology.
         door = node(f"{prefix}:door", name+"楼门", x, y+d/2+.3, kind="door")
         base = node(f"{prefix}:stair:0", name+"首层楼梯出口", x-w*.3, y, kind="stairs")
         foyer = node(f"{prefix}:foyer", name+"门厅", x, y+d/2-.5, kind="door")
@@ -61,16 +75,39 @@ def add_spatial_layout(world: dict, home: dict) -> dict:
             else:
                 building["access_notice"] = "楼门无法接入路网，请调整建筑或道路节点。"
         for floor in range(1, floors+1):
-            landing = node(f"{prefix}:stair:{floor}", f"{name} · {floor}层楼梯", x-w*.3, y+(.2*d if floor % 2 else -.2*d), floor*1.92, "stairs", floor)
-            hall = node(f"{prefix}:hall:{floor}", f"{name} · {floor}层走廊", x, y, floor*1.92, "corridor", floor)
+            landing = node(f"{prefix}:stair:{floor}", f"{name} · {floor}层楼梯", x-w*.3, y+(.2*d if floor % 2 else -.2*d), floor_height(floor), "stairs", floor)
+            hall = node(f"{prefix}:hall:{floor}", f"{name} · {floor}层走廊", x, y, floor_height(floor), "corridor", floor)
             link(hall, landing, "corridor", 1.5)
             link(landing, f"{prefix}:stair:{floor-1}", "stairs", stair_width)
+            if room_geometry:
+                for side in ('east', 'west'):
+                    geometry = room_geometry[side]
+                    room_id = node(f'indoor:{active_building}:{floor}:{side}', f"{name} · {floor}层{'东' if side == 'east' else '西'}侧厨房",
+                                   geometry['x'], geometry['y'], floor_height(floor), 'room', floor)
+                    nodes[-1].update(width=geometry['width'], depth=geometry['depth'])
+                    portal = node(f'{room_id}:entry', f'{name} · {floor}层厨房门前走廊', geometry['x'], y, floor_height(floor), 'corridor', floor)
+                    nodes[-1].update(width=.9, depth=max(.3, d*.1))
+                    link(room_id, portal, 'room', .9)
+                    link(portal, hall, 'corridor', 1.5)
+        room_occupants = {}
         for index, person in enumerate(p for p in world["residents"] if p.get("building_id") == active_building):
             floor = max(1, min(floors, person["floor"]))
+            if room_geometry:
+                first_side=world['parameters'].get('fire_room','east')
+                side=first_side if (index//floors)%2==0 else ('west' if first_side=='east' else 'east')
+                room_id = f"indoor:{active_building}:{floor}:{side}"
+                fixed = next(n for n in nodes if n['id'] == room_id)
+                slot=room_occupants.get(room_id,0);room_occupants[room_id]=slot+1
+                px,py=fixed['x']+(-.32 if slot%2==0 else .32),fixed['y']+(.35 if slot//2==0 else -.35)
+                berth=node(f"room-berth:{person['id']}",fixed['name']+' · '+person['label'],px,py,floor_height(floor),'room_berth',floor)
+                nodes[-1]['zone_id']=room_id
+                link(berth,room_id,'room',.9)
+                person.update(floor=floor, current_floor=float(floor), x=px, y=py, height=floor_height(floor), start_node_id=berth,start_zone_id=room_id)
+                continue
             px, py = x + w*(.12+.2*((index//floors) % 3)/2), y + (1 if index % 2 else -1)*d*.32
-            room = node(f"room:{person['id']}", f"{name} · {floor}层 {person['label']} 房间", px, py, floor*1.92, "room", floor)
+            room = node(f"room:{person['id']}", f"{name} · {floor}层 {person['label']} 房间", px, py, floor_height(floor), "room", floor)
             link(room, f"{prefix}:hall:{floor}", "room", .9)
-            person.update(floor=floor, current_floor=float(floor), x=px, y=py, height=floor*1.92, start_node_id=room)
+            person.update(floor=floor, current_floor=float(floor), x=px, y=py, height=floor_height(floor), start_node_id=room)
     active_building = None
     entries = {b.get("id"): b.get("entry") for b in buildings}
     for task in world.get("tasks", []):
@@ -105,4 +142,6 @@ def add_spatial_layout(world: dict, home: dict) -> dict:
         edge.setdefault("kind", "outdoor")
         edge.update(start={k: lookup[edge["start_node_id"]][k] for k in ("x", "y", "height")}, end={k: lookup[edge["end_node_id"]][k] for k in ("x", "y", "height")})
     world["spatial_network"] = {"nodes": nodes, "edges": edges, "destinations": destinations, "berths": berths, "building_id": home.get("id"), "building_ids": [b.get("id") for b in buildings], "stair_width": width}
+    if kitchen:
+        world['spatial_network']['indoor_layout_version'] = 2
     return world

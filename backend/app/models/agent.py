@@ -58,3 +58,17 @@ class AgentDecisionCheck(Base):
     due_seconds: Mapped[int] = mapped_column(Integer)
     basis: Mapped[dict[str, Any]] = mapped_column(JSON)
     result: Mapped[dict[str, Any] | None] = mapped_column(JSON, nullable=True)
+
+
+class AgentResourceClaim(Base):
+    """One durable owner per drill resource; process leases never grant ownership."""
+    __tablename__ = "agent_resource_claims"
+    __table_args__ = (UniqueConstraint("drill_session_id", "resource_key", name="uq_agent_resource_owner"),)
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid4()))
+    drill_session_id: Mapped[str] = mapped_column(ForeignKey("drill_sessions.id", ondelete="CASCADE"), index=True)
+    resource_key: Mapped[str] = mapped_column(String(100))
+    resource_name: Mapped[str] = mapped_column(String(160))
+    run_id: Mapped[str | None] = mapped_column(ForeignKey("agent_runs.id", ondelete="SET NULL"), nullable=True, index=True)
+    revision: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    acquired_at_seconds: Mapped[int] = mapped_column(Integer, default=0)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(UTC))

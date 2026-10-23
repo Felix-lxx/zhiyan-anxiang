@@ -15,18 +15,23 @@ def completed_broadcast(session, run):
     if run.scope.get("robot_broadcast_evidence"):
         return run.scope["robot_broadcast_evidence"]
     steps = [*run.steps, *(step for archive in run.evidence for step in archive.get("steps", []))]
-    for step in steps:
-        if step.get("kind") != "robot.command" or step["arguments"]["command"] != "broadcast":
-            continue
+    broadcasts = [step for step in steps if step.get("kind") == "robot.command" and step.get("arguments", {}).get("command") == "broadcast"]
+    evidence = []
+    for step in broadcasts:
         command = session.scalar(select(DrillCommand).where(DrillCommand.drill_session_id == run.drill_session_id, DrillCommand.command_id == step["command_id"]))
         if not command or command.status != "completed":
-            continue
+            return None
+        matched = None
         for event in session.scalars(select(DrillEvent).where(DrillEvent.drill_session_id == run.drill_session_id,
                 DrillEvent.id.in_(command.event_ids), DrillEvent.event_type == "robot.broadcast_completed")):
             target = step["target_position"]
             if math.dist((event.payload.get("x", -100), event.payload.get("y", -100)), (target["x"], target["y"])) <= .5:
-                return event.id
-    return None
+                matched = event.id
+                break
+        if not matched:
+            return None
+        evidence.append(matched)
+    return evidence[-1] if broadcasts and len(evidence) == len(broadcasts) else None
 
 
 def owned_steps(run):
@@ -98,41 +103,75 @@ def robot_support(operations, session, drill, data, scope, run=None):
     if not scope.get("robot_broadcast"):
         return None, []
     world = data["simulation"]["world"]
-    building = next(b for b in world["objects"] if b["id"] == scope["robot_building_id"])
-    target = building["entry"]
+    building_ids = scope.get("robot_building_ids") or ([scope.get("robot_building_id")] if scope.get("robot_building_id") else [])
+    building_by_id = {item["id"]: item for item in world["objects"] if item["type"] == "building"}
+    buildings = [building_by_id[key] for key in building_ids if key in building_by_id]
+    target = buildings[0]["entry"] if buildings else {"x": 0, "y": 0}
     robot = data.get("robot")
-    info = {"target": building["name"] + "楼门广播点", "x": target["x"], "y": target["y"],
+    target_label = buildings[0]["name"] + "楼门广播点" if len(buildings) == 1 else "依次广播：" + "、".join(item["name"] for item in buildings)
+    info = {"target": target_label, "target_count": len(buildings), "x": target["x"], "y": target["y"],
             "can_apply": False, "route_points": [], "route_edge_ids": [], "duration_seconds": None,
             "battery_required": 0, "notice": "本场没有可用机器人。"}
-    if scope.get("robot_broadcast_evidence"):
+    if not buildings:
+        info["notice"] = "目标居民没有可定位的楼栋入口，不能安排楼门广播。"
+        return info, []
+    if scope.get("robot_broadcast_evidence") and len(buildings) == 1:
         info.update(can_apply=True, duration_seconds=0, already_completed=True,
                     notice="本计划已完成该楼门广播，复用原始证据，不重复派遣或扣减电量。")
         return info, []
     if not robot:
         return info, []
-    reused = _reuse_robot(session, drill, data, target, run, info)
-    if reused is not None:
-        return info, reused
+    if not any(e['event_type'] == 'robot.inspection_started' for e in data.get('events', [])):
+        info['notice'] = '请先开始演练并完成自动火情巡检，再批准楼门广播，避免占用尚未启动的巡检资源。'
+        return info, []
+    if len(buildings) == 1:
+        reused = _reuse_robot(session, drill, data, target, run, info)
+        if reused is not None:
+            return info, reused
     if any(t["status"] in {"executing", "queued", "blocked"} for t in robot.get("task_queue", [])):
         info["notice"] = "机器人已有未完成任务；请等待完成，或在原调度中取消后重新比较。"
         return info, []
-    route, points, edges, distance, _ = operations.plan_robot_route(
-        session, drill, (robot["x"], robot["y"]), (target["x"], target["y"]))
-    required = max(1, round(distance / 18)) + 3
-    reachable = len(points) >= 2 and "目标不可达" not in route
-    enough = robot["battery"] >= required
-    info.update(can_apply=reachable and enough, route_points=points, route_edge_ids=edges,
-                duration_seconds=max(8, round(distance / 3.5)) if reachable else None,
-                battery_required=required, battery_available=robot["battery"], route=route,
-                notice="已检查楼体净距与道路通行；与居民撤离并行，到位后执行一次广播。" if reachable and enough
-                else "当前楼体净距或道路状态不允许到达广播点；请检查地图、恢复通道或更换目标。" if not reachable else f"电量不足：当前 {robot['battery']}，预计至少需要 {required}。")
-    move_id, broadcast_id = str(uuid4()), str(uuid4())
-    steps = [{"id": move_id, "label": "机器人前往" + info["target"], "kind": "robot.command",
-              "arguments": {"command": "move", "x": target["x"], "y": target["y"], "target": info["target"]},
-              "depends_on": [], "resident_ids": [], "route_edge_ids": edges},
-             {"id": broadcast_id, "label": "机器人到位广播", "kind": "robot.command",
-              "arguments": {"command": "broadcast"}, "depends_on": [move_id], "resident_ids": [],
-              "target_position": {"x": target["x"], "y": target["y"]}, "route_edge_ids": []}]
+    cursor = (robot["x"], robot["y"])
+    all_points, all_edges, all_route, steps = [], [], [], []
+    total_required = total_duration = 0
+    reachable = True
+    previous_broadcast = None
+    for building in buildings:
+        entry = building["entry"]
+        route, points, edges, distance, _ = operations.plan_robot_route(session, drill, cursor, (entry["x"], entry["y"]))
+        segment_reachable = len(points) >= 2 and "目标不可达" not in route
+        reachable = reachable and segment_reachable
+        move_energy = max(1, round(distance / 18))
+        segment_duration = max(8, round(distance / 3.5)) if segment_reachable else 0
+        total_required += move_energy + 3
+        total_duration += segment_duration
+        all_points.extend(points if not all_points else points[1:])
+        all_edges.extend(edge for edge in edges if edge not in all_edges)
+        all_route.extend(route)
+        move_id, broadcast_id = str(uuid4()), str(uuid4())
+        label = building["name"] + "楼门广播点"
+        steps.extend([
+            {"id": move_id, "label": "机器人前往" + label, "kind": "robot.command",
+             "arguments": {"command": "move", "x": entry["x"], "y": entry["y"], "target": label},
+             "depends_on": [previous_broadcast] if previous_broadcast else [], "resident_ids": [],
+             "route_edge_ids": edges, "battery_required": move_energy + 3},
+            {"id": broadcast_id, "label": building["name"] + "楼门到位广播", "kind": "robot.command",
+             "arguments": {"command": "broadcast"}, "depends_on": [move_id], "resident_ids": [],
+             "target_position": {"x": entry["x"], "y": entry["y"]}, "route_edge_ids": [], "battery_required": 3},
+        ])
+        previous_broadcast = broadcast_id
+        cursor = (entry["x"], entry["y"])
+    enough = robot["battery"] >= total_required
+    final_target = buildings[-1]["entry"]
+    info.update(can_apply=reachable and enough, x=final_target["x"], y=final_target["y"],
+                route_points=all_points, route_edge_ids=all_edges,
+                duration_seconds=total_duration if reachable else None,
+                battery_required=total_required, battery_available=robot["battery"], route=all_route,
+                notice=(f"已拆分为 {len(buildings)} 个楼门的顺序广播任务；居民撤离并行，机器人按到位回执逐栋执行。"
+                        if len(buildings) > 1 and reachable and enough else
+                        "已检查楼体净距与道路通行；与居民撤离并行，到位后执行一次广播。" if reachable and enough else
+                        "至少一个楼门无法通过当前道路到达；请检查地图、恢复通道或缩小目标范围。" if not reachable else
+                        f"电量不足：当前 {robot['battery']}，连续广播预计至少需要 {total_required}。"))
     return info, steps
 
 

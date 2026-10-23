@@ -41,6 +41,12 @@
   color: #efc171;
 }
 
+.scene-live-preview__source-guide { display: flex; align-items: flex-start; gap: 10px; flex-shrink: 0; padding: 12px 16px; color: #e3f2e9; background: #203d32; border-bottom: 1px solid #466257; }
+.scene-live-preview__source-guide > svg { flex-shrink: 0; margin-top: 2px; color: #ffca70; }
+.scene-live-preview__source-guide p { margin: 0; line-height: 1.55; }
+.scene-live-preview__source-guide strong { display: block; font-size: 16px; }
+.scene-live-preview__source-guide span { display: block; margin-top: 4px; font-size: 14px; color: #bdd9cd; }
+
 .scene-live-preview__viewport {
   position: relative;
   height: 28rem;

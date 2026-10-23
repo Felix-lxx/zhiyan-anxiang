@@ -1,9 +1,11 @@
 from sqlalchemy import select
 from sqlalchemy.orm import Session, selectinload
 
-from app.models.domain import Community, DecisionOption, DecisionPoint, MapObject, MapObjectType, Scene, SceneStatus, SceneTemplate, SceneVersion
+from app.models.domain import Community, DecisionOption, DecisionPoint, Scene, SceneStatus, SceneTemplate, SceneVersion
 from app.services.map_objects import current_version
 from app.models.tasks import DecisionTask
+from app.services.scenario_contracts import contract_for, scene_contract, require_available, canonical_defaults
+from app.services.fire_sources import resolve_fire_source, fire_source_address
 
 
 TEMPLATES = [
@@ -27,7 +29,7 @@ def list_templates(session: Session) -> list[SceneTemplate]:
 
 
 def list_scenes(session: Session, community_id: str) -> list[Scene]:
-    statement = select(Scene).where(Scene.community_id == community_id).options(selectinload(Scene.versions)).order_by(Scene.updated_at.desc())
+    statement = select(Scene).where(Scene.community_id == community_id).options(selectinload(Scene.versions), selectinload(Scene.template)).order_by(Scene.updated_at.desc())
     return list(session.scalars(statement))
 
 
@@ -36,22 +38,29 @@ def create_scene(session: Session, *, community: Community, template_id: str, na
     version = current_version(community)
     if template is None or version is None:
         return None
+    require_available(contract_for(template.code))
     scene = Scene(community_id=community.id, template_id=template.id, name=name, status=SceneStatus.DRAFT)
     session.add(scene)
     session.flush()
-    session.add(SceneVersion(scene_id=scene.id, community_version_id=version.id, version_number=1, status=SceneStatus.DRAFT, parameters=template.defaults))
+    scene_version = SceneVersion(scene_id=scene.id, community_version_id=version.id, version_number=1, status=SceneStatus.DRAFT, parameters=canonical_defaults(template.defaults))
+    session.add(scene_version); session.flush()
+    from app.services.scenario_tasks import ensure_standard_tasks
+    ensure_standard_tasks(session, scene_version, template.code)
     session.commit()
     return session.scalar(select(Scene).where(Scene.id == scene.id).options(selectinload(Scene.versions)))
 
 
-def update_charging_shed_parameters(session: Session, *, scene: Scene, parameters: dict) -> Scene | None:
+def update_scene_parameters(session: Session, *, scene: Scene, parameters: dict) -> Scene | None:
+    require_available(scene_contract(scene))
     version = scene.versions[-1] if scene.versions else None
     if version is None:
         return None
-    source = session.scalar(select(MapObject).where(MapObject.id == parameters["fire_source_object_id"], MapObject.community_version_id == version.community_version_id))
-    if source is None or source.object_type != MapObjectType.CHARGING_SHED:
-        return None
-    merged_parameters = {**version.parameters, **parameters, "fire_source_type": "charging_shed"}
+    source = resolve_fire_source(session, version.community_version_id, parameters)
+    expected_type = 'kitchen' if scene_contract(scene).code == 'kitchen_fire' else 'charging_shed'
+    if parameters.get('fire_source_type', 'charging_shed') != expected_type:
+        from app.services.fire_sources import InvalidFireSource
+        raise InvalidFireSource('参数类型与案例不一致，请重新选择案例。')
+    merged_parameters = {**version.parameters, **parameters, 'fire_source_type': expected_type, 'fire_source': fire_source_address(source, parameters)}
     if version.status == SceneStatus.PUBLISHED or scene.status == SceneStatus.PUBLISHED:
         # Published versions are immutable evidence. Editing one creates a new
         # draft while preserving its decision flow for continued authoring.
@@ -97,3 +106,8 @@ def update_charging_shed_parameters(session: Session, *, scene: Scene, parameter
         version.parameters = merged_parameters
     session.commit()
     return session.scalar(select(Scene).where(Scene.id == scene.id).options(selectinload(Scene.versions)))
+
+
+def update_charging_shed_parameters(session: Session, *, scene: Scene, parameters: dict) -> Scene | None:
+    """Compatibility adapter for existing integrations."""
+    return update_scene_parameters(session, scene=scene, parameters=parameters)

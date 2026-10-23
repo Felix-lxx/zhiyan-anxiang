@@ -54,10 +54,24 @@ export interface Scene {
   name: string
   status: string
   versions: SceneVersion[]
+  capabilities?: ScenarioCapabilities
+}
+
+export interface ScenarioCapabilities {
+  code:string;contract_version:number;title:string;status:'available'|'planned'|'unsupported'
+  notice:string;source_types:string[];location_kinds:string[];features:string[]
+  parameter_schema:string|null;environment_model:string|null
+  can_create:boolean;can_configure:boolean;can_preview:boolean;can_publish:boolean;can_run:boolean
+}
+
+export interface SceneTemplate {
+  id:string;code:string;name:string;description:string;defaults:Record<string,unknown>
+  capabilities:ScenarioCapabilities
 }
 
 export interface MapObjectSummary {
   id: string
   name: string
   object_type: string
+  floors?: number
 }

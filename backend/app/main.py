@@ -19,10 +19,12 @@ app = FastAPI(title=settings.app_name, version="1.0.0-beta", lifespan=create_lif
 async def security_headers_and_admission(request, call_next):
     from fastapi import HTTPException
     from app.services.connection_security import rate_limit
+    from app.services.command_lock import serialized_command
     path = request.url.path
     limited = path.endswith(("/participant/resolve", "/participant-invite", "/join", "/socket-ticket", "/auth/login", "/auth/refresh"))
     if limited and request.method != "OPTIONS":
         try:
+            @serialized_command
             def check_admission():
                 with SessionLocal() as session:
                     # Do not trust arbitrary forwarded IP headers from the public client.

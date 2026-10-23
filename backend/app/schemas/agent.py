@@ -3,6 +3,8 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 
 class GoalCreate(BaseModel):
+    pause_for_review: bool = False
+    include_case_tasks: bool = False
     model_config = ConfigDict(extra="forbid")
     request_id: str = Field(min_length=8, max_length=80, pattern=r"^[a-zA-Z0-9_-]+$")
     goal: str = Field(min_length=2, max_length=2000)

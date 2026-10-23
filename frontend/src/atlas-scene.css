@@ -3,3 +3,35 @@
 @media(max-width:950px){.atlas-preparation{height:auto;min-height:100dvh;overflow:visible}.atlas-preparation__workspace{grid-template-columns:1fr 300px}.atlas-preparation__steps{grid-column:1/-1;flex-direction:row;gap:10px;overflow-x:auto}.atlas-preparation__steps>button{min-height:64px;align-items:center;flex:1;padding:4px}.atlas-preparation__steps small,.atlas-preparation__steps>button:after,.atlas-preparation__steps>label{display:none}.atlas-preparation__steps b{width:30px;height:30px;font-size:16px}.atlas-preparation__steps strong{font-size:13px;margin:0;white-space:nowrap}.atlas-preparation__canvas{height:650px}.atlas-preparation__inspector{max-height:650px}.atlas-preparation__bar{gap:12px}.atlas-preparation__bar nav{gap:14px}.atlas-preparation__bar>span{display:none}.atlas-preparation__validation{flex-wrap:wrap}.atlas-preparation__validation p{flex-basis:100%;border:0;padding:0}}
 @media(max-width:650px){.atlas-preparation__workspace{grid-template-columns:1fr}.atlas-preparation__heading{flex-wrap:wrap;gap:10px}.atlas-preparation__heading>div{width:100%;margin:0}.atlas-preparation__breadcrumb{max-width:70%}.atlas-preparation__bar>button{padding:0 12px}.atlas-preparation__bar strong{font-size:16px}.atlas-preparation__bar nav{gap:10px}.atlas-preparation__bar nav button{font-size:12px}.atlas-preparation__canvas{height:420px}.atlas-preparation__steps{gap:0}.atlas-preparation__steps>button{flex-direction:column;gap:4px}.atlas-preparation__inspector{max-height:none}.atlas-properties input,.atlas-properties select{font-size:16px}}
 .atlas-preparation__inspector .decision-panel{display:block;padding:0}.atlas-preparation__inspector .decision-intro{display:none}.atlas-preparation__inspector .decision-columns{display:flex;flex-direction:column;gap:20px}.atlas-preparation__inspector .decision-library,.atlas-preparation__inspector .decision-form-card,.atlas-preparation__inspector .task-preview{padding:12px;background:#faf8f2;border-radius:5px}.atlas-preparation__inspector .task-preview__list,.atlas-preparation__inspector .form-pair{grid-template-columns:1fr}.atlas-preparation__inspector .decision-form-card :is(input,select,textarea){width:100%;min-width:0;box-sizing:border-box}.atlas-preparation__inspector .decision-form-card fieldset{min-width:0}
+
+/* Preparation is a working surface: readable labels, one inspector, no HUD stack. */
+.atlas-preparation__canvas .scene-live-preview > header > div,
+.atlas-preparation__canvas .scene-live-preview > footer strong { font-size: 16px; }
+.atlas-preparation__canvas .scene-live-preview > header > span,
+.atlas-preparation__canvas .scene-live-preview > footer :is(small,p),
+.atlas-preparation__preview-time,
+.atlas-preparation__steps > label,
+.atlas-preparation__steps select,
+.atlas-property-group :is(label,small),
+.atlas-property-group dl > div { font-size: 14px; }
+.atlas-preparation__inspector p { font-size: 16px; }
+.atlas-preparation__inspector .fire-source-undo { display: inline-flex; align-items: center; justify-content: center; gap: 8px; min-height: 44px; margin: 0; font-size: 16px; white-space: normal; }
+.atlas-preparation__preview-time button { min-width: 44px; min-height: 44px; }
+.atlas-preparation__canvas .scene-live-preview__updating { font-size: 14px; }
+@media (max-height: 740px) and (min-width: 951px) {
+  html .atlas-preparation { height: auto; min-height: 100dvh; overflow: visible; }
+  html .atlas-preparation__canvas { height: 520px; }
+  html .atlas-preparation__inspector, html .atlas-preparation__steps { max-height: 520px; }
+  html .atlas-preparation .scene-live-preview > footer > p { display: none; }
+  html .atlas-preparation__steps > button { min-height: 64px; padding-block: 10px; }
+  .atlas-preparation__steps small { display: none; }
+  .atlas-preparation__steps > button::after { top: 54px; }
+  .atlas-preparation__heading { min-height: 64px; }
+  .atlas-preparation__validation { margin-block: 10px; }
+}
+@media (max-width: 650px) {
+  .atlas-preparation__canvas { height: 500px; }
+  .atlas-preparation__preview-time { flex-wrap: wrap; }
+  .atlas-preparation__preview-time input { min-width: 140px; }
+  .atlas-preparation__canvas .scene-live-preview > footer { padding-block: 10px; }
+}

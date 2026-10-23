@@ -1,7 +1,7 @@
 {
   "schemaVersion": 2,
-  "generatedAt": "2026-09-04T00:00:00+08:00",
-  "title": "Design System: 场景助手（局部实现记录）",
+  "generatedAt": "2026-10-23T00:00:00+08:00",
+  "title": "场景助手：场景对话与目标计划工作区",
   "extensions": {
     "breakpoints": [
       { "name": "assistant-mobile-max-width", "value": "760px" },
@@ -11,6 +11,6 @@
   },
   "components": [],
   "narrative": {
-    "overview": "范围仅为 frontend/src/components/SceneAssistant.vue 与 frontend/src/assistant.css；记录既有导演台内只读场景助手的实际实现，不定义全局视觉系统。"
+    "overview": "场景对话负责解释与导航，目标计划经人工批准后执行并监督；一个协调器、四类能力，布局与阅读令牌以根目录 DESIGN.md 和 director-layout.css 为准。"
   }
 }

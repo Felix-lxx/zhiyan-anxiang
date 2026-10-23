@@ -22,7 +22,8 @@ def test_goal_preview_approve_resume_and_manual_takeover(exercise):
     ids = [p["id"] for p in data["simulation"]["residents"] if not p["vulnerable"]][:4]
     before = data["latest_event_sequence"]
     run = proposal(client, headers, root, ids)
-    assert run["status"] == "awaiting_approval" and len(run["candidates"]) == 2
+    assert run["status"] == "awaiting_approval" and 1 <= len(run["candidates"]) <= 2
+    assert len({tuple((p['id'], p['exit']) for p in c['assignments']) for c in run['candidates']}) == len(run['candidates'])
     assert client.get(root, headers=headers).json()["latest_event_sequence"] == before
     assert proposal(client, headers, root, ids)["id"] == run["id"]
     selected = next(p for p in run["candidates"] if p["can_apply"])
@@ -225,3 +226,79 @@ def test_stopped_plan_keeps_live_receipts_and_unchecked_end_is_unfinished(exerci
         record.status = "awaiting_rollcall"; drill.status = "ended"; db.commit()
         reconcile_rollcall(db, record, SimpleNamespace(username="admin"))
         assert record.status == "unfinished"
+
+
+def test_ready_robot_plan_replans_after_system_inspection_without_takeover(exercise):
+    client, headers, _, root, _, _, _, _, start = exercise
+    ready = client.get(root, headers=headers).json()
+    resident = next(person for person in ready["simulation"]["residents"] if not person["vulnerable"])
+    created = client.post(root + "/agent/runs", headers=headers, json={
+        "request_id": "ready-inspection-plan-0001",
+        "goal": "将本楼居民疏散并安排机器人楼门广播",
+        "resident_ids": [resident["id"]],
+        "priority_assist": False,
+        "robot_broadcast": True,
+    })
+    assert created.status_code == 201, created.text
+    assert not any(candidate["can_apply"] for candidate in created.json()["candidates"])
+    start()
+    refreshed = client.post(root + "/agent/runs/" + created.json()["id"] + "/actions", headers=headers, json={
+        "action": "replan", "revision": 1,
+    })
+    assert refreshed.status_code == 200, refreshed.text
+    assert refreshed.json()["status"] == "awaiting_approval"
+    assert any(candidate["can_apply"] for candidate in refreshed.json()["candidates"])
+
+
+def test_cross_building_robot_broadcast_is_compiled_as_sequential_tasks(exercise):
+    client, headers, _, root, _, _, _, _, start = exercise
+    data = start()
+    residents = [person for person in data["simulation"]["residents"] if not person["vulnerable"]]
+    building_ids = {person.get("building_id") for person in residents if person.get("building_id")}
+    assert len(building_ids) >= 2
+    created = client.post(root + "/agent/runs", headers=headers, json={
+        "request_id": "cross-building-plan-0001",
+        "goal": "组织多栋居民疏散并逐栋安排机器人楼门广播",
+        "resident_ids": [person["id"] for person in residents],
+        "priority_assist": False,
+        "robot_broadcast": True,
+    })
+    assert created.status_code == 201, created.text
+    candidate = next(item for item in created.json()["candidates"] if item["can_apply"])
+    assert candidate["robot_support"]["target_count"] == len(building_ids)
+    approved = client.post(root + "/agent/runs/" + created.json()["id"] + "/actions", headers=headers, json={
+        "action": "approve", "revision": 1, "candidate_id": candidate["id"],
+    })
+    assert approved.status_code == 200, approved.text
+    robot_steps = [step for step in approved.json()["steps"] if step.get("kind") == "robot.command"]
+    assert len(robot_steps) == len(building_ids) * 2
+    for index in range(2, len(robot_steps), 2):
+        assert robot_steps[index - 1]["id"] in robot_steps[index]["depends_on"]
+
+
+def test_end_state_synchronously_freezes_completed_agent_result(exercise):
+    client, headers, _, root, public, code, clock, tick, start = exercise
+    data = start()
+    resident = next(person for person in data["simulation"]["residents"] if not person["vulnerable"])
+    run = proposal(client, headers, root, [resident["id"]], "end-freeze-plan-0001")
+    candidate = next(item for item in run["candidates"] if item["can_apply"])
+    action_url = root + "/agent/runs/" + run["id"] + "/actions"
+    assert client.post(action_url, headers=headers, json={"action": "approve", "revision": 1, "candidate_id": candidate["id"]}).status_code == 200
+    for _ in range(8):
+        tick(clock["t"] + 30)
+        with operations.SessionLocal() as db:
+            record = db.get(AgentRun, run["id"])
+            advance_run(db, record, SimpleNamespace(username="admin"))
+            if record.status == "awaiting_rollcall":
+                break
+    member = client.post(public + "/join?code=" + code, json={"role": "居民代表", "display_name": "收尾清点员"}).json()
+    counted = client.post(public + "/actions?code=" + code, json={
+        "role": "居民代表", "action": "resident_counted", "message": "结束前逐人核验完成",
+        "participant_token": member["token"], "resident_ids": [resident["id"]],
+    })
+    assert counted.status_code == 200, counted.text
+    ended = client.patch(root + "/state", headers=headers, json={"action": "end"})
+    assert ended.status_code == 200, ended.text
+    final = client.get(root + "/agent/runs", headers=headers).json()["runs"][0]
+    assert final["status"] == "completed"
+    assert all(step["status"] == "completed" for step in final["steps"])

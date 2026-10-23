@@ -5,8 +5,6 @@ import re
 import socket
 import hashlib
 import secrets
-from functools import wraps
-from threading import RLock
 from copy import deepcopy
 from types import SimpleNamespace
 from datetime import UTC, datetime, timedelta
@@ -33,7 +31,8 @@ from app.services.vehicle_dispatch import vehicle_runtime, plan_vehicle
 from app.services.vehicle_rescue import project_rescue_state, action_plan, ACTION_LABELS
 from app.services.vehicle_traffic import protect_plan
 from app.services.command_feedback import commit_changes, command_feedback
-from app.services.command_ledger import apply_feedback, ledger_feedback, safe_arguments, same_command, synchronize_records
+from app.services.command_ledger import ledger_feedback, synchronize_records
+from app.services.command_lock import serialized_command
 from app.services.realtime import live_snapshots, snapshot_patch, state_version
 from app.services.state_store import load_snapshot, persist_snapshot
 from app.services.response_staff import capacity as staff_capacity, roster as staff_roster
@@ -41,19 +40,6 @@ from app.services.response_staff import capacity as staff_capacity, roster as st
 
 router = APIRouter(tags=["drill operations"])
 PARTICIPANT_ONLINE_SECONDS = 25
-
-# SQLite local deployment: serialize whole command transactions, not just inserts.
-# Reentrant because director/engine commands reuse the same validated handlers.
-_command_lock = RLock()
-
-
-def serialized_command(function):
-    @wraps(function)
-    def wrapped(*args, **kwargs):
-        with _command_lock:
-            return function(*args, **kwargs)
-    return wrapped
-
 
 def aware(value: datetime) -> datetime:
     return value if value.tzinfo else value.replace(tzinfo=UTC)
@@ -117,11 +103,22 @@ def advance_engine(session: Session, drill: DrillSession) -> None:
     types = {e.event_type for e in events}
     elapsed = effective_elapsed(drill)
     agent = session.scalar(select(RobotAgent).where(RobotAgent.drill_session_id == drill.id))
+    if world.get('indoor_environment') and 'robot.alarm_confirmed' not in types:
+        from app.services.fire_environment import EnvironmentTimeline
+        _, indoor_env = EnvironmentTimeline(world, [{'elapsed_seconds': e.elapsed_seconds, 'sequence': e.sequence, 'event_type': e.event_type, 'payload': e.payload} for e in events]).at(elapsed)
+        source_zone = next(zone for zone in indoor_env['indoor']['zones'] if zone['id'] == world['indoor_environment']['source_zone_id'])
+        if source_zone['smoke_density'] >= .16:
+            append_event(session, drill, 'indoor.detector_alarm', '楼内烟感', f"{source_zone['name']}烟感触发，正在同步房间风险与处置任务。", {'zone_id': source_zone['id'], 'smoke_density': source_zone['smoke_density'], 'floor': source_zone['floor']})
+            # Keep the existing activation event contract, with explicit sensor
+            # provenance. No claim that the outdoor robot entered the kitchen.
+            append_event(session, drill, 'robot.alarm_confirmed', '楼内烟感', '室内烟感已确认厨房火情，触发燃气、房门和疏散任务。', {'source': 'indoor_detector', 'zone_id': source_zone['id']})
+            types.add('robot.alarm_confirmed')
     if agent and "robot.inspection_started" not in types:
         target = world["inspection_target"]
+        source_name = world.get("fire_source", {}).get("name", "起火点")
         route, points, edges, distance, risks = plan_robot_route(session, drill, (agent.x, agent.y), (target["x"], target["y"]))
-        append_event(session, drill, "robot.inspection_started", agent.name, "开始自动巡检：前往起火点附近连续采样。")
-        append_event(session, drill, "robot.target_assigned", agent.name, "巡检目标：起火点复核", {"target": "起火点复核", "target_x": target["x"], "target_y": target["y"], "purpose": "inspection", "route": route, "route_points": points, "route_edge_ids": edges, "route_risks": risks, "planned_duration_seconds": max(8, round(distance / 3.5))})
+        append_event(session, drill, "robot.inspection_started", agent.name, f"开始自动巡检：前往{source_name}附近连续采样。")
+        append_event(session, drill, "robot.target_assigned", agent.name, f"巡检目标：{source_name}复核", {"target": f"{source_name}复核", "target_object_id": world.get("fire_source", {}).get("location", {}).get("object_id"), "target_x": target["x"], "target_y": target["y"], "purpose": "inspection", "route": route, "route_points": points, "route_edge_ids": edges, "route_risks": risks, "planned_duration_seconds": max(8, round(distance / 3.5))})
     elif agent and "robot.alarm_confirmed" not in types:
         live = robot_runtime(agent, events, elapsed)
         target = world["inspection_target"]
@@ -887,7 +884,7 @@ def create_drill(scene_id: str, payload: DrillCreate, identity: AuthenticatedIde
     version = scene.versions[-1]
     drill = DrillSession(scene_id=scene.id, scene_version_id=version.id, name=payload.name, time_scale=payload.time_scale, participants=PARTICIPANTS, status="ready")
     session.add(drill); session.flush()
-    world = capture_world(session, version)
+    world = capture_world(session, version, {'training_mode': payload.training_mode})
     session.add(RobotAgent(drill_session_id=drill.id, x=world["robot_origin"]["x"], y=world["robot_origin"]["y"], route=[]))
     append_event(session, drill, "drill.created", "系统", "场次已创建，地图、人口与任务已冻结。", {"world": world})
     commit_changes(session)
@@ -928,6 +925,8 @@ def get_drill(drill_id: str, identity: AuthenticatedIdentity = Depends(get_curre
 @serialized_command
 def change_state(drill_id: str, payload: DrillAction, identity: AuthenticatedIdentity = Depends(get_current_identity), session: Session = Depends(get_db)):
     drill = require_drill(session, drill_id, identity.username)
+    if payload.action == 'start' and (world := frozen_world(session, drill)) and not world.get('tasks'):
+        raise HTTPException(409, '本场没有冻结处置任务。请在场景准备补齐案例标准任务、重新发布并新建场次；原记录保持不变。')
     allowed = {"start": {"ready"}, "pause": {"running"}, "resume": {"paused"}, "end": {"running", "paused"}}
     if drill.status not in allowed[payload.action]:
         raise HTTPException(status_code=409, detail=f"当前状态不能执行 {payload.action}。")
@@ -941,6 +940,12 @@ def change_state(drill_id: str, payload: DrillAction, identity: AuthenticatedIde
     event_names = {"start": "drill.started", "pause": "drill.paused", "resume": "drill.resumed", "end": "drill.ended"}
     append_event(session, drill, event_names[payload.action], "演练总控/导演", {"start": "演练统一时钟已启动。", "pause": "演练已暂停。", "resume": "演练已继续。", "end": "演练已结束并冻结事件。"}[payload.action])
     if payload.action == "end":
+        session.flush()
+        # Freeze the agent result from the same authoritative world and command
+        # receipts used by scoring. This removes the scheduler/end race where
+        # completed steps were previously reported as unfinished.
+        from app.services.agent_workflow import finalize_runs_for_end
+        finalize_runs_for_end(session, drill, identity)
         session.flush()
         score_drill(session, drill)
     commit_changes(session)
@@ -1074,116 +1079,25 @@ def preview_robot_target(drill_id: str, payload: RobotCommand, identity: Authent
 @router.post("/drills/{drill_id}/robot")
 @serialized_command
 def command_robot(drill_id: str, payload: RobotCommand, identity: AuthenticatedIdentity = Depends(get_current_identity), session: Session = Depends(get_db)):
-    drill = require_drill(session, drill_id, identity.username)
-    if drill.status != "running":
-        raise HTTPException(status_code=409, detail="只有运行中的演练可以驱动机器人执行任务。")
-    robot = session.scalar(select(RobotAgent).where(RobotAgent.drill_session_id == drill.id))
-    if robot is None:
-        raise HTTPException(status_code=404, detail="未找到机器人。")
-    if payload.command == "move":
-        if payload.x is None or payload.y is None:
-            raise HTTPException(status_code=422, detail="空间目标必须包含坐标。")
-        current_robot = snapshot(session, drill)["robot"]
-        pending = [item for item in current_robot.get("task_queue", []) if item["status"] in {"executing", "queued"}]
-        if pending:
-            last_target = session.get(DrillEvent, pending[-1]["id"])
-            robot.x, robot.y = robot_target(last_target)
-        else:
-            robot.x, robot.y = current_robot["x"], current_robot["y"]
-        route, route_points, route_edge_ids, route_distance, route_risks = plan_robot_route(session, drill, (robot.x, robot.y), (payload.x, payload.y))
-        if len(route_points) < 2 or "目标不可达" in route:
-            raise HTTPException(status_code=409, detail="目标在当前道路封锁条件下不可达，请调整目标或解除封锁。")
-        robot.state = "executing"; robot.route = route; robot.current_task = current_robot.get("current_task") if pending else payload.target or "空间目标处置"
-        robot.battery = max(0, robot.battery - max(1, round(route_distance / 18)))
-        robot.reason = f"A* 风险路径已生成，共 {max(0, len(route_points) - 1)} 段"
-        event_type, message = "robot.target_assigned", f"机器人已接受目标：{payload.target or '空间目标处置'}（队列第 {len(pending) + 1} 项）"
-        event_payload = {"state": robot.state, "x": robot.x, "y": robot.y, "target_x": payload.x, "target_y": payload.y, "target": payload.target or "空间目标处置", "task_id": payload.task_id, "route": route, "route_points": route_points, "route_edge_ids": route_edge_ids, "route_distance": route_distance, "route_risks": route_risks, "planned_duration_seconds": max(8, round(route_distance / 3.5)), "queue_position": len(pending) + 1}
-    elif payload.command == "replan":
-        replan_robot_queue(session, drill, robot, "依据当前道路封锁、宽度与烟气风险重新规划任务队列。")
-        commit_changes(session)
-        return snapshot(session, drill)
-    elif payload.command == "cancel":
-        live = snapshot(session, drill)["robot"]
-        item = next((item for item in live["task_queue"] if item["id"] == payload.task_id and item["status"] in {"queued", "executing", "blocked"}), None)
-        if item is None:
-            raise HTTPException(status_code=409, detail="只能取消当前场次中尚未完成的机器人任务。")
-        append_event(session, drill, "robot.task_cancelled", identity.username, f"已取消任务：{item['label']}", {"target_event_id": item["id"], "x": live["x"], "y": live["y"]})
-        robot.x, robot.y = live["x"], live["y"]
-        replan_robot_queue(session, drill, robot, "取消任务后从当前位置衔接后续队列。")
-        commit_changes(session)
-        return snapshot(session, drill)
-    elif payload.command == "broadcast":
-        current_robot = snapshot(session, drill)["robot"]
-        if current_robot["state"] == "completed":
-            return snapshot(session, drill)
-        if current_robot["state"] not in {"arrived", "completed"}:
-            progress = next((item["progress"] for item in current_robot.get("task_queue", []) if item["status"] == "executing"), 0)
-            raise HTTPException(status_code=409, detail=f"机器人尚未到达任务点（{round(progress * 100)}%），不能提前完成现场广播。")
-        robot.state = "completed"; robot.current_task = current_robot.get("current_task") or "目标点疏散广播"; robot.x, robot.y = current_robot["x"], current_robot["y"]; robot.battery = max(0, robot.battery - 3); robot.reason = "已在目标点完成现场广播，任务形成闭环证据"
-        event_type, message = "robot.broadcast_completed", robot.reason
-        event_payload = {"state": robot.state, "x": robot.x, "y": robot.y, "target": robot.current_task}
-    else:
-        live = snapshot(session, drill)["robot"]
-        if not live["task_queue"] or all(item["status"] == "cancelled" for item in live["task_queue"]):
-            return command_robot(drill_id, RobotCommand(command="move", x=58, y=54, target="3 号楼入口疏散广播"), identity, session)
-        event_type, message = "robot.telemetry", f"机器人实况：{live['state']}，位置 ({live['x']}, {live['y']})"
-        event_payload = {"state": live["state"], "x": live["x"], "y": live["y"]}
-    event_payload["battery"] = robot.battery
-    append_event(session, drill, event_type, robot.name, message, event_payload)
-    commit_changes(session)
-    return snapshot(session, drill)
+    """Legacy HTTP adapter; the same movement rules serve approved commands."""
+    from app.bootstrap.commands import command_application
+    from app.domain.errors import CommandRejected
+    try:
+        return command_application().runtime.apply_robot(session, drill_id, payload, identity)
+    except CommandRejected as exc:
+        raise HTTPException(exc.status_code, exc.detail, headers=exc.headers) from exc
 
 
 @router.post("/drills/{drill_id}/residents")
 @serialized_command
 def command_residents(drill_id: str, payload: ResidentCommand, identity: AuthenticatedIdentity = Depends(get_current_identity), session: Session = Depends(get_db)):
-    drill = require_drill(session, drill_id, identity.username)
-    if drill.status != "running":
-        raise HTTPException(status_code=409, detail="只有运行中的演练可以指挥居民。")
-    world = frozen_world(session, drill)
-    valid_ids = {p["id"] for p in world["residents"]} if world else {f"resident-{index}" for index in range(1, 19)}
-    if not set(payload.resident_ids).issubset(valid_ids):
-        raise HTTPException(status_code=422, detail="包含无效居民编号。")
-    events = list(session.scalars(select(DrillEvent).where(DrillEvent.drill_session_id == drill.id).order_by(DrillEvent.sequence)))
-    exit_name = "北门" if payload.exit == "north" else "南门"
-    action_name = "重点护送" if payload.action == "priority_assist" else "分流疏散"
-    before = simulation_state(drill, events, session=session)
-    if world and payload.action == "priority_assist":
-        selected = [p for p in before["residents"] if p["id"] in payload.resident_ids and p["status"] != "evacuated"]
-        if any(not p["vulnerable"] for p in selected):
-            raise HTTPException(422, "重点护送仅用于重点人员；普通居民请使用分流疏散。")
-        active = {h["resident_id"] for h in before["helpers"] if h["state"] != "completed"}
-        if len(active | {p["id"] for p in selected}) > staff_capacity(world):
-            raise HTTPException(409, "本场可用值守员均有在途任务，请等待护送完成或调整人员安排。")
-    if all(resident["status"] == "evacuated" for resident in before["residents"] if resident["id"] in payload.resident_ids):
-        raise HTTPException(status_code=409, detail="所选居民已全部到达安全出口，无需重复下达疏散指令。")
-    exits = [n for n in before["road_network"]["nodes"] if n["is_exit"]]
-    target_node = (min(exits, key=lambda n: n["y"]) if payload.exit == "north" else max(exits, key=lambda n: n["y"])) if exits else None
-    target = (target_node["x"], target_node["y"]) if target_node else (12.0, 12.0) if payload.exit == "north" else (84.0, 88.0)
-    spatial = spatial_preview(session, drill, payload, events) if world and world.get("schema_version", 2) >= 3 else None
-    for resident in before["residents"]:
-        if resident["id"] in payload.resident_ids and resident["status"] != "evacuated":
-            if spatial:
-                points = next(p["route_points"] if p["route_reachable"] else [] for p in spatial["residents"] if p["id"] == resident["id"])
-            else:
-                _, points, _, _, _ = plan_route(before["road_network"], (resident["x"], resident["y"]), target, effective_elapsed(drill))
-            if len(points) < 2:
-                raise HTTPException(status_code=409, detail=f"{resident['label']} 无法沿当前道路到达{exit_name}，请选择另一出口。")
-    command_event = append_event(session, drill, "resident.command", "应急指挥人员", f"已指挥 {len(payload.resident_ids)} 名居民向{exit_name}{action_name}。", payload.model_dump())
-    forecast_at = effective_elapsed(drill) + 30
-    baseline = simulation_state(drill, events, forecast_at, session=session)
-    after = simulation_state(drill, [*events, command_event], forecast_at, session=session)
-    command_event.payload = {
-        **command_event.payload,
-        "impact": {
-            "congested_before": baseline["summary"]["congested"], "congested_after": after["summary"]["congested"],
-            "smoke_exposed_before": baseline["summary"]["smoke_exposed"], "smoke_exposed_after": after["summary"]["smoke_exposed"],
-            "forecast_horizon_seconds": 30,
-            "selected_count": len(payload.resident_ids),
-        },
-    }
-    commit_changes(session)
-    return snapshot(session, drill)
+    """Legacy HTTP adapter; the same movement rules serve approved commands."""
+    from app.bootstrap.commands import command_application
+    from app.domain.errors import CommandRejected
+    try:
+        return command_application().runtime.apply_residents(session, drill_id, payload, identity)
+    except CommandRejected as exc:
+        raise HTTPException(exc.status_code, exc.detail, headers=exc.headers) from exc
 
 
 def spatial_preview(session, drill, payload, events=None):
@@ -1228,6 +1142,7 @@ def preview_resident_route(drill_id: str, payload: ResidentCommand, identity: Au
 @serialized_command
 def assign_search(drill_id: str, payload: SearchAssignment, identity: AuthenticatedIdentity = Depends(get_current_identity), session: Session = Depends(get_db)):
     drill = require_drill(session, drill_id, identity.username)
+    session.execute(select(DrillSession.id).where(DrillSession.id == drill.id).with_for_update())
     state = snapshot(session, drill)
     if drill.status != "running" or state["engine_version"] < 3:
         raise HTTPException(409, "只有运行中的连续空间训练可以派出搜索员。")
@@ -1237,7 +1152,14 @@ def assign_search(drill_id: str, payload: SearchAssignment, identity: Authentica
     active = [h for h in state["simulation"]["helpers"] if h["state"] != "completed"]
     if any(h["resident_id"] == person["id"] for h in active) or len(active) >= staff_capacity(frozen_world(session, drill)):
         raise HTTPException(409, "此人已有责任人，或可用值守员均在执行任务。")
-    append_event(session, drill, "resident.search_assigned", identity.username, f"{payload.responsible}负责寻找{person['label']}，最后位置：{person['last_location']}", {**payload.model_dump(), "last_location": person["last_location"]})
+    from app.services.agent_claims import manual_takeover, staff_assignments
+    from app.domain.errors import CommandRejected
+    manual_takeover(session, drill.id, 'residents.assign', {'resident_ids': [person['id']]}, effective_elapsed(drill))
+    try:
+        bindings = staff_assignments(session, drill.id, state['simulation'], [person['id']])
+    except CommandRejected as exc:
+        raise HTTPException(exc.status_code, exc.detail) from exc
+    append_event(session, drill, "resident.search_assigned", identity.username, f"{payload.responsible}负责寻找{person['label']}，最后位置：{person['last_location']}", {**payload.model_dump(), "last_location": person["last_location"], 'staff_assignments': bindings})
     commit_changes(session)
     return snapshot(session, drill)
 
@@ -1362,12 +1284,14 @@ def revoke_participant_invites(drill_id: str, identity: AuthenticatedIdentity = 
 
 
 @router.post("/drills/{drill_id}/socket-ticket")
+@serialized_command
 def director_socket_ticket(drill_id: str, identity: AuthenticatedIdentity = Depends(get_current_identity), session: Session = Depends(get_db)):
     require_drill(session, drill_id, identity.username)
     return issue_ticket(session, drill_id, username=identity.username, auth_session_id=identity.session_id)
 
 
 @router.post("/participant/drills/{drill_id}/socket-ticket")
+@serialized_command
 def participant_socket_ticket(drill_id: str, payload: dict, session: Session = Depends(get_db)):
     code = payload.get("code")
     if not isinstance(code, str) or len(code) > 64:
@@ -1572,7 +1496,20 @@ def compare_branches(drill_id: str, payload: BranchCompareRequest, identity: Aut
     alternative_world, alternative = world_for(payload.alternative_strategy)
     projected_robot = robot_runtime(session.scalar(select(RobotAgent).where(RobotAgent.drill_session_id == drill.id)), events, projected_elapsed)
     score_delta = alternative["projected_score"] - baseline["projected_score"]
-    recommendation = f"建议采用“{alternative['name']}”：基于同一道路图继续推演，预计综合得分提升 {score_delta} 分。" if score_delta > 0 else f"“{alternative['name']}”未优于“{baseline['name']}”，请调整出口分配或先解除不可达路段。"
+    duration_delta = None if baseline["evacuation_seconds"] is None or alternative["evacuation_seconds"] is None else alternative["evacuation_seconds"] - baseline["evacuation_seconds"]
+    exposure_delta = alternative["smoke_exposed"] - baseline["smoke_exposed"]
+    if score_delta > 0:
+        recommendation = f"建议采用“{alternative['name']}”：预计综合得分提升 {score_delta} 分。"
+    elif score_delta < 0:
+        recommendation = f"不建议采用“{alternative['name']}”：预计综合得分下降 {abs(score_delta)} 分。"
+    elif exposure_delta < 0 or (exposure_delta == 0 and duration_delta is not None and duration_delta < 0):
+        detail = f"烟气暴露减少 {abs(exposure_delta)} 人" if exposure_delta < 0 else f"预计疏散缩短 {abs(duration_delta)} 秒"
+        recommendation = f"两种方案预计同为 {baseline['projected_score']} 分，但“{alternative['name']}”{detail}，可优先采用。"
+    elif exposure_delta > 0 or (exposure_delta == 0 and duration_delta is not None and duration_delta > 0):
+        detail = f"烟气暴露增加 {exposure_delta} 人" if exposure_delta > 0 else f"预计疏散延长 {duration_delta} 秒"
+        recommendation = f"两种方案预计同为 {baseline['projected_score']} 分，但“{alternative['name']}”{detail}，不构成更优选择。"
+    else:
+        recommendation = "两种方案的得分、暴露和疏散时间没有实质差异；无需把相同结果包装成第二种选择。"
     return {
         "at_seconds": projected_elapsed, "projection_seconds": projection_seconds,
         "baseline": baseline, "alternative": alternative,
@@ -1769,6 +1706,8 @@ def reset_demo_drills(community_id: str, identity: AuthenticatedIdentity = Depen
     scene_ids = list(session.scalars(select(Scene.id).where(Scene.community_id == community_id)))
     drill_ids = list(session.scalars(select(DrillSession.id).where(DrillSession.scene_id.in_(scene_ids)))) if scene_ids else []
     if drill_ids:
+        from app.models.agent import AgentResourceClaim
+        session.execute(delete(AgentResourceClaim).where(AgentResourceClaim.drill_session_id.in_(drill_ids)))
         session.execute(delete(DrillScore).where(DrillScore.drill_session_id.in_(drill_ids)))
         session.execute(delete(DrillCommand).where(DrillCommand.drill_session_id.in_(drill_ids)))
         session.execute(delete(DrillStateSnapshot).where(DrillStateSnapshot.drill_session_id.in_(drill_ids)))
@@ -1780,182 +1719,35 @@ def reset_demo_drills(community_id: str, identity: AuthenticatedIdentity = Depen
     return {"reset": True, "removed_drills": len(drill_ids), "preserved_scenes": len(scene_ids)}
 
 
-def _persist_failed_command(
-    session: Session,
-    drill: DrillSession,
-    payload: LiveCommand,
-    actor: str,
-    failure_code: str,
-    reason: str,
-) -> None:
-    """Persist expected validation failures separately from the rolled-back domain transaction."""
-    current = session.get(DrillSession, drill.id)
-    if current is None:
-        return
-    existing = session.scalar(select(DrillCommand).where(
-        DrillCommand.drill_session_id == current.id,
-        DrillCommand.command_id == payload.command_id,
-    ))
-    if existing:
-        return
-    clean_reason = " ".join(str(reason).split())[:500]
-    failed_event = append_event(
-        session,
-        current,
-        "command.failed",
-        actor,
-        f"指令未执行：{clean_reason}",
-        {
-            "command_id": payload.command_id,
-            "kind": payload.kind,
-            "target_id": payload.target_id,
-            "failure_code": failure_code,
-        },
-    )
-    session.add(DrillCommand(
-        drill_session_id=current.id,
-        command_id=payload.command_id,
-        actor=actor,
-        kind=payload.kind,
-        target_id=payload.target_id,
-        command_args=safe_arguments(payload.arguments),
-        expected_sequence=payload.expected_sequence,
-        status="failed",
-        label="指令未执行",
-        reason=clean_reason,
-        progress=0,
-        submitted_at_seconds=effective_elapsed(current),
-        completed_at_seconds=effective_elapsed(current),
-        event_ids=[failed_event.id],
-        failure_code=failure_code,
-    ))
-    session.flush()
-    persist_snapshot(session, current, snapshot(session, current), force=True)
-    session.commit()
-
-
 @router.post("/drills/{drill_id}/commands")
-@serialized_command
 def execute_live_command(drill_id: str, payload: LiveCommand, identity: AuthenticatedIdentity = Depends(get_current_identity), session: Session = Depends(get_db)):
-    """Execute once, persist the lifecycle, and keep domain effects transactionally atomic."""
-    from pydantic import ValidationError
-
-    drill = require_drill(session, drill_id, identity.username)
-    session.execute(select(DrillSession.id).where(DrillSession.id == drill_id).with_for_update())
-    command_record = session.scalar(select(DrillCommand).where(
-        DrillCommand.drill_session_id == drill_id,
-        DrillCommand.command_id == payload.command_id,
-    ))
-    if command_record:
-        if command_record.actor != identity.username or not same_command(command_record, payload.kind, payload.arguments, payload.target_id):
-            raise HTTPException(409, "该指令编号已用于另一项操作，请重新提交。")
-        if command_record.status == "failed":
-            raise HTTPException(409, f"该指令此前未执行：{command_record.reason} 请重新预览并下达新指令。")
-        return snapshot(session, drill)
-    receipts = session.scalars(select(DrillEvent).where(DrillEvent.drill_session_id == drill_id, DrillEvent.event_type == "command.accepted"))
-    prior = next((e for e in receipts if e.payload.get("command_id") == payload.command_id), None)
-    fingerprint = {"kind": payload.kind, "arguments": safe_arguments(payload.arguments), "target_id": payload.target_id}
-    if prior:
-        if prior.actor != identity.username or any(prior.payload.get(k) != v for k, v in fingerprint.items()):
-            raise HTTPException(409, "该指令编号已用于另一项操作，请重新提交。")
-        return snapshot(session, drill)
-    before = snapshot(session, drill)
-    if payload.expected_sequence is not None and payload.expected_sequence != before["latest_event_sequence"]:
-        raise HTTPException(409, "现场已发生新变化，请重新预览后确认。")
-    dispatch = {
-        "state": (DrillAction, change_state), "event.inject": (EventInject, inject_event),
-        "residents.assign": (ResidentCommand, command_residents), "robot.command": (RobotCommand, command_robot),
-        "vehicle.command": (VehicleCommand, command_vehicle),
-        "search.assign": (SearchAssignment, assign_search), "participant.feedback": (ParticipantAction, participant_action),
-        "task.assign": (TaskAssignment, assign_task), "task.action": (TaskAction, director_task_action), "director.configure": (DirectorConfig, configure_director),
-    }
-    if payload.kind in {"road.reopen", "task.assign", "task.action"} and not payload.target_id:
-        raise HTTPException(422, "请选择本场道路或处置任务。")
-    labels = {"state": "演练状态已更新", "event.inject": "现场扰动已生效", "road.reopen": "道路通行已恢复", "residents.assign": "居民撤离指令", "robot.command": "机器人指令", "search.assign": "搜索责任已指派", "participant.feedback": "参演反馈已记录", "task.assign": "处置任务已指派", "task.action": "处置任务已更新", "director.configure": "事件导演设置已更新"}
-    labels["vehicle.command"] = "应急车辆调度"
-    command_record = DrillCommand(
-        drill_session_id=drill.id,
-        command_id=payload.command_id,
-        actor=identity.username,
-        kind=payload.kind,
-        target_id=payload.target_id,
-        command_args=fingerprint["arguments"],
-        expected_sequence=payload.expected_sequence,
-        status="submitted",
-        label=labels[payload.kind],
-        reason="指令已提交，正在校验现场状态。",
-        submitted_at_seconds=before["elapsed_seconds"],
-    )
-    session.add(command_record)
-    session.flush()
-    session.info["drill_command_transaction"] = True
-    final_state = None
+    """HTTP mapping only; the application owns command transactions and receipts."""
+    from app.application.drill_commands import CommandRejected
+    from app.bootstrap.commands import command_application
     try:
-        if payload.kind == "road.reopen":
-            result = reopen_road(drill_id, payload.target_id, identity, session)
-        else:
-            schema, handler = dispatch[payload.kind]
-            arguments = schema.model_validate(payload.arguments)
-            if payload.kind in {"task.assign", "task.action"}:
-                result = handler(drill_id, payload.target_id, arguments, identity, session)
-            else:
-                result = handler(drill_id, arguments, identity, session)
-        effects = list(session.scalars(select(DrillEvent).where(DrillEvent.drill_session_id == drill_id, DrillEvent.sequence > before["latest_event_sequence"]).order_by(DrillEvent.sequence)))
-        receipt = append_event(session, drill, "command.accepted", identity.username, effects[0].message if effects else labels[payload.kind], {
-            **fingerprint, "command_id": payload.command_id, "event_ids": [e.id for e in effects],
-            "score_before": before["score_preview"]["total_score"],
-            "score_after_acceptance": result["score_preview"]["total_score"],
-        })
-        all_events = list(session.scalars(select(DrillEvent).where(DrillEvent.drill_session_id == drill_id).order_by(DrillEvent.sequence)))
-        current_elapsed = effective_elapsed(drill)
-        current_simulation = simulation_state(drill, all_events, current_elapsed, session=session)
-        current_robot = robot_runtime(session.scalar(select(RobotAgent).where(RobotAgent.drill_session_id == drill.id)), all_events, current_elapsed)
-        derived = command_feedback(all_events, current_simulation, current_robot, current_elapsed, drill.status)
-        synchronize_records(session, drill, derived, current_elapsed)
-        current_feedback = next((item for item in derived if item["id"] == payload.command_id), None)
-        if current_feedback:
-            apply_feedback(command_record, current_feedback, current_elapsed)
-        else:
-            command_record.status = "accepted"
-            command_record.reason = "指令已受理，等待演练引擎执行。"
-            command_record.accepted_at_seconds = receipt.elapsed_seconds
-            command_record.event_ids = [e.id for e in effects]
-            command_record.score_before = before["score_preview"]["total_score"]
-            command_record.score_after_acceptance = result["score_preview"]["total_score"]
-        final_state = snapshot(session, drill)
-        persist_snapshot(session, drill, final_state, force=True)
-        session.commit()
-    except ValidationError as exc:
-        session.rollback()
-        _persist_failed_command(session, drill, payload, identity.username, "validation_error", "指令参数不正确，请核对对象和目标后重试。")
-        raise HTTPException(422, "指令参数不正确，请核对对象和目标后重试。") from exc
-    except HTTPException as exc:
-        session.rollback()
-        if exc.status_code < 500:
-            detail = exc.detail if isinstance(exc.detail, str) else "指令未通过现场校验。"
-            _persist_failed_command(session, drill, payload, identity.username, f"http_{exc.status_code}", detail)
-        raise
-    except Exception:
-        session.rollback()
-        raise
-    finally:
-        session.info.pop("drill_command_transaction", None)
-    return final_state or snapshot(session, drill)
+        return command_application().execute(session, drill_id, payload, identity)
+    except CommandRejected as exc:
+        raise HTTPException(exc.status_code, exc.detail, headers=exc.headers) from exc
 
 
 @router.websocket("/ws/drills/{drill_id}")
 async def drill_socket(websocket: WebSocket, drill_id: str, ticket: str | None = None, protocol: int = 3, after_sequence: int | None = None, agent: bool = False):
+    import asyncio
     username: str | None = None
     if protocol not in {2, 3}:
         await websocket.close(code=4400); return
     if not ticket or len(ticket) > 128:
         await websocket.close(code=4401); return
-    try:
+    @serialized_command
+    def admit():
         with SessionLocal() as auth_session:
             admission = consume_ticket(auth_session, ticket, drill_id)
             validate_ticket_owner(auth_session, admission)
-            username = admission.username
-            require_drill(auth_session, drill_id, username) if username else auth_session.get(DrillSession, drill_id)
+            require_drill(auth_session, drill_id, admission.username) if admission.username else auth_session.get(DrillSession, drill_id)
+            return admission
+    try:
+        admission = await asyncio.to_thread(admit)
+        username = admission.username
     except HTTPException:
         await websocket.close(code=4401); return
     await websocket.accept()
@@ -2028,7 +1820,14 @@ async def drill_socket(websocket: WebSocket, drill_id: str, ticket: str | None =
         if catchup:
             await websocket.send_json(catchup)
         while True:
-            data, goal = await asyncio.to_thread(read_live)
+            # A slow simulation/DB lock must not look like a dead transport.
+            # Keep one outstanding read; do not spawn a new worker each timeout.
+            pending_read = asyncio.create_task(asyncio.to_thread(read_live))
+            while not pending_read.done():
+                done, _ = await asyncio.wait({pending_read}, timeout=4)
+                if not done:
+                    await websocket.send_json({'type': 'drill.transport_heartbeat', 'drill_id': drill_id})
+            data, goal = pending_read.result()
             now = asyncio.get_running_loop().time()
             if protocol not in {2, 3} or previous is None:
                 await websocket.send_json({"type": "drill.snapshot", "data": data})

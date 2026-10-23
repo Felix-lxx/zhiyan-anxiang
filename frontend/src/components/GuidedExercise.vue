@@ -17,7 +17,7 @@ interface TrainingState {
   events: Array<{ event_type: string; elapsed_seconds: number; message: string }>
   score?: { total_score: number; details?: Array<{ name: string; score: number; max_score?: number; evidence: string }> } | null
   score_preview?: { total_score: number; details?: Array<{ name: string; score: number; max_score?: number; evidence: string }> }
-  simulation: { residents: TrainingPerson[]; summary: { total: number; evacuated: number; missing: number; smoke_exposed?: number }; road_network?: { edges: Array<{ id: string; name: string; status: string }> } }
+  simulation: { environment?:{indoor?:unknown}; residents: TrainingPerson[]; summary: { total: number; evacuated: number; missing: number; smoke_exposed?: number }; road_network?: { edges: Array<{ id: string; name: string; status: string }> } }
 }
 const props = defineProps<{ drill: TrainingState; busy: boolean; replay: boolean }>()
 const emit = defineEmits<{
@@ -36,7 +36,8 @@ const outside = computed(() => people.value.filter(p => (!p.indoor_stage || p.in
 const needingHelp = computed(() => people.value.filter(p => p.vulnerable && !p.assisted && p.status !== 'evacuated'))
 const unnotified = computed(() => indoors.value.some(p => p.indoor_stage === 'room'))
 const fireConfirmed = computed(() => props.drill.events.some(e => e.event_type === 'robot.alarm_confirmed'))
-const power = computed(() => props.drill.tasks.find(t => t.kind === 'power_off' && t.status !== 'completed'))
+const kitchen = computed(()=>Boolean(props.drill.simulation.environment?.indoor))
+const power = computed(() => props.drill.tasks.find(t => ['power_off','gas_off'].includes(t.kind??'') && t.status !== 'completed'))
 const broadcastTask = computed(() => props.drill.tasks.find(t => t.kind === 'broadcast'))
 const broadcastDone = computed(() => props.drill.events.some(e => e.event_type === 'robot.broadcast_completed'))
 const atEntrance = computed(() => {
@@ -61,16 +62,16 @@ const consequence = computed(() => {
   if (lastDecision.value?.event_type === 'robot.broadcast_completed') return '广播已经生效。看楼层圆点从等待转为准备、下楼，再到室外；广播不会让所有人立即出现在出口。'
   if (lastDecision.value?.event_type === 'inject.channel_blocked') return `封锁已写入当前路网。现在有 ${people.value.filter(p => p.status !== 'evacuated' && !p.route_reachable).length} 人的路线不可达；仍可达的人沿新路线继续移动。`
   if (lastDecision.value?.event_type === 'road.reopened') return '路段已恢复通行，机器人和居民重新规划；他们从当前位置继续，不会瞬间到达。'
-  if (lastDecision.value?.event_type === 'task.completed') return '核验证据已保存。断电任务会减缓后续火势增长，既有烟气暴露不会被清零。'
+  if (lastDecision.value?.event_type === 'task.completed') return '核验证据已保存。能源切断任务会减缓后续火势增长，既有烟气暴露不会被清零。'
   return `指令已生效。当前楼内 ${indoors.value.length} 人，室外 ${outside.value.length} 人；下楼、会合和沿路行走都需要演练时间。`
 })
 const stage = computed(() => {
   if (props.replay) return { title: '这是当时的现场', why: '人员、道路和任务均已回到这个时刻。当前只读，不会修改正在进行的演练。', key: 'replay' }
-  if (props.drill.status === 'ready') return { title: '把居民从楼内带到集合点', why: '你扮演社区指挥员：确认火情、安排断电、通知撤离、照顾重点人员。先完成一次，再比较另一种选择。', key: 'ready' }
+  if (props.drill.status === 'ready') return { title: '把居民从楼内带到集合点', why: kitchen.value?'厨房案例：确认火情、通知撤离、切断燃气，再核对房门与集合人数。打开「楼内烟气与门控」观察各楼层。':'你扮演社区指挥员：确认火情、安排断电、通知撤离、照顾重点人员。先完成一次，再比较另一种选择。', key: 'ready' }
   if (props.drill.status === 'paused') return { title: '演练已暂停', why: '仿真时钟停止，居民和机器人不会继续移动。可以观察现场，准备下一条指令。', key: 'paused' }
   if (props.drill.status === 'ended') return { title: '这次指挥带来了什么结果？', why: `共 ${people.value.length} 人，${props.drill.simulation.summary.evacuated} 人到达集合点，${props.drill.simulation.summary.missing} 人失联。查看关键决定，区分遗漏与已完成处置。`, key: 'ended' }
-  if (!fireConfirmed.value) return { title: '机器人正在确认火情', why: '先观察巡检。机器人沿道路到达火点附近，连续采样三次后触发处置任务。居民此时仍在楼内等待通知。', key: 'perception' }
-  if (power.value) return { title: '火情已确认：安排断电处置', why: '在下方接收任务、回执到位并记录结果。核验完成后，模型中的火势增速降低；这里是演练回执，不会控制真实电源。', key: 'power' }
+  if (!fireConfirmed.value) return { title: kitchen.value?'室内烟感监测中':'机器人正在确认火情', why: kitchen.value?'观察厨房分区烟气；房间烟感达到阈值后触发处置任务。机器人巡检目标是楼外接入点，不会穿墙进入厨房。':'先观察巡检。机器人沿道路到达火点附近，连续采样三次后触发处置任务。居民此时仍在楼内等待通知。', key: 'perception' }
+  if (power.value) return { title: kitchen.value?'火情已确认：组织疏散与燃气处置':'火情已确认：安排断电处置', why: '接收处置任务、回执到位并提交结果，同时下达疏散通知。能源切断证据核验后降低火势增速；门控还会影响通行和烟气。', key: 'power' }
   if (needingHelp.value.length) return { title: `${needingHelp.value.length} 名重点居民需要接应`, why: '先预览接应路线，再在下方确认下达。接应人员会沿楼门、楼梯与走廊实际会合，不会点击后瞬间完成。', key: 'assist' }
   if (!broadcastDone.value && broadcastTask.value) return { title: atEntrance.value ? '机器人已到入口：通知居民撤离' : '居民还没有收到疏散通知', why: travelling.value && !atEntrance.value ? '机器人正在路上。到达入口后，下面会出现广播按钮；不要重复派出同一目标。' : '派机器人到住宅入口并执行广播，居民才会离开房间、排队下楼。你也可以在下方直接指定一组居民撤离。', key: 'broadcast' }
   if (outside.value.some(p => !p.route_reachable)) return { title: '有人被阻断在室外', why: '展开道路操作解除封锁，或给所选居民改派另一出口。不能到达集合点时，系统不会宣布疏散完成。', key: 'observe' }

@@ -8,7 +8,11 @@
 .scene-quality { display:flex; align-items:center; gap:8px; padding-inline:6px; font-size:16px; }
 .scene-quality select { width:auto; }
 .scene-quality small { font-size:14px; min-width:64px; color:#b9d5c8; font-variant-numeric:tabular-nums; }
-html .operations-center--immersive>.director-stage .scene-utilities { left:var(--scene-left); right:20px; flex-wrap:nowrap; width:max-content; max-width:calc(100% - var(--scene-left) - 20px); box-sizing:border-box; }
+html .operations-center--immersive>.director-stage .scene-utilities { left:var(--scene-left); right:20px; flex-wrap:wrap; width:max-content; max-width:calc(100% - var(--scene-left) - 20px); box-sizing:border-box; }
+.scene-floor-controls { display:flex; gap:8px; flex-wrap:wrap; min-width:0; }
+.scene-floor-controls select { min-width:0; max-width:240px; text-overflow:ellipsis; }
+html .operations-center--immersive.detail-panel-open .scene-floor-controls,
+html .operations-center--immersive.detail-panel-open .scene-quality { display:none; }
 html .operations-center--immersive {
   --director-topbar:76px; --director-timeline:176px; --scene-left:112px;
   --scene-bottom:calc(var(--director-timeline) + 14px); --scene-rail-space:20px;
@@ -135,7 +139,9 @@ html .operations-center--immersive.coach-open>.director-stage :is(.director-metr
   html .operations-center--immersive>.director-stage .scene-utilities { top:8px; right:8px; width:auto; max-width:none; display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:6px; padding:6px; }
   .scene-quality { grid-column:1/-1; justify-content:space-between; padding:0; font-size:14px; gap:4px; }
   .scene-quality small { min-width:0; font-size:14px; }
-  .scene-utilities button,.scene-utilities select { font-size:14px; padding:6px; }
+  .scene-utilities button,.scene-utilities select { font-size:16px; padding:6px; }
+  .scene-floor-controls { grid-column:1/-1; display:grid; grid-template-columns:minmax(0,1fr) 88px; order:2; }
+  .scene-floor-controls select { width:100%; }
   html .operations-center--immersive>.director-topbar { padding:8px 12px; gap:6px; grid-template-columns:minmax(0,1fr) auto; grid-template-rows:44px 44px; grid-template-areas:'brand brand' 'status actions'; }
   html .operations-center--immersive .director-brand { grid-area:brand; }
   html .operations-center--immersive .director-status { grid-area:status; justify-self:start; gap:6px; padding:4px 8px; }

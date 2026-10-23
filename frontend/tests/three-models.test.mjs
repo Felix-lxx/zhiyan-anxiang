@@ -20,6 +20,21 @@ const { RoadVisuals } = await load('roadVisuals')
 const { CrowdRenderer } = await load('crowdRenderer')
 const { presentHelpers, meetingRoute } = await load('helperPresentation')
 const { createRouteGuide } = await load('routeGuide')
+const { cutFloor, stairOpenings, furnitureFits, floorContainsHeight } = await load('indoorGeometry')
+
+test('indoor floors leave a stair opening and reject furnishings intersecting walking space', () => {
+  const stair={kind:'stairs',width_meters:1.2,start:{x:2,y:2,height:.18},end:{x:2,y:6,height:3.38}}
+  const rect={x:5,y:5,width:10,depth:10}, holes=stairOpenings([stair],3.38)
+  const slabs=cutFloor(rect,holes)
+  assert.ok(slabs.length>1)
+  const hole=holes[0]
+  for(const slab of slabs)assert.ok(Math.abs(slab.x-hole.x)>=(slab.width+hole.width)/2-.0001||Math.abs(slab.y-hole.y)>=(slab.depth+hole.depth)/2-.0001)
+  assert.ok(slabs.reduce((sum,slab)=>sum+slab.width*slab.depth,0)<100)
+  assert.equal(furnitureFits({x:2,y:4,width:1,depth:1},.18,[stair]),false)
+  assert.equal(furnitureFits({x:8,y:8,width:1,depth:1},.18,[stair]),true)
+  for(let height=.3;height<=3.38;height+=.2)assert.equal(floorContainsHeight(height,3.38,.24),true)
+  assert.equal(floorContainsHeight(6.58,3.38,.24),false)
+})
 
 test('route arrows retain confirmed corners and stair height with a bounded mesh count', () => {
   const points=[new THREE.Vector3(0,0,0),new THREE.Vector3(0,0,10),new THREE.Vector3(10,3,10)]

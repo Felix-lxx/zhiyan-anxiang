@@ -96,11 +96,12 @@ export function connectLive<T extends VersionedState>(options: {
   onStatus: (state: ConnectionState) => void; onError?: (message: string) => void
   onRecovered?: (count: number, complete: boolean) => void
   onAgentState?: (state:AgentLiveState) => void
+  fetchState?: () => Promise<T>
 }): () => void {
   let socket: WebSocket | null = null, stopped = false, attempt = 0
   let timer: ReturnType<typeof setTimeout> | undefined
-  let stream: T | null = null, lastMessageAt = Date.now(), lastSequence: number | null = null
-  let agentStream:AgentLiveState|null=null
+  let stream: T | null = null, lastMessageAt = Date.now(), lastStateAt = Date.now(), lastSequence: number | null = null
+  let agentStream:AgentLiveState|null=null, recovering=false
   async function open() {
     if (stopped) return
     options.onStatus(attempt ? 'stale' : 'connecting')
@@ -128,6 +129,7 @@ export function connectLive<T extends VersionedState>(options: {
       if (stopped || socket !== current) return
       try {
         const message = JSON.parse(event.data) as LiveMessage<T>|AgentLiveMessage
+        if ((message as {type:string}).type==='drill.transport_heartbeat') { lastMessageAt=Date.now(); return }
         if (message.type==='agent.snapshot' || message.type==='agent.delta') {
           agentStream=applyAgentMessage(agentStream,message)
           if(agentStream?.id!==options.drillId)throw new Error('计划场次不一致')
@@ -144,7 +146,7 @@ export function connectLive<T extends VersionedState>(options: {
         stream = applyLiveMessage(stream, message)
         if (stream?.id !== options.drillId) throw new Error('场次不一致')
         if (typeof stream.latest_event_sequence === 'number') lastSequence = stream.latest_event_sequence
-        lastMessageAt = Date.now(); attempt = 0; options.onStatus('live')
+        lastMessageAt = Date.now(); lastStateAt=Date.now(); attempt = 0; options.onStatus('live')
         if (message.type !== 'drill.heartbeat') options.onState(stream)
       } catch { options.onStatus('stale'); current.close(4000, 'resync') }
     }
@@ -158,7 +160,12 @@ export function connectLive<T extends VersionedState>(options: {
   }
   open()
   const watchdog = setInterval(() => {
-    if (!stopped && socket && socket.readyState < WebSocket.CLOSING && Date.now() - lastMessageAt > 12000) {
+    if(!stopped && options.fetchState && !recovering && (socket?.readyState!==WebSocket.OPEN || Date.now()-lastStateAt>15000)) {
+      options.onStatus('stale')
+      recovering=true
+      options.fetchState().then(state=>{if(!stopped)options.onState(state)}).catch(()=>{}).finally(()=>{recovering=false})
+    }
+    if (!stopped && socket && socket.readyState < WebSocket.CLOSING && Date.now() - lastMessageAt > 45000) {
       options.onStatus('stale'); socket.close(4000, 'heartbeat timeout')
     }
   }, 4000)

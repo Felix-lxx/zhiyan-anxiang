@@ -81,6 +81,7 @@ def command_feedback(events, simulation, robot, elapsed, drill_status):
         elif drill_status == "paused" and status in {"executing", "queued"}:
             status, reason = "paused", "演练已暂停，保持当前位置；继续后恢复执行。"
         output.append({"id": data["command_id"], "kind": kind, "label": event.message, "actor": event.actor,
+                       "origin": data.get("origin"),
                        "accepted_at": event.elapsed_seconds, "status": status, "progress": round(progress, 3),
                        "reason": reason, "remaining_seconds": remaining, "resident_ids": resident_ids,
                        "event_ids": data.get("event_ids", []), "score_before": data.get("score_before"),

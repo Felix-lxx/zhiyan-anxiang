@@ -113,6 +113,7 @@ def action_plan(world, state, vehicle, action, resident_id=None):
     if vehicle["state"] not in {"idle", "arrived"}: return denied("请等待车辆停稳后执行到场处置。")
     if vehicle.get("service"): return denied("当前处置尚未结束，请先停止或等待完成。")
     if action == "spray":
+        if world.get('indoor_environment'): return denied('厨房位于楼内，当前消防车仅支持室外直达喷水；请完成燃气切断与室内疏散任务。')
         if vehicle["kind"] != "firetruck": return denied("喷水任务需要消防车。")
         if state["environment"]["east_hydrant"] == "failed": return denied("水源失效，无法供水。请在场景中准备可用水源。")
         if state["fire"]["intensity"] <= 0: return denied("当前火势已压制，无需重复喷水。")
