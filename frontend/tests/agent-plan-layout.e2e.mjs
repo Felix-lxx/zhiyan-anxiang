@@ -123,7 +123,8 @@ try {
     assert.ok(await assistant.locator('.agent-workspace__detail').evaluate(el=>el.scrollWidth<=el.clientWidth+1))
     await page.screenshot({path:resolve(output,`monitor-${width}.png`)})
     await resident.click()
-    assert.equal(await assistant.count(),0,'Resident action returns to the actual 3D viewport')
+    await page.waitForFunction(()=>window.arenaQA.assistantState()===false)
+    assert.equal(await page.evaluate(()=>window.arenaQA.assistantState()),false,'Resident action returns to the actual 3D viewport')
     await page.locator('.resident-pov-hud').waitFor()
     assert.equal(await page.locator('.twin-object-nav').count(),0,'Object picker cannot overlap the resident inspector')
     await page.screenshot({path:resolve(output,`staff-route-${width}.png`)})
@@ -166,7 +167,7 @@ try {
     await assistant.getByText('已停止自动下令',{exact:true}).waitFor()
     await assistant.getByRole('button',{name:'依据',exact:true}).click()
     await assistant.getByRole('button',{name:'回看 00:45 三维现场',exact:true}).click()
-    assert.equal(await assistant.count(),0,'Observation replay closes the assistant before navigation')
+    assert.equal(await page.evaluate(()=>window.arenaQA.assistantState()),false,'Observation replay closes the assistant before navigation')
   }
   assert.deepEqual(errors,[])
   console.log(JSON.stringify({checks:['目标生成→路线预览→确认→人员定位→调整剩余行动→重新比较→确认接续→停止','1440/1366短屏/1024/390 面板内部滚动，无横向溢出','确认按钮与固定标题不重叠'],errors,output},null,2))

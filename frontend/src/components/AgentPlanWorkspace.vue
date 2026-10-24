@@ -6,7 +6,7 @@ import AppIcon from './AppIcon.vue'
 import AgentOutcomeReview from './AgentOutcomeReview.vue'
 
 const props = defineProps<{ apiBaseUrl:string;accessToken:string;drillId:string;active:boolean;historical:boolean;modelAvailable:boolean;focusId?:string;liveFeed?:AgentLiveState|null;connection?:'connecting'|'live'|'stale' }>()
-const emit = defineEmits<{ preview:[people:AgentAssignment[]];focus:[id:string];robot:[];rollcall:[];missions:[];indoor:[doorId?:string];replay:[at:number] }>()
+const emit = defineEmits<{ preview:[people:AgentAssignment[]];residentFocus:[id:string];robot:[];rollcall:[];missions:[];indoor:[doorId?:string];replay:[at:number] }>()
 const api = createApiClient(props.apiBaseUrl, () => props.accessToken)
 const goal = ref('将目标居民分流疏散，重点人员安排护送'), building = ref(''), assist = ref(true), useModel = ref(false)
 const robotBroadcast = ref(false)
@@ -43,13 +43,13 @@ function nextAction() {
   else if (action.kind==='missions') emit('missions')
   else if (action.kind==='indoor') emit('indoor',action.door_id)
   else if (action.kind==='robot') emit('robot')
-  else if (action.kind==='focus' && action.resident_id) emit('focus', action.resident_id)
+  else if (action.kind==='focus' && action.resident_id) emit('residentFocus', action.resident_id)
   else detail.value=action.kind==='review'?'plan':run.value?.status==='completed'?'evidence':'execution'
 }
 function focusResource(key:string) {
   if(key.startsWith('robot:')){emit('robot');return}
   const person=run.value?.execution?.staff.find(staff=>key==='staff:'+staff.id)?.resident_id
-  if(person)emit('focus',person)
+  if(person)emit('residentFocus',person)
 }
 function setRun(value:AgentRun) {
   if(value.drill_status)drillStatus.value=value.drill_status
@@ -210,7 +210,7 @@ onBeforeUnmount(()=>{disposed=true;generation++;pollEpoch++;clearTimeout(timer);
                   <summary>查看 {{item.allocation.bottlenecks.length}} 处共享通道压力</summary>
                   <ul><li v-for="place in item.allocation.bottlenecks" :key="place.edge_id">
                     <div><strong>{{place.name}}</strong><p>本方案途经 {{place.assigned}} 人 · 其他人员当前等待 {{place.waiting}} 人<br />通行能力 {{place.flow_capacity}} 人/秒 · 现场风险 {{place.risk_score}}/100</p></div>
-                    <button type="button" :disabled="busy" @click="emit('focus',place.resident_id)">查看途经居民</button>
+                    <button type="button" :disabled="busy" @click="emit('residentFocus',place.resident_id)">查看途经居民</button>
                   </li></ul>
                 </details>
               </section>
@@ -248,8 +248,8 @@ onBeforeUnmount(()=>{disposed=true;generation++;pollEpoch++;clearTimeout(timer);
           <section v-if="coordination && (coordination.issues.length || coordination.bottlenecks.length)" class="agent-workspace__attention" aria-label="需要关注的现场">
             <h4>先看这些现场</h4>
             <p v-if="(coordination.issue_count??0)>coordination.issues.length" class="agent-workspace__meta">共 {{coordination.issue_count}} 项人员风险，优先列出 {{coordination.issues.length}} 项；全部目标人员持续接受监护。</p>
-            <ul><li v-for="issue in coordination.issues" :key="issue.id"><div><strong>{{issue.label}}</strong><p>{{issue.reason}}</p></div><button type="button" @click="emit('focus',issue.resident_id)"><AppIcon name="target" :size="18" />定位</button></li>
-            <li v-for="place in coordination.bottlenecks" :key="place.edge_id"><div><strong>{{place.name}}</strong><p>{{place.waiting}} 人等待 · 最长累计排队 {{place.max_wait_seconds}} 秒</p></div><button type="button" @click="emit('focus',place.resident_id)">查看队列</button></li></ul>
+            <ul><li v-for="issue in coordination.issues" :key="issue.id"><div><strong>{{issue.label}}</strong><p>{{issue.reason}}</p></div><button type="button" @click="emit('residentFocus',issue.resident_id)"><AppIcon name="target" :size="18" />定位</button></li>
+            <li v-for="place in coordination.bottlenecks" :key="place.edge_id"><div><strong>{{place.name}}</strong><p>{{place.waiting}} 人等待 · 最长累计排队 {{place.max_wait_seconds}} 秒</p></div><button type="button" @click="emit('residentFocus',place.resident_id)">查看队列</button></li></ul>
           </section>
           <section v-if="coordination?.robot.included" class="agent-workspace__robot-live" aria-label="机器人实时执行">
             <div><h4><AppIcon name="robot" :size="18" />机器人协同</h4><button type="button" @click="emit('robot')">查看三维位置</button></div>
@@ -268,7 +268,7 @@ onBeforeUnmount(()=>{disposed=true;generation++;pollEpoch++;clearTimeout(timer);
               <progress :value="step.progress" max="1" :aria-label="step.label+'进度'" />
               <p>{{step.reason}}</p>
               <p v-if="step.execution?.stalled" class="agent-workspace__notice">已 {{step.execution.idle_seconds}} 秒未观察到位置或命令进度变化，请定位现场检查。原指令继续保留。</p>
-              <button v-if="step.resident_ids.length" type="button" @click="emit('focus',step.resident_ids[0]!)">定位这组居民</button>
+              <button v-if="step.resident_ids.length" type="button" @click="emit('residentFocus',step.resident_ids[0]!)">定位这组居民</button>
               <button v-else-if="step.kind==='robot.command'" type="button" @click="emit('robot')">定位机器人</button>
               <template v-if="step.execution">
                 <p v-if="step.execution.total" class="agent-workspace__meta">到场 {{step.execution.arrived}} / {{step.execution.total}} · 受阻 {{step.execution.blocked}} · 正在排队 {{step.execution.queued}}</p>
@@ -276,7 +276,7 @@ onBeforeUnmount(()=>{disposed=true;generation++;pollEpoch++;clearTimeout(timer);
                 <div v-if="expandedStep===step.id" :id="`step-detail-${step.id}`" class="agent-workspace__detail">
                   <ul class="agent-workspace__people">
                     <li v-for="person in step.execution.attention" :key="person.id">
-                      <div><strong>{{person.label}}</strong><button type="button" :aria-label="`定位${person.label}`" @click="emit('focus',person.id)"><AppIcon name="target" :size="16" />定位</button></div>
+                      <div><strong>{{person.label}}</strong><button type="button" :aria-label="`定位${person.label}`" @click="emit('residentFocus',person.id)"><AppIcon name="target" :size="16" />定位</button></div>
                       <p>{{person.behavior}}<br /><span>{{person.location}}</span></p>
                       <p v-if="person.bottleneck&&!person.arrived" class="agent-workspace__meta">当前通道：{{person.bottleneck}} · 累计排队 {{person.queue_seconds}} 秒</p>
                       <p v-if="person.staff_name" class="agent-workspace__meta">{{person.staff_name}} · {{person.responsible||'模拟值守岗位'}} · {{({approaching:'前往会合',escorting:'已经会合，同行中',blocked:'会合路线受阻',completed:'护送结束'} as Record<string,string>)[person.escort_state??'']||'待会合'}}</p>

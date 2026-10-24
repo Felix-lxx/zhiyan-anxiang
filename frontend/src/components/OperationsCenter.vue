@@ -432,9 +432,13 @@ async function assistantNavigate(action: AssistantAction): Promise<void> {
   if (historical) { exitReplay(); await nextTick(); latestCue.value = '已返回实时现场，请核对当前状态后再确认操作。' }
   if (action.kind === 'indoor') { inspectIndoor(action.door_id); return }
   if (action.kind === 'focus' && action.object_kind === 'robot' && displayed.value?.robot) {
+    closeAssistant()
     arena.value?.focusPoint(displayed.value.robot.x, displayed.value.robot.y); return
   }
-  if (action.kind === 'focus' && action.resident_id) { arena.value?.focusResident(action.resident_id); return }
+  if (action.kind === 'focus' && action.resident_id) {
+    closeAssistant()
+    arena.value?.focusResident(action.resident_id); return
+  }
   if (action.kind === 'report') { await openReplay(); return }
   if (action.kind === 'missions' || action.kind === 'events') { drawer.value = action.kind; return }
   if (['command', 'rollcall', 'branch'].includes(action.kind)) { coachOpen.value = true; await nextTick(); trainingLab.value?.openTab(action.kind as 'command' | 'rollcall' | 'branch'); document.querySelector(trainingLab.value ? '.spatial-lab' : '.training-upgrade')?.scrollIntoView({ block: 'nearest', behavior: 'instant' }) }

@@ -718,6 +718,11 @@ function focusPoint(x: number, y: number): void {
 }
 function focusResident(id: string): void {
   const person = props.simulation?.residents.find(p => p.id === id)
+  if (!person) return
+  if (viewMode.value === 'resident' && selectedResident.value === id) {
+    selected.value = { title: person.label, type: person.vulnerable ? '重点关照人员' : '参演居民智能体', detail: person.behavior ?? '等待指令', residentId: person.id, x: person.x, y: person.y }
+    return
+  }
   if (person?.indoor_stage && person.indoor_stage !== 'outdoor') focusIndoorFloor(Math.max(1,Math.ceil(person.current_floor??person.floor??1)),person.building_id)
   selectAccessibleObject({ target: { value: id } } as unknown as Event)
 }
@@ -1325,12 +1330,17 @@ function onContextRestored(): void { recoveringContext.value = false; renderErro
 watch(() => [props.robot, props.simulation, props.highContrast, props.status, props.elapsedSeconds], () => { void nextTick(updateEntities) })
 watch(() => props.fireSourceSelection, () => updateEntities(), { deep: true })
 watch(()=>props.indoorFloor,value=>{if(value!==undefined&&scene)focusIndoorFloor(value)})
+let syncingResidentView = false
 watch(()=>[viewMode.value,activeResident.value?.id,activeResident.value?.current_floor,activeResident.value?.building_id],()=>{
   const person=activeResident.value
   if(!scene||viewMode.value!=='resident'||!person||person.indoor_stage==='outdoor')return
   const floor=Math.max(1,Math.ceil((person.current_floor??person.floor??1)-.00001))
   if(!indoorView.value||floor!==visibleIndoorFloor.value||person.building_id!==visibleIndoorBuilding.value){
-    focusIndoorFloor(floor,person.building_id);viewMode.value='resident';controls.enabled=false
+    if (syncingResidentView) return
+    syncingResidentView = true
+    focusIndoorFloor(floor,person.building_id)
+    viewMode.value='resident';controls.enabled=false
+    queueMicrotask(() => { syncingResidentView = false })
   }
 })
 watch(quality,applyQuality)
