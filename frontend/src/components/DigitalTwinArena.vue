@@ -1427,7 +1427,7 @@ watch(() => [props.routePreview, props.robotRoutePreview], () => updateEntities(
 
       <div v-if="!compact" ref="sceneUtilities" class="scene-utilities" role="group" aria-label="现场显示与车辆工具">
         <label v-if="displayToolsOpen" class="scene-quality">画面品质<select v-model="quality" aria-label="三维画质"><option value="high">精细</option><option value="medium">均衡</option><option value="low">流畅</option></select><small role="status" :title="actorAssetLabel">{{ actorAssetStatus === 'loading' ? '模型加载中' : actorAssetStatus === 'fallback' ? '轻量模型' : status === 'running' && fps ? fps + ' fps' : '静止省电' }}</small></label>
-        <button type="button" :disabled="!simulation?.spatial_network" :title="simulation?.spatial_network ? '显示楼内通道、楼梯与居民位置' : '当前历史场次没有室内空间，请新建连续空间演练'" :aria-pressed="indoorView" @click="showIndoor"><AppIcon name="building" :size="18" />{{ indoorView ? '恢复建筑外观' : '查看楼内透视' }}</button>
+        <button type="button" :disabled="!indoorBuildings.length" :title="indoorBuildings.length ? '显示楼内通道、楼梯与居民位置' : '当前场次没有可观察的室内通道，请检查场景配置或新建连续空间演练'" :aria-pressed="indoorView" @click="showIndoor"><AppIcon name="building" :size="18" />{{ indoorView ? '恢复建筑外观' : '查看楼内透视' }}</button>
         <button v-if="simulation?.environment.indoor" type="button" @click="emit('inspectIndoor')"><AppIcon name="fire" :size="18"/>楼内烟气与门控</button>
         <div v-if="indoorView && indoorBuildings.length" class="scene-floor-controls">
           <select aria-label="观察楼栋" :value="visibleIndoorBuilding" @change="focusIndoorFloor(visibleIndoorFloor??1,($event.target as HTMLSelectElement).value)"><option v-for="building in indoorBuildings" :key="building.id" :value="building.id">{{building.name}}</option></select>

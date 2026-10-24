@@ -352,6 +352,10 @@ async function confirmSpatialAction(): Promise<void> {
   } else if (error.value.includes('重新预览')) {
     latestCue.value = '现场在确认前发生变化，正在按最新路网和人员状态重新预演'
     await previewSpatialAction(intent)
+    if (spatialPreview.value) spatialPreview.value = {
+      ...spatialPreview.value,
+      notice: '现场在确认前发生变化，本次指令尚未执行。已更新预演，请核对新路线和风险后再次确认。 ' + spatialPreview.value.notice,
+    }
   }
 }
 async function commandResidents(context: { residentIds: string[]; exit: 'north' | 'south'; action: 'evacuate' | 'priority_assist' }): Promise<void> {

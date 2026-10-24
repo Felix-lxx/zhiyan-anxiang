@@ -12,7 +12,9 @@ html .operations-center--immersive>.director-stage .scene-utilities { left:var(-
 .scene-floor-controls { display:flex; gap:8px; flex-wrap:wrap; min-width:0; }
 .scene-floor-controls select { min-width:0; max-width:240px; text-overflow:ellipsis; }
 html .operations-center--immersive.detail-panel-open .scene-floor-controls,
-html .operations-center--immersive.detail-panel-open .scene-quality { display:none; }
+/* Explicitly opened display settings stay usable while inspecting a task.
+   The measured toolbar height reserves room for the wrapping controls. */
+html .operations-center--immersive.detail-panel-open .scene-quality { display:flex; }
 html .operations-center--immersive {
   --director-topbar:76px; --director-timeline:176px; --scene-left:112px;
   --scene-bottom:calc(var(--director-timeline) + 14px); --scene-rail-space:20px;

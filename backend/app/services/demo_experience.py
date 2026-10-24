@@ -15,7 +15,7 @@ from app.models.domain import (
 from app.models.operations import DrillEvent, DrillSession, RobotAgent
 from app.services.demo_community import get_or_create_demo_community
 from app.services.scenes import create_scene, ensure_templates, update_charging_shed_parameters
-from app.services.exercise_world import capture_world
+from app.services.exercise_world import capture_world, frozen_world
 
 
 DEMO_SCENE_NAME = "安巷社区三维数字孪生消防演练"
@@ -41,7 +41,8 @@ def ensure_demo_experience(session: Session, owner_username: str) -> tuple:
         .where(Scene.community_id == community.id, Scene.name == DEMO_SCENE_NAME)
         .options(selectinload(Scene.versions))
     )
-    if scene is None:
+    created = scene is None
+    if created:
         scene = create_scene(session, community=community, template_id=template.id, name=DEMO_SCENE_NAME)
     if scene is None or not scene.versions:
         raise RuntimeError("主案例场景初始化失败。")
@@ -56,18 +57,21 @@ def ensure_demo_experience(session: Session, owner_username: str) -> tuple:
     if charging_shed is None:
         raise RuntimeError("主案例缺少充电棚起火点。")
 
-    update_charging_shed_parameters(
-        session,
-        scene=scene,
-        parameters={
-            "fire_source_object_id": charging_shed.id,
-            "start_time": "20:15",
-            "wind_direction": "东北微风",
-            "resident_count": 60,
-            "hydrant_status": "available",
-            "south_lane_status": "restricted",
-        },
-    )
+    # Entry is idempotent: returning to the demo must not overwrite edited
+    # population/resources or create a fresh published version on every click.
+    if created:
+        scene = update_charging_shed_parameters(
+            session,
+            scene=scene,
+            parameters={
+                "fire_source_object_id": charging_shed.id,
+                "start_time": "20:15",
+                "wind_direction": "东北微风",
+                "resident_count": 60,
+                "hydrant_status": "available",
+                "south_lane_status": "restricted",
+            },
+        )
     scene = session.scalar(select(Scene).where(Scene.id == scene.id).options(selectinload(Scene.versions)))
     version = scene.versions[-1]
 
@@ -87,7 +91,10 @@ def ensure_demo_experience(session: Session, owner_username: str) -> tuple:
             DecisionOption(decision_point_id=point.id, label="继续现场复核", consequence="机器人再次采样，响应时间延长并增加烟气暴露风险"),
         ])
 
-    from app.services.scenario_tasks import ensure_standard_tasks
+    from app.services.scenario_tasks import ensure_standard_tasks, missing_tasks
+    if not created and missing_tasks(session, version, 'night_charging_shed_fire') and version.status == SceneStatus.PUBLISHED:
+        scene = update_charging_shed_parameters(session, scene=scene, parameters=dict(version.parameters))
+        version = scene.versions[-1]
     ensure_standard_tasks(session, version, 'night_charging_shed_fire')
 
     scene.status = SceneStatus.PUBLISHED
@@ -96,9 +103,14 @@ def ensure_demo_experience(session: Session, owner_username: str) -> tuple:
 
     drill = session.scalar(
         select(DrillSession)
-        .where(DrillSession.scene_id == scene.id, DrillSession.status.in_(["ready", "running", "paused"]))
+        .where(DrillSession.scene_id == scene.id, DrillSession.scene_version_id == version.id,
+               DrillSession.status.in_(["ready", "running", "paused"]))
         .order_by(DrillSession.created_at.desc())
     )
+    if drill is not None and not (frozen_world(session, drill) or {}).get('tasks'):
+        # Preserve the historical record, but never send a new user into an
+        # unplayable legacy snapshot after the scene itself has been repaired.
+        drill = None
     if drill is None:
         drill = DrillSession(
             scene_id=scene.id,

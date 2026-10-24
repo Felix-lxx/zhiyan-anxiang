@@ -4,8 +4,8 @@ import { mkdirSync } from 'node:fs'
 import { resolve } from 'node:path'
 const { default: playwright } = await import(process.env.PLAYWRIGHT_MODULE || 'playwright')
 assert.ok(process.env.QA_PASSWORD, 'QA_PASSWORD is required')
-const base = process.env.QA_BASE_URL || 'http://127.0.0.1:5176'
-const apiRoot = process.env.QA_API_URL || 'http://127.0.0.1:8013/api/v1'
+const base = process.env.QA_BASE_URL || 'http://127.0.0.1:5173'
+const apiRoot = process.env.QA_API_URL || 'http://127.0.0.1:8000/api/v1'
 const artifacts = resolve('../output/playwright/account-layout')
 mkdirSync(artifacts, { recursive: true })
 const browser = await playwright.chromium.launch({ headless: true, ...(process.env.QA_BROWSER_PATH ? { executablePath: process.env.QA_BROWSER_PATH } : {}) })
@@ -39,8 +39,8 @@ try {
   const initial = await api('/account/profile')
   await api('/account/profile', 'PATCH', { display_name: '页面验收员', organization: '', text_size: 'comfortable', reduced_motion: false, default_community_id: null, revision: initial.revision })
   await page.goto(base + '/login')
-  await page.locator('#username').fill('admin'); await page.locator('#password').fill(process.env.QA_PASSWORD)
-  await page.getByRole('button', { name: '进入工作台', exact: true }).click(); await page.waitForURL('**/projects')
+  // API login already set the HttpOnly cookie on this browser context.
+  await page.waitForURL('**/projects')
   await page.getByRole('button', { name: '打开个人中心', exact: true }).click()
   await page.locator('#profile-name').fill('安巷社区演练负责人')
   await page.locator('#profile-organization').fill('安巷社区物业服务中心')

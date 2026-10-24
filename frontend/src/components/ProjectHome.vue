@@ -187,6 +187,14 @@ onMounted(load)
 .atlas-history__filters{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:16px;align-items:end;margin-bottom:20px}.atlas-history__filters label{display:grid;gap:6px;min-width:0;font-size:var(--ui-meta-size,14px)}.atlas-history__filters input,.atlas-history__filters select{min-width:0;width:100%;min-height:44px;font-size:var(--ui-body-size,16px);padding:8px 12px;border:1px solid var(--border-default);border-radius:var(--radius-sm);background:var(--surface-panel);color:var(--text-primary)}
 .history-filter-actions{grid-column:1/-1;display:flex;align-items:center;gap:12px 24px;flex-wrap:wrap}.history-filter-actions span{margin-right:auto}.history-filter-actions button,.history-pagination button{min-height:44px;border:1px solid var(--border-default);border-radius:var(--radius-sm);padding:8px 14px;font-size:var(--ui-body-size,16px)}.history-pagination{display:flex;align-items:center;justify-content:flex-end;gap:12px;flex-wrap:wrap;margin-top:18px}.history-pagination span{margin-right:auto;font-size:var(--ui-meta-size,14px)}.history-scene-name{display:block;margin-top:4px;font-size:var(--ui-meta-size,14px);color:var(--text-secondary)}.atlas-history button:disabled{opacity:.5;cursor:not-allowed}
 @media(max-width:760px){.atlas-history__filters{grid-template-columns:repeat(2,minmax(0,1fr))}.home-resume{align-items:flex-start;flex-wrap:wrap}.home-resume button{margin-left:auto}}
-@media(max-width:600px){.atlas-sidebar nav button{white-space:nowrap;padding-inline:6px;font-size:14px;gap:6px}}
+@media(max-width:600px){.atlas-sidebar nav button{white-space:normal;padding-inline:6px;font-size:14px;gap:6px}}
+@media(max-width:540px){
+ .atlas-home{grid-template-columns:minmax(0,1fr)}
+ .atlas-sidebar{min-width:0;max-width:100%;padding-inline:8px}
+ .atlas-sidebar nav{display:grid;grid-template-columns:repeat(5,minmax(0,1fr));min-width:0;gap:4px;width:100%}
+ .atlas-sidebar nav button{min-width:0;padding-inline:2px;overflow-wrap:anywhere}
+ .atlas-home__bar>div{min-width:0;flex-wrap:wrap}
+ .atlas-home__bar{height:auto;min-height:55px;flex-wrap:wrap;padding-block:10px}
+}
 @media(max-width:420px){.atlas-history__filters{grid-template-columns:minmax(0,1fr)}}
 </style>

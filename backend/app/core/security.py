@@ -55,7 +55,8 @@ def create_access_token(subject: str, session_id: str | None = None, roles: list
 
 def decode_access_claims(token: str) -> dict:
     settings = get_settings()
-    payload = jwt.decode(token, settings.jwt_secret, algorithms=[settings.jwt_algorithm])
+    payload = jwt.decode(token, settings.jwt_secret, algorithms=[settings.jwt_algorithm],
+                         options={"require": ["sub", "exp", "iat"]})
     if payload.get("typ", "access") != "access":
         raise jwt.InvalidTokenError("Token type is invalid")
     subject = payload.get("sub")

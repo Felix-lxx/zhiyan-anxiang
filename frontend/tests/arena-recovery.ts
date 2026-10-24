@@ -25,7 +25,9 @@ const state = reactive({
   agentPreview: [] as Array<{id:string;route_points:Array<{x:number;y:number;height?:number}>}>,
   agentFeed:null as AgentLiveState|null, connection:undefined as 'connecting'|'live'|'stale'|undefined,
   simulation: {
-    spatial_network: { nodes: [], edges: [] },
+    spatial_network: { nodes: new URLSearchParams(location.search).has('rescue') ? [
+      {id:'home:1:corridor',kind:'corridor',name:'接运楼一层走廊',building_id:'home',floor:1,x:55,y:50,height:0},
+    ] : [], edges: [] },
     world: new URLSearchParams(location.search).has('rescue') ? {
       schema_version: 3, parameters: { start_time: '20:15' }, fire_origin: { x: 20, y: 50 },
       objects: [

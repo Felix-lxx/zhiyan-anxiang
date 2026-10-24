@@ -9,9 +9,12 @@ import app.models.tasks  # noqa: F401
 from app.core.config import get_settings
 from app.core.database import SessionLocal
 from app.core.lifespan import create_lifespan
+from app.core.origins import DEVELOPMENT_ORIGIN_PATTERN
+from app.core.security_logging import configure_security_logging
 
 
 settings = get_settings()
+configure_security_logging()
 
 app = FastAPI(title=settings.app_name, version="1.0.0-beta", lifespan=create_lifespan(settings))
 
@@ -46,7 +49,7 @@ async def security_headers_and_admission(request, call_next):
 app.add_middleware(
     CORSMiddleware,
     allow_origins=settings.cors_origin_list,
-    allow_origin_regex=(r"^https?://(localhost|127\.0\.0\.1|10(?:\.\d{1,3}){3}|192\.168(?:\.\d{1,3}){2}|172\.(?:1[6-9]|2\d|3[01])(?:\.\d{1,3}){2}):5173$" if settings.app_env == "development" else None),
+    allow_origin_regex=(DEVELOPMENT_ORIGIN_PATTERN if settings.app_env == "development" else None),
     allow_credentials=True,
     allow_methods=["GET", "POST", "PATCH", "DELETE", "OPTIONS"],
     allow_headers=["Authorization", "Content-Type"],

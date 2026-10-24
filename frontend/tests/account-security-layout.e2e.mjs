@@ -11,7 +11,6 @@ mkdirSync(output, { recursive:true })
 try {
   const page = await browser.newPage(), errors = []
   page.on('pageerror', error => errors.push(error.message))
-  await page.addInitScript(() => localStorage.setItem('zhiyan_access_token', 'isolated-layout-only'))
   const profile = { username:'layout-admin', role:'系统管理员', display_name:'布局验收', organization:'',
     default_community_id:null, text_size:'comfortable', reduced_motion:true, revision:1,
     updated_at:null, authentication_mode:'account_session' }
@@ -20,6 +19,7 @@ try {
     last_used_at:`2026-10-${String(18-index).padStart(2,'0')}T11:48:16+08:00`, expires_at:'2026-11-18T11:48:16+08:00' }))
   await page.route('**/api/v1/**', async route => {
     const request = route.request(), path = new URL(request.url()).pathname
+    if (path.endsWith('/auth/refresh')) return route.fulfill({ json:{ access_token:'isolated-layout-only', username:profile.username, role:profile.role, expires_in:3600 } })
     if (path.endsWith('/auth/me')) return route.fulfill({ json:{ username:profile.username, role:profile.role } })
     if (path.endsWith('/health')) return route.fulfill({ json:{ status:'healthy', database:{status:'healthy'} } })
     if (path.endsWith('/account/profile')) return route.fulfill({ json:profile })

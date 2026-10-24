@@ -47,6 +47,9 @@ def create_scene(session: Session, *, community: Community, template_id: str, na
     from app.services.scenario_tasks import ensure_standard_tasks
     ensure_standard_tasks(session, scene_version, template.code)
     session.commit()
+    # expire_on_commit=False is used by the running API. A previously loaded
+    # collection otherwise keeps the old published version after a draft insert.
+    session.expire(scene, ["versions"])
     return session.scalar(select(Scene).where(Scene.id == scene.id).options(selectinload(Scene.versions)))
 
 
@@ -105,6 +108,7 @@ def update_scene_parameters(session: Session, *, scene: Scene, parameters: dict)
     else:
         version.parameters = merged_parameters
     session.commit()
+    session.expire(scene, ["versions"])
     return session.scalar(select(Scene).where(Scene.id == scene.id).options(selectinload(Scene.versions)))
 
 

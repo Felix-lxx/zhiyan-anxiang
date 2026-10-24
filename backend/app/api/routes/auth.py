@@ -9,6 +9,7 @@ from sqlalchemy import func, select, update
 from sqlalchemy.orm import Session
 
 from app.core.config import get_settings
+from app.core.origins import verify_browser_origin
 from app.core.database import get_db
 from app.core.security import create_access_token, create_refresh_token, decode_access_claims, hash_password, hash_refresh_token, verify_password
 from app.models.auth import AuthSession, LoginSecurity
@@ -117,7 +118,7 @@ def _record_failed_login(session: Session, username: str) -> None:
     session.commit()
 
 
-@router.post("/login", response_model=LoginResponse)
+@router.post("/login", response_model=LoginResponse, dependencies=[Depends(verify_browser_origin)])
 def login(payload: LoginRequest, response: Response, session: Session = Depends(get_db)) -> LoginResponse:
     """Authenticate the management endpoint; participant devices use drill invite codes."""
     settings = get_settings()
@@ -180,7 +181,7 @@ def get_current_identity(authorization: str | None = Header(default=None), sessi
     return authenticate_access_token(authorization.removeprefix("Bearer ").strip(), session)
 
 
-@router.post("/refresh", response_model=LoginResponse)
+@router.post("/refresh", response_model=LoginResponse, dependencies=[Depends(verify_browser_origin)])
 def refresh_session(response: Response, refresh_token: str | None = Cookie(default=None, alias=REFRESH_COOKIE), session: Session = Depends(get_db), optional: bool = False) -> LoginResponse:
     if not refresh_token or "." not in refresh_token:
         if optional and not refresh_token:
