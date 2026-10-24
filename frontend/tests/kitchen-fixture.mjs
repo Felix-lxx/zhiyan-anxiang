@@ -21,9 +21,15 @@ export function kitchenPreview(parameters=kitchenDefaults){
     edges.push({id:'stairs-'+floor,kind:'stairs',name:'楼梯',start:stair,end:below,start_node_id:stair.id,end_node_id:below.id,width_meters:1.2,status:'open'})
   }
   const source=nodes.find(node=>node.id===`indoor:home:${parameters.fire_floor}:${parameters.fire_room}`)
-  const indoor={building_id:'home',source_zone_id:source.id,source_label:source.name,zones,doors}
+  const equipment_layouts=zones.filter(zone=>zone.kind==='room').map(zone=>{
+    const counter={x:zone.x,y:zone.y-zone.depth*.38,width:zone.width*.82,depth:zone.depth*.2}
+    const position={x:counter.x+counter.width*.375,y:counter.y,height:zone.height}
+    return {room_id:zone.id,counter,gas_valve:{id:zone.id+':gas-valve',kind:'gas_valve',label:zone.name+'燃气阀',room_id:zone.id,floor:zone.floor,position:{x:position.x-counter.width/10,y:position.y,height:zone.height+1.35},approach_node_id:zone.id,approach_position:{x:zone.x,y:zone.y,height:zone.height}},stove:{id:zone.id+':stove',kind:'stove',room_id:zone.id,label:zone.name+'灶台',floor:zone.floor,position,width:counter.width/4-.04,depth:counter.depth,height:.92,ignition_position:{...position,height:zone.height+.92},approach_node_id:zone.id,approach_position:{x:zone.x,y:zone.y,height:zone.height}}}
+  })
+  const stove=equipment_layouts.find(item=>item.room_id===source.id).stove
+  const indoor={building_id:'home',source_zone_id:source.id,source_label:source.name,zones,doors,equipment_layout_version:1,equipment_layouts,devices:equipment_layouts.map(item=>({id:item.gas_valve.id,room_id:item.room_id,state:'open',basis:'initial'}))}
   return {minute:0,fire_level:'初起',smoke_level:'分区发展',risk_level:'关注',route_advice:'查看房门状态并组织居民下楼，燃气任务需核验处置证据。',explanation:'隔离布局验收数据，不连接用户社区。',affected_targets:[source.name],simulation:{
-    world:{schema_version:3,spatial_units:{height_mode:'meters'},parameters,fire_source:{location:{object_id:'home'}},fire_origin:source,objects:[{id:'home',name:'示例住宅楼',type:'building',x:50,y:50,width:16,depth:10,floors:4,entry:{x:50,y:58}}]},
+    world:{schema_version:3,spatial_units:{height_mode:'meters'},parameters,fire_source:{location:{object_id:'home'},device_id:stove.id,ignition_position:stove.ignition_position},fire_origin:source,objects:[{id:'home',name:'示例住宅楼',type:'building',x:50,y:50,width:16,depth:10,floors:4,entry:{x:50,y:58}}]},
     spatial_network:{nodes,edges,stair_width:1.2},road_network:{nodes:[],edges:[]},environment:{indoor,east_hydrant:'available',south_lane:'open',visibility:50},
     fire:{intensity:25,smoke_radius:8,temperature:120},sensors:{temperature:120,smoke_ppm:300,alarm:true},residents:[],helpers:[],vehicles:[],summary:{total:0,evacuated:0,moving:0,vulnerable:0,missing:0},
   }}

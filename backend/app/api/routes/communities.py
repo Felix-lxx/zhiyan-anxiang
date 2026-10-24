@@ -19,7 +19,7 @@ def get_drill_history(community_id: str, page: int = Query(1, ge=1),
                       page_size: int = Query(20, ge=1, le=100), search: str = Query('', max_length=160),
                       status: Literal['all', 'ready', 'running', 'paused', 'ended'] = 'all',
                       scene_id: str | None = None, start: datetime | None = None, end: datetime | None = None,
-                      sort: Literal['newest', 'oldest', 'score'] = 'newest',
+                        sort: Literal['newest', 'oldest', 'score'] = 'newest', include_test: bool = True,
                       identity: AuthenticatedIdentity = Depends(get_current_identity), session: Session = Depends(get_db)):
     if (start and start.tzinfo is None) or (end and end.tzinfo is None):
         raise HTTPException(422, '日期筛选必须包含时区。')
@@ -31,7 +31,7 @@ def get_drill_history(community_id: str, page: int = Query(1, ge=1),
         if community is None or community.owner.username != identity.username:
             raise HTTPException(404, '未找到该社区项目。')
         return history_page(session, community_id, page=page, page_size=page_size, search=search,
-                            status=status, scene_id=scene_id, start=start, end=end, sort=sort)
+                              status=status, scene_id=scene_id, start=start, end=end, sort=sort, include_test=include_test)
     except SQLAlchemyError as exc:
         raise HTTPException(503, '演练记录暂不可用，请重试。') from exc
 

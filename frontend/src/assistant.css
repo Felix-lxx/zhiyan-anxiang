@@ -7,6 +7,9 @@
   scrollbar-color:#557463 #17362e; box-shadow:-12px 16px 48px #0004;
 }
 .scene-assistant * { min-width:0; box-sizing:border-box; }
+.scene-assistant:has(.scene-assistant__run-controls) { grid-template-rows:auto auto minmax(0,1fr) auto; }
+.scene-assistant__run-controls { display:flex; align-items:center; flex-wrap:wrap; gap:8px; padding:8px 14px; border-bottom:1px solid #335347; }
+.scene-assistant__run-controls span { margin-right:auto; font-size:14px; font-variant-numeric:tabular-nums; }
 .scene-assistant h2,.scene-assistant h3,.scene-assistant p { margin:0; }
 .scene-assistant button { display:inline-flex; align-items:center; justify-content:center; gap:8px; min-height:44px; border:1px solid #4b6b5c; border-radius:7px; color:#e5eee0; background:#214238; padding:8px 12px; font:inherit; line-height:1.5; white-space:normal; cursor:pointer; }
 .scene-assistant button:hover:not(:disabled) { background:#315647; }

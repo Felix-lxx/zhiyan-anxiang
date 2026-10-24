@@ -20,7 +20,26 @@ const { RoadVisuals } = await load('roadVisuals')
 const { CrowdRenderer } = await load('crowdRenderer')
 const { presentHelpers, meetingRoute } = await load('helperPresentation')
 const { createRouteGuide } = await load('routeGuide')
-const { cutFloor, stairOpenings, furnitureFits, floorContainsHeight } = await load('indoorGeometry')
+const { cutFloor, stairOpenings, furnitureFits, floorContainsHeight, doorPortal } = await load('indoorGeometry')
+
+test('door portal follows passage orientation and open leaf clears the walking envelope', () => {
+  const room={x:10,y:10,width:4,depth:4}
+  for(const hall of [{x:10,y:16},{x:16,y:10},{x:10,y:4},{x:4,y:10}]) {
+    const portal=doorPortal(room,hall,1.2)
+    assert.equal(Math.hypot(portal.x-room.x,portal.y-room.y),2)
+    const direction=new THREE.Vector3(0,0,1).applyAxisAngle(new THREE.Vector3(0,1,0),portal.rotation)
+    assert.ok(direction.dot(new THREE.Vector3(hall.x-room.x,0,hall.y-room.y).normalize())>.9999)
+    const leaf=new THREE.Mesh(new THREE.BoxGeometry(portal.width,2.1,.045))
+    leaf.position.set(portal.width/2,1.05,0)
+    const hinge=new THREE.Group();hinge.add(leaf);hinge.position.x=portal.hingeX;hinge.rotation.y=portal.openAngle
+    const handle=new THREE.Mesh(new THREE.BoxGeometry(.035,.12,.08))
+    handle.position.set(portal.width-.12,1,-.05);hinge.add(handle)
+    const bounds=new THREE.Box3().setFromObject(hinge)
+    assert.ok(bounds.max.x < -portal.width/2,'Open leaf must stay outside navigable width')
+    assert.ok(bounds.max.z < .03,'Open leaf must not extend into the corridor')
+    leaf.geometry.dispose();leaf.material.dispose();handle.geometry.dispose();handle.material.dispose()
+  }
+})
 
 test('indoor floors leave a stair opening and reject furnishings intersecting walking space', () => {
   const stair={kind:'stairs',width_meters:1.2,start:{x:2,y:2,height:.18},end:{x:2,y:6,height:3.38}}

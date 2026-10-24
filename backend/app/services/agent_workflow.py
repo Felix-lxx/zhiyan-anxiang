@@ -99,7 +99,7 @@ def build_candidates(session, drill, data, scope, run=None):
     if door and door['state'] != 'closed':
         # Compare a different environmental action, even when both exit policies
         # resolve to the same route. Occupancy is checked again during execution.
-        alternatives.append((deepcopy(alternatives[-1][0]), {**deepcopy(alternatives[-1][1]),
+        alternatives.append((deepcopy(alternatives[1][0]), {**deepcopy(alternatives[1][1]),
             'rule': 'containment', 'description': '居民先撤离起火房间，安全条件满足后关闭房门，限制烟气向走廊交换。',
             'door_id': door['id']}))
     results = []
@@ -162,7 +162,10 @@ def build_candidates(session, drill, data, scope, run=None):
         assignment_list = [{"id": pid, "label": population[pid]["label"], "exit": assignments[pid], "vulnerable": population[pid]["vulnerable"],
                             "route_points": routes[assignments[pid]][pid].get("route_points", []), "route_edge_ids": routes[assignments[pid]][pid].get("route_edge_ids", []),
                             "route_reachable": routes[assignments[pid]][pid].get("route_reachable", False)} for pid in ids]
-        results.append({"id": "candidate-" + str(index + 1), "title": '安全撤空与房门控烟' if containment else "当前偏好方案" if preference != "balanced" and index == 0 else "路径优先分流" if index == 0 else "风险与容量分流",
+        title = {'path': '当前偏好方案' if preference != 'balanced' else '路径优先分流',
+                 'risk_capacity': '风险与容量分流', 'north_priority': '北侧出口优先',
+                 'south_priority': '南侧出口优先', 'containment': '安全撤空与房门控烟'}[allocation['rule']]
+        results.append({"id": "candidate-" + str(index + 1), "title": title,
                         "allocation": allocation, "baseline_metrics": baseline_metrics,
                         "groups": groups + containment + [{**deepcopy(step), "battery_required": step.get("battery_required", support["battery_required"])} for step in resource_steps],
                         "robot_support": support, "assignments": assignment_list, "geometry_issues": geometry_issues, "navigation_geometry_version": 1,
@@ -176,7 +179,20 @@ def build_candidates(session, drill, data, scope, run=None):
                                     "score": score, "score_delta": score - baseline_score},
                         "forecast_seconds": 30, "forecast_at": at, "forecast_sequence": data["latest_event_sequence"],
                         "coverage": "30 秒居民与首批可用护送资源预演；" + ("机器人按预计到位时刻计入广播，居民不等待机器人；" if support else "") + "后续批次待资源释放，车辆与人工任务沿用当前安排。"})
-    return distinct_candidates(sorted(results, key=lambda p: (not p["can_apply"], p["metrics"]["exposed"], -p["metrics"]["arrived"], p["metrics"]["queue_seconds"])))
+    # The director workspace deliberately presents at most two actionable
+    # decisions.  More alternatives increase review time without improving
+    # the plan: keep the best forecast and one materially different fallback;
+    # equivalent rules remain visible in ``equivalent_rules``.
+    candidates = distinct_candidates(sorted(results, key=lambda p: (not p["can_apply"], p["metrics"]["exposed"], -p["metrics"]["arrived"], p["metrics"]["queue_seconds"])))
+    if len(candidates) <= 2:
+        return candidates
+    # A containment proposal is a different physical action, not a cosmetic
+    # label. Keep it alongside the best route candidate so the agent cannot
+    # hide the only door-control option while still limiting the UI to two.
+    containment = next((item for item in candidates if item.get('allocation', {}).get('rule') == 'containment'), None)
+    if containment is not None and candidates[0] is not containment:
+        return [candidates[0], containment]
+    return candidates[:2]
 
 
 def relevant_changes(session, run, after):

@@ -30,7 +30,7 @@ export interface AgentCoordination {
   issues:Array<{id:string;resident_id:string;label:string;severity:'danger'|'warning';reason:string}>;issue_count?:number
   bottlenecks:Array<{edge_id:string;name:string;waiting:number;resident_id:string;max_wait_seconds:number}>
   robot:{included:boolean;state:string|null;battery:number|null;reason:string|null;steps_completed:number;steps_total:number}
-  next_action:{kind:'review'|'replan'|'rollcall'|'focus'|'robot'|'observe'|'missions';label:string;reason:string;resident_id?:string|null}
+  next_action:{kind:'review'|'replan'|'rollcall'|'focus'|'robot'|'observe'|'missions'|'indoor';label:string;reason:string;resident_id?:string|null;door_id?:string}
 }
 export interface AgentCaseTask { id:string;label:string;state:string;responsible_role:string;remaining_seconds:number|null;overdue:boolean;blockers:string[];verification_ready:boolean }
 export interface AgentRun {

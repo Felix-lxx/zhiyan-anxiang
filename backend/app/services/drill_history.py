@@ -6,8 +6,12 @@ from app.models.operations import DrillEvent, DrillScore, DrillSession
 
 
 def history_page(session, community_id, *, page=1, page_size=20, search='',
-                 status='all', scene_id=None, start=None, end=None, sort='newest'):
+                 status='all', scene_id=None, start=None, end=None, sort='newest', include_test=True):
     scope = Scene.community_id == community_id
+    if not include_test:
+        from app.services.presentation import fixture_name
+        scope = scope & ~fixture_name(Scene.name) & ~fixture_name(DrillSession.name)
+        scope = scope & ~((DrillSession.name.startswith('另一种选择')) & (DrillSession.elapsed_seconds == 0) & (DrillSession.status != 'running'))
     filters = [scope]
     if search.strip():
         filters.append(or_(DrillSession.name.icontains(search.strip(), autoescape=True),
@@ -28,7 +32,10 @@ def history_page(session, community_id, *, page=1, page_size=20, search='',
     population = select(DrillEvent.payload['world']['parameters']['resident_count'].as_integer()).where(
         DrillEvent.drill_session_id == DrillSession.id, DrillEvent.event_type == 'drill.created'
     ).order_by(DrillEvent.sequence).limit(1).correlate(DrillSession).scalar_subquery()
-    query = select(DrillSession, Scene.name, DrillScore, population).join(
+    source_type = select(DrillEvent.payload['world']['parameters']['fire_source_type'].as_string()).where(
+        DrillEvent.drill_session_id == DrillSession.id, DrillEvent.event_type == 'drill.created'
+    ).order_by(DrillEvent.sequence).limit(1).correlate(DrillSession).scalar_subquery()
+    query = select(DrillSession, Scene.name, DrillScore, population, source_type).join(
         Scene, Scene.id == DrillSession.scene_id).outerjoin(DrillScore, DrillScore.drill_session_id == DrillSession.id)
     order = [DrillSession.created_at.desc(), DrillSession.id.desc()]
     if sort == 'oldest':
@@ -38,13 +45,14 @@ def history_page(session, community_id, *, page=1, page_size=20, search='',
     now = datetime.now(UTC)
 
     def serialize(row):
-        drill, scene_name, score, residents = row
+        drill, scene_name, score, residents, fire_source_type = row
+        from app.services.presentation import drill_label
         created = drill.created_at.replace(tzinfo=UTC) if drill.created_at.tzinfo is None else drill.created_at
         elapsed = drill.elapsed_seconds
         if drill.status == 'running' and drill.started_at:
             started = drill.started_at.replace(tzinfo=UTC) if drill.started_at.tzinfo is None else drill.started_at
             elapsed += max(0, int((now - started).total_seconds() * drill.time_scale))
-        return dict(id=drill.id, sceneId=drill.scene_id, sceneName=scene_name, name=drill.name,
+        return dict(id=drill.id, sceneId=drill.scene_id, sceneName=scene_name, name=drill_label(drill.name, {'parameters': {'fire_source_type': fire_source_type}}),
                     status=drill.status, created_at=created.isoformat(), elapsed_seconds=max(0, elapsed),
                     resident_count=max(1, min(1000, residents)) if residents is not None else None,
                     score=None if score is None else dict(total_score=score.total_score,

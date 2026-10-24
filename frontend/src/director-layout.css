@@ -18,7 +18,8 @@ html .operations-center--immersive {
   --scene-bottom:calc(var(--director-timeline) + 14px); --scene-rail-space:20px;
   --scene-inspector-width:380px; --scene-tools-top:calc(var(--scene-panel-top,84px) + 148px);
 }
-html .operations-center--immersive>.director-topbar { height:var(--director-topbar); min-height:var(--director-topbar); padding-inline:22px; gap:24px; box-sizing:border-box; }
+html .operations-center--immersive>.director-topbar { position:fixed; inset:0 0 auto; z-index:130; height:var(--director-topbar); min-height:var(--director-topbar); padding-inline:22px; gap:24px; box-sizing:border-box; }
+html .operations-center--immersive>.director-stage { margin-top:var(--director-topbar); }
 html .operations-center--immersive>.director-stage { overflow:hidden; min-height:0; height:calc(100dvh - var(--director-topbar)); }
 html .operations-center--immersive>.director-stage>.twin-stage,
 html .operations-center--immersive .twin-stage__viewport { inset:0; width:100%; height:100%; min-height:0; }
@@ -111,6 +112,8 @@ html .operations-center--immersive.coach-open>.director-stage :is(.director-metr
 @media(min-width:1101px) {
   html .operations-center--immersive { --assistant-pane-width:clamp(400px,34vw,480px); }
   html .operations-center--immersive.assistant-open>.director-stage { width:calc(100% - var(--assistant-pane-width)); }
+  html .operations-center--immersive.drawer-open>.director-stage { width:calc(100% - var(--assistant-pane-width)); }
+  html .operations-center--immersive.drawer-open>.director-stage .director-drawer { position:fixed; inset:var(--director-topbar) 0 0 auto; width:var(--assistant-pane-width); border-radius:0; border-right:0; border-bottom:0; overflow:hidden; }
   html .operations-center--immersive>.scene-assistant { inset:var(--director-topbar) 0 0 auto; width:var(--assistant-pane-width); border-radius:0; box-shadow:none; border-right:0; border-bottom:0; }
   html .operations-center--immersive[data-mode=replay]>.scene-assistant { inset:0 0 0 auto; }
   html .operations-center--immersive.assistant-open>.atlas-replay { right:var(--assistant-pane-width); }
@@ -121,6 +124,13 @@ html .operations-center--immersive.coach-open>.director-stage :is(.director-metr
   html .operations-center--immersive.assistant-open .atlas-replay__world>nav { position:static; transform:none; flex-wrap:wrap; justify-content:center; flex-shrink:0; }
   html .operations-center--immersive.assistant-open .atlas-replay__header small { display:none; }
 }
+/* A focused task owns the compact viewport; the topbar stays available.
+   Closing the drawer restores the same scene, tools and timeline. */
+@media(max-width:1100px) {
+  html .operations-center--immersive.drawer-open>.director-stage .director-drawer { position:fixed; inset:calc(var(--director-topbar) + 8px) 8px 8px; width:auto; max-height:none; overflow:hidden; }
+  html .operations-center--immersive.drawer-open>.director-stage>:not(.director-drawer):not(.ui-toast) { visibility:hidden; }
+}
+html .operations-center--immersive.drawer-open>.director-stage .director-drawer>.drawer-list { flex:1; min-height:0; overscroll-behavior:contain; }
 @media(min-width:761px) and (max-width:1100px) {
   html .operations-center--immersive { --scene-left:90px; --scene-inspector-width:320px; --scene-tools-top:calc(var(--scene-panel-top,84px) + 184px); }
   html .atlas-director-modes { width:64px; }
@@ -169,10 +179,10 @@ html .operations-center--immersive.coach-open>.director-stage :is(.director-metr
   html .operations-center--immersive.coach-open>.director-stage :is(.twin-inspector,.resident-pov-hud),
   html .operations-center--immersive.space-preview-open>.director-stage :is(.training-panel,.director-metrics,.twin-views,.spatial-tool-rack,.indoor-toggle,.resident-pov-hud) { display:none; }
   html .operations-center--immersive>.director-stage .spatial-action-preview.spatial-action-preview--immersive { inset:var(--scene-panel-top,122px) 8px var(--scene-bottom) var(--scene-left); width:auto; max-height:none; }
-  html .operations-center--immersive.assistant-open>.director-topbar,
   html .operations-center--immersive.assistant-open>.director-stage :is(.director-rail,.exercise-timeline) { visibility:hidden; }
   html .operations-center--immersive>.scene-assistant,
-  html .operations-center--immersive[data-mode=replay]>.scene-assistant { inset:8px; width:auto; }
+  html .operations-center--immersive[data-mode=replay]>.scene-assistant { inset:calc(var(--director-topbar) + 8px) 8px 8px; width:auto; }
+  html .operations-center--immersive[data-mode=replay]>.scene-assistant { top:8px; }
   html .operations-center--immersive>.director-stage .spatial-tool-rack:has(.resident-command-inline) { width:min(300px,calc(100% - var(--scene-left))); }
   html .operations-center--immersive>.director-stage .resident-command-inline { position:static; inset:auto; grid-column:1/-1; grid-template-columns:1fr; }
   html .operations-center--immersive .exercise-timeline { padding:100px 8px 8px; }

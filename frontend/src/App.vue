@@ -38,10 +38,11 @@ const activeView = computed<AppView>(() => {
 const participantDrillId = computed(() => route.name === 'participant-invite' ? String(route.params.drillId ?? '') : '')
 const participantInviteCode = computed(() => route.name === 'participant-invite' ? String(route.query.code ?? '') : '')
 const api = createApiClient(apiBaseUrl, () => accessToken.value)
-async function refreshSessionToken(): Promise<string | null> {
+async function refreshSessionToken(optional = false): Promise<string | null> {
   const refresh = async (): Promise<string | null> => {
   try {
-    const payload = await api.post<LoginResponse>('/auth/refresh', undefined, { auth: false })
+    const payload = await api.post<LoginResponse | null>('/auth/refresh' + (optional ? '?optional=true' : ''), undefined, { auth: false })
+    if (!payload) return null
     accessToken.value = payload.access_token
     activeUsername.value = payload.username
     activeRole.value = payload.role
@@ -118,7 +119,7 @@ async function joinByCode(code: string): Promise<void> {
 }
 
 async function restoreSession(): Promise<void> {
-  if (!accessToken.value && !await refreshSessionToken()) { sessionReady.value = true; return }
+  if (!accessToken.value && !await refreshSessionToken(true)) { sessionReady.value = true; return }
 
   try {
     const payload = await api.get<CurrentUser>('/auth/me')

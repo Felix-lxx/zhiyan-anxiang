@@ -72,6 +72,29 @@ const autoStartAttempted = ref(false)
 const error = ref(''), form = ref({ name: '', time_scale: 1, training_mode: 'teaching' as 'teaching'|'assessment' })
 type DirectorDrawerName = 'none' | 'missions' | 'indoor' | 'events' | 'branches' | 'report' | 'more' | 'participant' | 'settings' | 'rollcall'
 const indoorFocus = ref<{buildingId:string;floor:number}|null>(null)
+const selectedIndoorDoor = ref<string>()
+const focusedTaskId = ref<string>()
+async function inspectTask(id:string) {
+  if(!displayed.value?.tasks.some(task=>task.id===id))return
+  closeFloatingPanels(); focusedTaskId.value=id; drawer.value='missions'
+  await nextTick()
+  document.getElementById('focused-task-'+id)?.focus({preventScroll:true})
+}
+function inspectDevice(deviceId:string) {
+  const task=displayed.value?.tasks.find(item=>item.target_device_id===deviceId)
+  if(task)void inspectTask(task.id)
+  else inspectIndoor()
+}
+watch(()=>current.value?.id,()=>{focusedTaskId.value=undefined})
+watch(() => current.value?.id, () => { selectedIndoorDoor.value=undefined; indoorFocus.value=null })
+function inspectIndoor(doorId?:string) {
+  const indoor=displayed.value?.simulation?.environment.indoor
+  const door=indoor?.doors.find(item=>item.id===doorId)
+  closeFloatingPanels()
+  selectedIndoorDoor.value=door?.id
+  if(door)arena.value?.focusIndoorFloor(door.floor,indoor?.building_id)
+  drawer.value='indoor'
+}
 type DirectorPanel = DirectorDrawerName | 'assistant' | 'guide' | 'comparison' | 'branch-evidence'
 const activePanel = ref<DirectorPanel>('none')
 let panelGeneration = 0
@@ -168,6 +191,7 @@ const orderedTasks = computed(() => [...(displayed.value?.tasks ?? [])].sort((a,
   const priority=(task:DrillTask)=>task.overdue?0:task.verification_ready?1:(task.remaining_seconds??Number.POSITIVE_INFINITY)<=30?2:task.status==='completed'?4:3
   return priority(a)-priority(b)||(a.remaining_seconds??Number.POSITIVE_INFINITY)-(b.remaining_seconds??Number.POSITIVE_INFINITY)
 }))
+const visibleTasks=computed(()=>focusedTaskId.value?orderedTasks.value.filter(task=>task.id===focusedTaskId.value):orderedTasks.value)
 const drawerTitle = computed(() => ({ none: '现场工具', missions: '处置任务', indoor:'楼内人员与烟气', events: '事件证据', branches: '比较另一种决策', report: '本场复盘', more: '更多现场工具', participant: '手机参演', settings: '场次与显示', rollcall: '集合清点' } satisfies Record<DirectorDrawerName, string>)[drawer.value])
 const displayClock = computed(() => formatClock(displayed.value?.elapsed_seconds ?? 0))
 function formatClock(value: number): string { return `${String(Math.floor(value / 60)).padStart(2,'0')}:${String(value % 60).padStart(2,'0')}` }
@@ -378,7 +402,7 @@ async function downloadReport(): Promise<void> {
   try { const report = await api.request<Record<string, unknown>>(`${props.apiBaseUrl}/drills/${current.value.id}/report`, { headers: headers() }); const blob = new Blob([JSON.stringify(report, null, 2)], { type: 'application/json;charset=utf-8' }); const url = URL.createObjectURL(blob), anchor = document.createElement('a'); anchor.href = url; anchor.download = `${current.value.name}-复盘报告.json`; anchor.click(); URL.revokeObjectURL(url) }
   catch (cause) { error.value = cause instanceof Error ? cause.message : '请先结束演练并生成评分。' }
 }
-function closeFloatingPanels(): void { panelGeneration++; activePanel.value = 'none'; branchEvidence.value = null; clearSpatialPreview() }
+function closeFloatingPanels(): void { panelGeneration++; focusedTaskId.value=undefined; activePanel.value = 'none'; branchEvidence.value = null; clearSpatialPreview() }
 function toggleAssistant(): void { const next = !assistantOpen.value; closeFloatingPanels(); assistantOpen.value = next }
 function openAssistant(context?: AssistantFocusContext | null): void { if (context !== undefined) assistantFocus.value = context; closeFloatingPanels(); assistantOpen.value = true }
 function updateAssistantContext(context: AssistantSceneContext | null): void { assistantFocus.value = context }
@@ -402,6 +426,7 @@ async function assistantNavigate(action: AssistantAction): Promise<void> {
     return
   }
   if (historical) { exitReplay(); await nextTick(); latestCue.value = '已返回实时现场，请核对当前状态后再确认操作。' }
+  if (action.kind === 'indoor') { inspectIndoor(action.door_id); return }
   if (action.kind === 'focus' && action.object_kind === 'robot' && displayed.value?.robot) {
     arena.value?.focusPoint(displayed.value.robot.x, displayed.value.robot.y); return
   }
@@ -450,7 +475,7 @@ onBeforeUnmount(() => { desiredDrillId = ''; stopLive?.(); clearSpatialPreview()
 </script>
 
 <template>
-  <main id="main-content" class="operations-center operations-center--immersive atlas-director" :data-mode="directorMode" data-ui-theme="immersive" :class="{ 'coach-open': coachVisible, 'detail-panel-open': detailPanelOpen, 'assistant-open': assistantOpen, 'space-preview-open': spatialPreviewBusy || Boolean(spatialPreview) }" :data-replay="Boolean(replay)">
+  <main id="main-content" class="operations-center operations-center--immersive atlas-director" :data-mode="directorMode" data-ui-theme="immersive" :class="{ 'coach-open': coachVisible, 'detail-panel-open': detailPanelOpen, 'drawer-open': drawer !== 'none', 'assistant-open': assistantOpen, 'space-preview-open': spatialPreviewBusy || Boolean(spatialPreview) }" :data-replay="Boolean(replay)">
     <section v-if="loading || indexLoading || drillLoading" class="immersive-loading scene-entry-state" aria-busy="true" aria-live="polite">
       <AppIcon name="building" :size="32" />
       <h1>{{ loading ? '正在读取社区场景' : indexLoading ? '正在读取演练场次' : '正在恢复演练现场' }}</h1>
@@ -466,12 +491,12 @@ onBeforeUnmount(() => { desiredDrillId = ''; stopLive?.(); clearSpatialPreview()
     <template v-else-if="displayed">
       <ReplayWorkspace v-if="directorMode==='replay'" ref="replayWorkspace" :drill="current" :displayed="displayed" :at="replayAt" :playing="replayPlaying" :loading="replayLoading" :busy="busy" @back="exitReplay" @seek="seekReplay" @play="replayPlaying=!replayPlaying" @fork="forkReplay" @compare="compareBranches" @export="downloadReport" @assistant="openReplayAssistant"/>
       <UiToast v-if="directorMode==='replay'&&error" class="atlas-replay-error" :message="error" tone="danger" @dismiss="error=''"/>
-      <SceneAssistant :key="current.id" :open="assistantOpen" :api-base-url="apiBaseUrl" :access-token="accessToken" :drill-id="current.id" :drill-name="current.name" :live-seconds="current.elapsed_seconds" :at-seconds="directorMode === 'replay' ? replayAt : replay?.at_seconds ?? null" :focus-context="assistantFocus" :agent-feed="agentFeed" :connection="socketState" @plan-preview="people=>routePreview=people" @close="closeAssistant" @navigate="assistantNavigate" />
+      <SceneAssistant :key="current.id" :open="assistantOpen" :api-base-url="apiBaseUrl" :access-token="accessToken" :drill-id="current.id" :drill-name="current.name" :drill-status="current.status" :busy="busy" @state-action="act" :live-seconds="current.elapsed_seconds" :at-seconds="directorMode === 'replay' ? replayAt : replay?.at_seconds ?? null" :focus-context="assistantFocus" :agent-feed="agentFeed" :connection="socketState" @plan-preview="people=>routePreview=people" @close="closeAssistant" @navigate="assistantNavigate" />
       <DirectorTopbar v-show="directorMode!=='replay'" :name="current.name" :subtitle="(current.engine_version ?? 1) >= 2 ? '场景配置已冻结 · 三维现场实时运行' : '历史场次 · 固定主案例模型'" :socket-state="socketState" :status-label="statusLabel" :display-clock="displayClock" :drill-status="current.status" :busy="busy" :coach-open="coachVisible" :replay="Boolean(replay)" @back="emit('back')" @toggle-coach="toggleCoach" @action="act" @create="createDrill" />
       <section v-show="directorMode!=='replay'" class="director-stage">
         <nav class="atlas-director-modes" aria-label="导演台模式"><button :aria-pressed="directorMode==='observe'" @click="directorMode='observe';closeFloatingPanels()"><AppIcon name="eye"/>观察</button><button :aria-pressed="directorMode==='command'" @click="directorMode='command';closeFloatingPanels()"><AppIcon name="robot"/>指挥</button><button @click="openReplay"><AppIcon name="history"/>复盘</button></nav>
         <GuidedExercise v-if="coachOpen" v-show="coachVisible" @close="closeCoach" :drill="displayed" :busy="busy" :replay="Boolean(replay)" @indoor="arena?.showIndoor()" @start="act('start')" @resume="act('resume')" @finish="act('end')" @retry="createDrill" @live="leaveReplay" @tasks="toggleDrawer('missions')" @compare="toggleDrawer('branches')" @dispatch="dispatchTask" @assign="assignTask" @locate="locateTask" @broadcast="robot('broadcast')" @assist="ids => commandResidents({ residentIds: ids, exit: 'north', action: 'priority_assist' })" @evacuate="(ids, exit) => commandResidents({ residentIds: ids, exit, action: 'evacuate' })" @focus="id => arena?.focusResident(id)" @task="taskAction" @block="id => inject('channel_blocked', { road_edge_id: id })" @reopen="reopenRoad" @seek="seekReplay"><SpatialTrainingLab v-if="(current.engine_version ?? 1) >= 3" ref="trainingLab" :drill="displayed" :api-base-url="apiBaseUrl" :access-token="accessToken" :replay="Boolean(replay)" @updated="updateFromLab" @forked="forkFromLab" @select="ids => arena?.selectResidents(ids)" @preview="people => routePreview = people as Resident[]" @focus="id => arena?.focusResident(id)" @compare="compareEditable" /><section v-else class="training-upgrade"><h2>当前场次使用历史模型</h2><p>新建连续空间训练，启用楼内行走、路线预览、集合核验与历史重做；原场次不会删除或改写。</p><button :disabled="busy" @click="createDrill">新建连续空间训练</button></section></GuidedExercise>
-<DigitalTwinArena :key="current.id" ref="arena" :route-preview="routePreview" :robot-route-preview="spatialPreview && ['robot', 'vehicle'].includes(spatialPreview.kind) ? spatialPreview.route_points : []" :operation-preview="spatialPreview" :operation-busy="spatialPreviewBusy || Boolean(spatialPreview && busy)" @selection="ids => trainingLab?.selectIds(ids)" @context-selection="updateAssistantContext" @ask-assistant="openAssistant" :status="replay ? 'paused' : current.status" :elapsed-seconds="displayed.elapsed_seconds" :robot="displayed.robot" :simulation="displayed.simulation" :events="displayed.events" :interactive="!replay && current.status === 'running' && !busy" :effects-enabled="effectsEnabled" :camera-enabled="cameraEnabled && !replay" :high-contrast="highContrast" @inject="inject" @robot-command="robot" @preview-action="previewSpatialAction" @confirm-action="confirmSpatialAction" @cancel-action="clearSpatialPreview" @reopen-road="reopenRoad" @dispatch-vehicle="openVehicleDispatch" @inspect-indoor="toggleDrawer('indoor')" @indoor-focus="value=>indoorFocus=value" />
+<DigitalTwinArena :key="current.id" ref="arena" :route-preview="routePreview" :robot-route-preview="spatialPreview && ['robot', 'vehicle'].includes(spatialPreview.kind) ? spatialPreview.route_points : []" :operation-preview="spatialPreview" :operation-busy="spatialPreviewBusy || Boolean(spatialPreview && busy)" @selection="ids => trainingLab?.selectIds(ids)" @context-selection="updateAssistantContext" @ask-assistant="openAssistant" :status="replay ? 'paused' : current.status" :elapsed-seconds="displayed.elapsed_seconds" :robot="displayed.robot" :simulation="displayed.simulation" :events="displayed.events" :interactive="!replay && current.status === 'running' && !busy" :effects-enabled="effectsEnabled" :camera-enabled="cameraEnabled && !replay" :high-contrast="highContrast" @inject="inject" @robot-command="robot" @preview-action="previewSpatialAction" @confirm-action="confirmSpatialAction" @cancel-action="clearSpatialPreview" @reopen-road="reopenRoad" @dispatch-vehicle="openVehicleDispatch" @inspect-device="inspectDevice" @inspect-indoor="inspectIndoor" @indoor-focus="value=>indoorFocus=value" />
         <aside class="director-metrics" aria-label="现场关键态势">
           <div><span>火势指数</span><strong>{{ displayed.simulation.fire.intensity }}</strong></div>
           <div><span>烟气暴露</span><strong>{{ displayed.simulation.summary.smoke_exposed ?? 0 }}<small>人</small></strong></div>
@@ -484,13 +509,14 @@ onBeforeUnmount(() => { desiredDrillId = ''; stopLive?.(); clearSpatialPreview()
         <UiDrawer v-if="drawer !== 'none'" :key="drawer" :section="drawer" v-slot="{ section: drawer }" class="director-drawer" :title="drawerTitle" :subtitle="replay ? '历史时刻 ' + displayClock : '与当前场次实时联动'" @close="closeFloatingPanels">
           <AssemblyRollcall v-if="drawer==='rollcall'" :people="displayed.simulation.residents" :busy="busy" :running="!replay&&current.status==='running'" @confirm="confirmRollcall" @focus="id=>{closeFloatingPanels();arena?.focusResident(id)}"/>
           <div v-else-if="drawer==='indoor' && displayed.simulation?.environment.indoor" class="drawer-list">
-            <IndoorFirePanel :state="displayed.simulation.environment.indoor" :residents="displayed.simulation.residents" :active-floor="indoorFocus?.buildingId===displayed.simulation.environment.indoor.building_id?indoorFocus.floor:undefined" :readonly="Boolean(replay)||current.status!=='running'" :busy="busy" @door="value=>requestDrill('/indoor/doors','POST',value,'房门状态已更新，烟气与通行同步改变')" @focus="floor=>arena?.focusIndoorFloor(floor)" @resident="id=>{closeFloatingPanels();arena?.focusResident(id)}" @select="ids=>{closeFloatingPanels();arena?.selectResidents(ids)}"/>
+            <IndoorFirePanel :tasks="displayed.tasks" @task="inspectTask" :selected-door-id="selectedIndoorDoor" :state="displayed.simulation.environment.indoor" :residents="displayed.simulation.residents" :active-floor="indoorFocus?.buildingId===displayed.simulation.environment.indoor.building_id?indoorFocus.floor:undefined" :readonly="Boolean(replay)||current.status!=='running'" :busy="busy" @door="value=>requestDrill('/indoor/doors','POST',value,'房门状态已更新，烟气与通行同步改变')" @focus="floor=>{selectedIndoorDoor=undefined;arena?.focusIndoorFloor(floor)}" @resident="id=>{closeFloatingPanels();arena?.focusResident(id)}" @select="ids=>{closeFloatingPanels();arena?.selectResidents(ids)}"/>
           </div>
           <div v-else-if="drawer === 'missions'" class="drawer-list">
             <p role="status">待处置任务 {{activeTaskCount}} 项 · 运行中指令 {{activeCommands.length}} 条 · 待清点 {{uncountedArrivals.length}} 人</p><button v-if="uncountedArrivals.length" type="button" @click="openRollcall">开始集合清点</button>
             <section v-if="verificationTasks.length && !replay && current.status==='running'" class="verification-priority" aria-label="优先核验任务"><h3>先完成核验</h3><p>{{verificationTasks.length}} 项已满足提交条件，证据提交后才计处置完成。</p></section>
-            <TaskWorkflow v-for="task in orderedTasks" :key="task.id" :task="task" :running="!replay && current.status === 'running'" :readonly="Boolean(replay)" :busy="busy" :assignees="taskAssignees(task)" director @assign="participantId => assignTask(task.id, participantId)" @action="(action, evidence) => taskAction(task.id, action, evidence)" @locate="locateTask(task)" @dispatch="dispatchTask(task)" />
-            <button v-if="displayed.simulation?.environment.indoor" type="button" @click="toggleDrawer('indoor')">查看楼内人员、烟气与房门</button>
+<button v-if="focusedTaskId" type="button" @click="focusedTaskId=undefined">返回全部处置任务</button>
+            <TaskWorkflow v-for="task in visibleTasks" :key="task.id" :id="'focused-task-'+task.id" tabindex="-1" :task="task" :running="!replay && current.status === 'running'" :readonly="Boolean(replay)" :busy="busy" :assignees="taskAssignees(task)" director @assign="participantId => assignTask(task.id, participantId)" @action="(action, evidence) => taskAction(task.id, action, evidence)" @locate="locateTask(task)" @dispatch="dispatchTask(task)" />
+            <button v-if="displayed.simulation?.environment.indoor" type="button" @click="inspectIndoor()">查看楼内人员、烟气与房门</button>
             <ResponseStaffPanel :staff="responseStaff" :participants="current.participants" :busy="busy" :ended="current.status==='ended' || Boolean(replay)" @bind="bindStaff" />
             <VehicleDispatchPanel :vehicles="displayed.simulation.vehicles ?? []" :nodes="displayed.simulation.road_network?.nodes ?? []" :candidates="displayed.simulation.transfer_candidates ?? []" :selected-id="selectedVehicleId" :drill-status="current.status" :running="!replay && current.status === 'running'" :busy="busy || spatialPreviewBusy" @preview="previewSpatialAction" @command="(id, command) => requestDrill('/vehicles', 'POST', { vehicle_id: id, command }, '车辆任务已更新，现场位置与执行记录已同步')" @focus="vehicle => { closeFloatingPanels(); arena?.focusPoint(vehicle.x, vehicle.y) }" />
             <ExecutionFeedback v-if="!replay" :commands="current.commands ?? []" :score="current.score_preview" :paused="current.status === 'paused'" @focus="id => { closeFloatingPanels(); arena?.focusResident(id) }" @evidence="at => seekReplay(at)" @ask="askAboutCommand" />

@@ -22,6 +22,7 @@ from app.core.config import get_settings
 from app.services.connection_security import consume_ticket, digest as credential_digest, invitation_for, issue_ticket, normalize_code, validate_ticket_owner
 from app.models.tasks import DecisionTask
 from app.schemas.operations import BranchCompareRequest, DrillAction, DrillCreate, EventInject, ParticipantAction, ResidentCommand, RobotCommand, ParticipantHeartbeat, ParticipantJoin, TaskAction, TaskAssignment, DirectorConfig
+from app.services.presentation import drill_label
 from app.services.drill_simulation import plan_route, simulate_residents
 from app.services.navigation_geometry import clear_segment
 from app.services.exercise_world import capture_world, frozen_world, projected_tasks
@@ -529,6 +530,8 @@ def calculate_score_data(session: Session, drill: DrillSession, events: list[Dri
             ("演练完整性", 5 if any(e.event_type == "drill.ended" for e in history) else 0, 5, "drill.ended", "场次结束并冻结结果"),
         ]
         details = [{"name": name, "score": value, "max_score": maximum, "evidence": explanation, "event_ids": [e.id for e in history if e.event_type == kind], "at_seconds": next((e.elapsed_seconds for e in reversed(history) if e.event_type == kind), 0)} for name, value, maximum, kind, explanation in criteria]
+        if world.get('outdoor_smoke_domain') == 'exterior_v1':
+            details[1]['evidence'] += '；本场为室外烟羽模型，暴露从进入室外通道累计，不模拟楼内渗透'
         return {"version": 2, "total_score": sum(d["score"] for d in details), "details": details, "recommendations": [d["name"] + "：" + d["evidence"] for d in details if d["score"] < d["max_score"]] or ["本轮所有结果指标已达标，可调整扰动重新验证。"]}
     events = events if events is not None else list(session.scalars(select(DrillEvent).where(DrillEvent.drill_session_id == drill.id)))
     event_types = {event.event_type for event in events}
@@ -851,7 +854,7 @@ def snapshot(session: Session, drill: DrillSession) -> dict:
     score_preview = calculate_score_data(session, drill, all_events, simulation)
     derived_commands = command_feedback(all_events, simulation, live_robot, elapsed, drill.status)
     return {
-        "id": drill.id, "name": drill.name, "status": drill.status, "time_scale": drill.time_scale,
+        "id": drill.id, "name": drill_label(drill.name, world), "status": drill.status, "time_scale": drill.time_scale,
         "elapsed_seconds": elapsed, "participants": participant_state,
         "events": [{"id": e.id, "sequence": e.sequence, "event_type": e.event_type, "actor": e.actor, "message": e.message, "elapsed_seconds": e.elapsed_seconds, "payload": {k: v for k, v in e.payload.items() if k not in {"world", "token_hash", "participant_token"}}} for e in events],
         "robot": live_robot,

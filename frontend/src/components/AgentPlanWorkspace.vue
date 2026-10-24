@@ -6,7 +6,7 @@ import AppIcon from './AppIcon.vue'
 import AgentOutcomeReview from './AgentOutcomeReview.vue'
 
 const props = defineProps<{ apiBaseUrl:string;accessToken:string;drillId:string;active:boolean;historical:boolean;modelAvailable:boolean;focusId?:string;liveFeed?:AgentLiveState|null;connection?:'connecting'|'live'|'stale' }>()
-const emit = defineEmits<{ preview:[people:AgentAssignment[]];focus:[id:string];robot:[];rollcall:[];missions:[];replay:[at:number] }>()
+const emit = defineEmits<{ preview:[people:AgentAssignment[]];focus:[id:string];robot:[];rollcall:[];missions:[];indoor:[doorId?:string];replay:[at:number] }>()
 const api = createApiClient(props.apiBaseUrl, () => props.accessToken)
 const goal = ref('将目标居民分流疏散，重点人员安排护送'), building = ref(''), assist = ref(true), useModel = ref(false)
 const robotBroadcast = ref(false)
@@ -41,6 +41,7 @@ function nextAction() {
   if (action.kind==='replan') void act('replan')
   else if (action.kind==='rollcall') emit('rollcall')
   else if (action.kind==='missions') emit('missions')
+  else if (action.kind==='indoor') emit('indoor',action.door_id)
   else if (action.kind==='robot') emit('robot')
   else if (action.kind==='focus' && action.resident_id) emit('focus', action.resident_id)
   else detail.value=action.kind==='review'?'plan':run.value?.status==='completed'?'evidence':'execution'
@@ -193,7 +194,8 @@ onBeforeUnmount(()=>{disposed=true;generation++;pollEpoch++;clearTimeout(timer);
         </section>
         <section v-if="detail==='plan'" aria-label="候选分流方案">
           <p v-if="run.status==='needs_review'" class="agent-workspace__notice">后续自动下令已暂停；下面保留的是原方案。请先“按当前现场重新比较”，不会取消已经受理的行动。</p>
-          <p v-if="run.candidates.length" class="agent-workspace__meta">同一起点向后预演 30 秒。居民北侧蓝线、南侧金线，最多显示 48 条代表路线；机器人为紫线，箭头表示沿通道的前进方向。</p>
+          <p v-if="run.candidates.length" class="agent-workspace__meta">同一起点向后预演 30 秒。预估分只反映该时刻已形成的结果，尚未完成的核验、清点与结束项不计入，最终得分以结束复盘为准。居民北侧蓝线、南侧金线，机器人为紫线。</p>
+          <p v-if="run.candidates.length===1" role="status" class="agent-workspace__meta">当前条件下没有第二个不同的可执行方案；相同动作已合并。</p>
           <div class="agent-workspace__candidates">
             <article v-for="item in run.candidates" :key="item.id" :data-selected="candidate?.id===item.id">
               <label class="agent-workspace__check"><input type="radio" :name="'candidate-'+run.id" :value="item.id" v-model="chosen" :disabled="busy" /><strong>{{item.title}}</strong></label>
@@ -212,7 +214,7 @@ onBeforeUnmount(()=>{disposed=true;generation++;pollEpoch++;clearTimeout(timer);
                   </li></ul>
                 </details>
               </section>
-              <dl><div><dt>出口分配</dt><dd>北 {{item.metrics.north}} · 南 {{item.metrics.south}}</dd></div><div><dt>不可达</dt><dd>{{item.metrics.unreachable}} 人</dd></div><div><dt>30 秒后到场</dt><dd>{{item.metrics.arrived}} 人</dd></div><div><dt>暴露超阈值</dt><dd>{{item.metrics.exposed}} 人</dd></div><div><dt>累计排队</dt><dd>{{item.metrics.queue_seconds}} 人秒</dd></div><div><dt>全场预测分</dt><dd>{{item.metrics.score}} <small>（{{item.metrics.score_delta>=0?'+':''}}{{item.metrics.score_delta}}）</small></dd></div></dl>
+              <dl><div><dt>出口分配</dt><dd>北 {{item.metrics.north}} · 南 {{item.metrics.south}}</dd></div><div><dt>不可达</dt><dd>{{item.metrics.unreachable}} 人</dd></div><div><dt>30 秒后到场</dt><dd>{{item.metrics.arrived}} 人</dd></div><div><dt>暴露超阈值</dt><dd>{{item.metrics.exposed}} 人</dd></div><div><dt>累计排队</dt><dd>{{item.metrics.queue_seconds}} 人秒</dd></div><div><dt>30秒状态预估分</dt><dd>{{item.metrics.score}} <small>（{{item.metrics.score_delta>=0?'+':''}}{{item.metrics.score_delta}}）</small></dd></div></dl>
               <p v-if="item.assist_resource?.required" class="agent-workspace__resource-summary">需护送 {{item.assist_resource.required}} 人；本场 {{item.assist_resource.capacity}} 名值守员，{{item.assist_resource.busy}} 名正在执行。{{item.assist_resource.waves ? `至少分 ${item.assist_resource.waves} 批安排，实际等待取决于在途任务。` : '当前无可用值守员，不能执行护送。'}}</p>
               <section v-if="item.robot_support" class="agent-workspace__resource" aria-label="机器人协同条件">
                 <h4><AppIcon name="robot" :size="18" />{{ item.robot_support.target }}</h4>

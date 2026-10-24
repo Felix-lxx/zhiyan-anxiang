@@ -181,8 +181,10 @@ def get_current_identity(authorization: str | None = Header(default=None), sessi
 
 
 @router.post("/refresh", response_model=LoginResponse)
-def refresh_session(response: Response, refresh_token: str | None = Cookie(default=None, alias=REFRESH_COOKIE), session: Session = Depends(get_db)) -> LoginResponse:
+def refresh_session(response: Response, refresh_token: str | None = Cookie(default=None, alias=REFRESH_COOKIE), session: Session = Depends(get_db), optional: bool = False) -> LoginResponse:
     if not refresh_token or "." not in refresh_token:
+        if optional and not refresh_token:
+            return Response(status_code=204)
         raise HTTPException(status_code=401, detail="刷新凭证缺失，请重新登录。")
     session_id = refresh_token.split(".", 1)[0]
     auth_session = session.scalar(select(AuthSession).where(AuthSession.id == session_id).with_for_update())

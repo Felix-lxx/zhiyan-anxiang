@@ -5,7 +5,7 @@ export class SceneMaterials {
   private textures = new Map<string, THREE.Texture>()
   private materials = new Map<string, THREE.MeshStandardMaterial>()
 
-  surface(kind: 'plaster' | 'asphalt' | 'paving', color: number, repeatX = 1, repeatY = 1) {
+  surface(kind: 'plaster' | 'asphalt' | 'paving' | 'tile', color: number, repeatX = 1, repeatY = 1) {
     const key = `${kind}:${color}:${repeatX}:${repeatY}`
     const existing = this.materials.get(key)
     if (existing) return existing
@@ -19,7 +19,11 @@ export class SceneMaterials {
       context.fillStyle = `rgba(${tone},${tone},${tone},${kind === 'asphalt' ? .65 : .25})`
       context.fillRect(random() * 256, random() * 256, 1 + random() * 2, 1 + random() * 2)
     }
-    if (kind === 'plaster') {
+    if (kind === 'tile') {
+      context.fillStyle = '#ece9df'; context.fillRect(0, 0, 256, 256)
+      context.strokeStyle = '#b8b7ae'; context.lineWidth = 3
+      context.strokeRect(1.5, 1.5, 253, 253)
+    } else if (kind === 'plaster') {
       for (let i = 0; i < 24; i++) {
         context.fillStyle = 'rgba(80,75,65,.035)'; context.fillRect(random() * 256, random() * 256, 2 + random() * 14, 15 + random() * 50)
       }

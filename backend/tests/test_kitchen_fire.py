@@ -39,9 +39,15 @@ def test_room_address_freeze_and_compartment_smoke(kitchen):
     assert source['location']['kind']=='room' and source['location']['floor']==2
     assert source['position']['height']==3.38
     assert world['spatial_units']['height_mode']=='meters'
+    assert model['equipment_layout_version'] == 1
+    # The generic community fixture has 1.4 x 1.2 m rooms: do not hide
+    # invalid furniture by shrinking the pedestrian clearance.
+    assert not model['equipment_layouts']
+    assert model['equipment_notice'] and 'ignition_position' not in source
     assert len(world['tasks'])==4 and {'gas_off','containment','broadcast','escort'}=={task['kind'] for task in world['tasks']}
     assert model['source_zone_id'] in {node['id'] for node in world['spatial_network']['nodes']}
     shut=EnvironmentTimeline(world,[]).at(120)[1]['indoor']
+    assert shut['equipment_layouts'] == model['equipment_layouts']
     opened=deepcopy(world); opened['indoor_environment']['doors']=[{**door,'state':'open'} for door in model['doors']]
     flowing=EnvironmentTimeline(opened,[]).at(120)[1]['indoor']
     hall=lambda state:next(zone['smoke_density'] for zone in state['zones'] if zone['floor']==2 and zone['kind']=='corridor')
@@ -69,7 +75,11 @@ def test_door_command_changes_routes_and_preserves_continuous_motion(kitchen):
     assigned=client.post(base+'/residents',headers=headers,json={'resident_ids':[person['id']],'exit':'north','action':'evacuate'})
     assert assigned.status_code==200,assigned.text
     assert client.post(base+'/commands',headers=headers,json=command).status_code==200
+    repeat={**command,'command_id':'open-already-open-room-002'}
+    assert client.post(base+'/commands',headers=headers,json=repeat).status_code==200
     assert len([event for event in client.get(base,headers=headers).json()['events'] if event['event_type']=='indoor.door_changed'])==1
+    projected=next(item for item in opened.json()['simulation']['environment']['indoor']['doors'] if item['id']==door['id'])
+    assert projected['can_close'] is False and any(item['id']==person['id'] for item in projected['occupants'])
     close={**command,'command_id':'close-occupied-room-001','arguments':{**command['arguments'],'state':'closed'}}
     assert client.post(base+'/commands',headers=headers,json=close).status_code==409
     moved=tick(9);after=next(item for item in moved['simulation']['residents'] if item['id']==person['id'])
@@ -88,10 +98,14 @@ def test_gas_task_evidence_changes_environment_and_replays(kitchen):
     assert '2层' in task['target'] and task['target_position']['height']==3.38
     action=lambda value:client.post(base+'/tasks/'+task['id']+'/actions',headers=headers,json={'action':value,'evidence':'已关闭燃气阀并核对阀门状态'})
     assert action('accept').status_code==200
-    assert action('arrive').status_code==200
+    arrival=action('arrive');assert arrival.status_code==200
+    operation=next(item for item in arrival.json()['tasks'] if item['id']==task['id'])['operation']
+    assert operation['mode']=='arrival_receipt' and operation['phase']=='working'
+    assert operation['remaining_seconds']==8
     assert action('submit').status_code==409
     tick(data['elapsed_seconds']+8)
     completed=action('submit');assert completed.status_code==200,completed.text
+    assert next(item for item in completed.json()['tasks'] if item['id']==task['id'])['operation']['phase']=='verified'
     assert completed.json()['simulation']['environment']['gas_off'] is True
     at=completed.json()['elapsed_seconds']; state=tick(at+20)
     unchanged=EnvironmentTimeline(drill['simulation']['world'],[]).at(at+20)[0]

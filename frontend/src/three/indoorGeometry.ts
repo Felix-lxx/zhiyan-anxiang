@@ -1,8 +1,31 @@
 import * as THREE from 'three'
 
 export interface SpatialPoint { x: number; y: number; height: number }
-export interface Passage { kind: string; width_meters: number; start: SpatialPoint; end: SpatialPoint }
+export interface Passage { id?: string; kind: string; width_meters: number; start: SpatialPoint; end: SpatialPoint }
 export interface FloorRect { x: number; y: number; width: number; depth: number }
+
+/** Place the door perpendicular to its authoritative passage, at the room boundary. */
+export function doorPortal(room: FloorRect, hall: {x:number;y:number}, width:number) {
+  const dx=hall.x-room.x, dy=hall.y-room.y
+  const t=Math.min(1,Math.abs(dx)>.001?room.width/(2*Math.abs(dx)):Infinity,
+    Math.abs(dy)>.001?room.depth/(2*Math.abs(dy)):Infinity)
+  return {x:room.x+dx*t,y:room.y+dy*t,rotation:Math.atan2(dx,dy),width:Math.max(.1,width),
+    // Park the open leaf on the room side and outside the walking envelope.
+    hingeX:-Math.max(.1,width)/2-.04,openAngle:Math.PI/2}
+}
+
+/** Frame an entire floor in both wide preview canvases and narrow phone viewports. */
+export function indoorCameraOffset(width: number, depth: number, aspect: number): THREE.Vector3 {
+  const direction = new THREE.Vector3(10, 13, 16).normalize()
+  const horizontal = new THREE.Vector3(16, 0, -10).normalize()
+  const vertical = new THREE.Vector3().crossVectors(direction, horizontal).normalize()
+  const halfWidth = (Math.abs(horizontal.x) * width + Math.abs(horizontal.z) * depth) / 2
+  const halfHeight = (Math.abs(vertical.x) * width + Math.abs(vertical.z) * depth + Math.abs(vertical.y) * 2.4) / 2
+  // Add the depth extent so near corners remain inside the perspective frustum.
+  const nearExtent = (direction.x * width + direction.z * depth) / 2
+  const distance = Math.max(halfHeight, halfWidth / Math.max(.3, aspect)) / Math.tan(24 * Math.PI / 180) + nearExtent * .5
+  return direction.multiplyScalar(Math.max(10, distance))
+}
 
 /** Slab geometry and furnishings use the same frozen passages as the walkers. */
 export function stairOpenings(passages: Passage[], height: number): FloorRect[] {

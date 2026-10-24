@@ -2,6 +2,13 @@ import assert from 'node:assert/strict'
 import {mkdirSync} from 'node:fs'
 import {resolve} from 'node:path'
 import {PerspectiveCamera,Vector3} from '../node_modules/three/build/three.module.js'
+import ts from 'typescript'
+import {readFile} from 'node:fs/promises'
+import {pathToFileURL} from 'node:url'
+const geometrySource=await readFile(new URL('../src/three/indoorGeometry.ts',import.meta.url),'utf8')
+const compiled=ts.transpileModule(geometrySource,{compilerOptions:{target:ts.ScriptTarget.ES2022,module:ts.ModuleKind.ESNext}}).outputText
+const threeUrl=pathToFileURL(resolve('node_modules/three/build/three.module.js')).href
+const {indoorCameraOffset}=await import('data:text/javascript;base64,'+Buffer.from(compiled.replace("from 'three'",`from '${threeUrl}'`)).toString('base64'))
 import {kitchenCapabilities,kitchenDefaults,kitchenPreview} from './kitchen-fixture.mjs'
 const {default:playwright}=await import(process.env.PLAYWRIGHT_MODULE||'playwright')
 const browser=await playwright.chromium.launch({headless:true,...(process.env.QA_BROWSER_PATH?{executablePath:process.env.QA_BROWSER_PATH}:{})})
@@ -31,7 +38,7 @@ try{
   const bounds=await canvas.boundingBox();assert.ok(bounds.height>=200)
   const elevation=3*3.2-3.02
   const camera=new PerspectiveCamera(48,bounds.width/bounds.height,.1,400)
-  camera.position.set(10,elevation+13,16);camera.lookAt(0,elevation,0);camera.updateMatrixWorld()
+  camera.position.copy(indoorCameraOffset(16,10,camera.aspect)).add(new Vector3(0,elevation,0));camera.lookAt(0,elevation,0);camera.updateMatrixWorld()
   const selectedRoom=kitchenPreview(saved).simulation.environment.indoor.zones.find(zone=>zone.id===`indoor:home:${saved.fire_floor}:east`)
   const point=new Vector3(selectedRoom.x-50,elevation+.03,selectedRoom.y-50).project(camera)
   await page.evaluate(()=>new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve))))
@@ -43,10 +50,24 @@ try{
   await page.goto(base+'/tests/kitchen-director.html')
   const control=page.getByRole('button',{name:'楼内烟气与门控',exact:true});await control.waitFor();await control.click()
   const panel=page.getByRole('region',{name:'楼内烟气与房门'});await panel.waitFor()
-  const close=panel.getByRole('button',{name:'关闭房门',exact:true}).first();await close.click()
-  await panel.getByRole('button',{name:'打开房门',exact:true}).first().waitFor()
+  const close=panel.getByRole('button',{name:/^关闭.*房门$/}).first();await close.click()
+  await panel.getByRole('button',{name:/^打开.*房门$/}).first().waitFor()
   assert.ok(await panel.evaluate(el=>el.scrollWidth<=el.clientWidth+1))
+  const drawer=await page.getByRole('dialog').boundingBox()
+  assert.ok(drawer.y>=64&&drawer.y+drawer.height<=height+1)
+  if(width>1100){
+    const stage=await page.locator('.director-stage').boundingBox()
+    assert.ok(stage.x+stage.width<=drawer.x+1,'Scene must reserve space for the task workspace')
+  }else assert.ok(drawer.width>=width-20,'Phone task panel must use the available width')
+  await page.evaluate(()=>new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve))))
   await page.screenshot({path:resolve(output,`doors-${width}.png`),fullPage:true})
+  await panel.getByRole('button',{name:'进入处置',exact:true}).click()
+  await page.getByRole('progressbar',{name:'到位回执后的处置计时'}).waitFor()
+  assert.equal(await page.getByRole('dialog').count(),1)
+  assert.ok(await page.locator('.task-workflow').evaluate(el=>el.scrollWidth<=el.clientWidth+1))
+  await page.screenshot({path:resolve(output,`operation-${width}.png`),fullPage:true})
+  await page.getByRole('button',{name:'返回室内现场'}).click()
+  await panel.waitFor()
  }
  assert.deepEqual(errors,[]);console.log(JSON.stringify({writes,checks:['厨房楼层房间配置','保存恢复','真实三维厨房与分区渲染','门控面板状态交互','桌面短屏手机布局'],errors,output},null,2))
 }finally{await browser.close()}

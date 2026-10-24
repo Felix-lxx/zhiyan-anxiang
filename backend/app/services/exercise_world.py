@@ -78,11 +78,17 @@ def capture_world(session: Session, version: SceneVersion, parameters_override: 
     # Freeze identifiable resource slots along with the world, not on each command.
     response_staff = roster({"robot_origin": station["entry"]})
     world = add_spatial_layout({"scenario_contract": contract.payload(), "response_staff": response_staff, "scene_version_id": version.id, "community_version_id": version.community_version_id, "parameters": parameters, "objects": objects, "residents": residents, "fire_source": fire_source, "fire_origin": deepcopy(fire_source["position"]), "robot_origin": station["entry"], "inspection_target": deepcopy(fire_source["access_position"]), "broadcast_target": home["entry"], "tasks": tasks, "road_network": {"nodes": nodes, "edges": edges}}, home)
+    if not kitchen:
+        # This case models an exterior plume, not infiltration into apartments.
+        # Freeze that domain explicitly; old worlds keep the radial model.
+        world['outdoor_smoke_domain'] = 'exterior_v1'
     if kitchen:
         from app.services.indoor_fire import attach_indoor_environment
         world['fire_source']['access_position']=deepcopy(home['entry'])
         world['inspection_target']=deepcopy(home['entry'])
         attach_indoor_environment(world)
+        from app.services.kitchen_equipment import attach_kitchen_equipment
+        attach_kitchen_equipment(world)
     return world
 
 
@@ -109,10 +115,15 @@ def projected_tasks(world: dict, events: list, elapsed: int, simulation: dict, r
         elif elapsed - arrived.elapsed_seconds < source["duration_seconds"]:
             blockers.append(f"处置还需 {source['duration_seconds'] - (elapsed - arrived.elapsed_seconds)} 秒")
         owner = accepted or assigned
+        operation_elapsed = max(0, (done.elapsed_seconds if done else elapsed) - arrived.elapsed_seconds) if arrived else 0
+        operation = {'mode': 'arrival_receipt', 'duration_seconds': source['duration_seconds'],
+                     'elapsed_seconds': min(source['duration_seconds'], operation_elapsed),
+                     'remaining_seconds': max(0, source['duration_seconds']-operation_elapsed),
+                     'phase': 'verified' if done else 'working' if arrived and operation_elapsed < source['duration_seconds'] else 'awaiting_evidence' if arrived else 'awaiting_arrival'}
         action_event = next((e for e in events if source['kind'] == 'broadcast' and e.event_type == 'robot.broadcast_completed'
             and math.dist((e.payload.get('x', -100), e.payload.get('y', -100)), (source['target_position']['x'], source['target_position']['y'])) <= 3), None)
         result.append({**source, "status": state, "overdue": confirmed is not None and remaining < 0 and not done, "remaining_seconds": max(0, remaining), "assignee": owner.actor if owner else None, "assignee_id": owner.payload.get("participant_id") if owner else None, "assignment_locked": accepted is not None, "blockers": blockers, "can_submit": bool(arrived and not blockers and not done), "evidence": done.payload.get("evidence") if done else None, "completed_at": done.elapsed_seconds if done else None,
-                       'verification_ready': bool(arrived and not blockers and not done),
+                       'verification_ready': bool(arrived and not blockers and not done), 'operation': operation,
                        'action_completed_at': action_event.elapsed_seconds if action_event else None,
                        'deadline_at_seconds': confirmed + source['deadline_seconds'] if confirmed is not None else None,
                        'completed_on_time': done.elapsed_seconds <= confirmed + source['deadline_seconds'] if done and confirmed is not None else None})

@@ -16,6 +16,7 @@ import { RescueVisuals, type RescueResident } from '../three/rescueVisuals'
 import type { Vehicle } from '../domain/drill'
 import { FireEffects } from '../three/fireEffects'
 import { IndoorFireVisuals } from '../three/indoorFireVisuals'
+import { indoorCameraOffset } from '../three/indoorGeometry'
 import { cutFloor, stairOpenings, floorContainsHeight } from '../three/indoorGeometry'
 import type { IndoorState } from '../domain/indoor'
 import { RoadVisuals } from '../three/roadVisuals'
@@ -30,7 +31,7 @@ interface RoadEdgeState { geometry_blocked?: boolean; blocked_reason?: string; r
 interface Simulation {
   vehicles?: Vehicle[]
   spatial_network?: { nodes: Array<{id:string;name:string;x:number;y:number;height:number;kind:string;floor:number;is_exit?:boolean;building_id?:string}>; edges: SpatialEdgeState[] }
-  world?: { schema_version?: number; spatial_units?:{height_mode?:string}; parameters?: { start_time?: string; wind_direction?: string; fire_floor?:number }; fire_source?: { location: { object_id: string } }; objects: Array<{ id: string; name: string; type: string; x: number; y: number; width: number; depth: number; floors: number; entry: { x: number; y: number } }>; fire_origin: { x: number; y: number; height?:number } } | null
+  world?: { schema_version?: number; spatial_units?:{height_mode?:string}; parameters?: { start_time?: string; wind_direction?: string; fire_floor?:number }; fire_source?: { location: { object_id: string }; device_id?: string; ignition_position?: { x: number; y: number; height: number } }; objects: Array<{ id: string; name: string; type: string; x: number; y: number; width: number; depth: number; floors: number; entry: { x: number; y: number } }>; fire_origin: { x: number; y: number; height?:number } } | null
   helpers?: HelperState[]
   fire: { intensity: number; smoke_radius: number; temperature: number }
   environment: { indoor?:IndoorState; south_lane: string; east_hydrant: string; visibility: number; blockages?: Array<{ x: number; y: number; target: string; road_edge_id?: string }> }
@@ -93,7 +94,8 @@ const emit = defineEmits<{
   dispatchVehicle: [id: string]
   fireSourcePick: [objectId: string]
   fireRoomPick: [selection:{floor:number;room:string}]
-  inspectIndoor: []
+  inspectIndoor: [doorId?: string]
+  inspectDevice: [deviceId: string]
   indoorFocus: [value: { buildingId: string; floor: number }]
 }>()
 
@@ -405,7 +407,7 @@ function addExit(name: string, x: number, z: number): void {
 }
 
 function createFireSystem(): void {
-  const origin = props.simulation?.world?.fire_origin
+  const origin = props.simulation?.world?.fire_source?.ignition_position ?? props.simulation?.world?.fire_origin
   const fx = origin ? origin.x - 50 : 13, fz = origin ? origin.y - 50 : -1
   const core = fireCore = new THREE.Mesh(new THREE.BoxGeometry(3,3,3), new THREE.MeshBasicMaterial({ visible: false }))
   core.position.set(fx, 1.5, fz); scene.add(core)
@@ -450,7 +452,7 @@ function buildScene(): void {
   const background = night ? 0x142329 : 0xdde3e3
   scene = new THREE.Scene(); scene.background = new THREE.Color(background); scene.fog = new THREE.FogExp2(background, night ? .008 : .005)
   camera = new THREE.PerspectiveCamera(48, 1, .1, 400); camera.position.copy(targetCameraPosition)
-  renderer = new THREE.WebGLRenderer({ antialias: qualityFactor === 1, powerPreference: 'high-performance' }); renderer.setPixelRatio(Math.min(window.devicePixelRatio, qualityFactor === 1 ? 1.5 : 1)); renderer.shadowMap.enabled = qualityFactor === 1; renderer.shadowMap.type = THREE.PCFSoftShadowMap; renderer.outputColorSpace = THREE.SRGBColorSpace
+  renderer = new THREE.WebGLRenderer({ antialias: qualityFactor === 1, powerPreference: 'high-performance' }); renderer.setPixelRatio(Math.min(window.devicePixelRatio, qualityFactor === 1 ? 1.5 : 1)); renderer.shadowMap.enabled = qualityFactor === 1; renderer.shadowMap.type = THREE.PCFShadowMap; renderer.outputColorSpace = THREE.SRGBColorSpace
   renderer.toneMapping = THREE.ACESFilmicToneMapping; renderer.toneMappingExposure = night ? 1.3 : 1.05
   host.value?.appendChild(renderer.domElement)
   controls = new OrbitControls(camera, renderer.domElement); controls.enableDamping = true; controls.dampingFactor = .075; controls.maxPolarAngle = Math.PI * .47; controls.minDistance = 2.5; controls.maxDistance = 145; controls.target.set(0, 0, 0); controls.addEventListener('change', markRenderDirty)
@@ -481,7 +483,7 @@ function buildScene(): void {
   }
   createFireSystem(); createRobot(); createResidents(); updateEntities(); indoorGeometry.visible = false
   if(props.simulation?.environment.indoor) {
-    indoorFireVisuals=new IndoorFireVisuals(props.simulation.environment.indoor,worldPoint,(object,data)=>register(object,data as Parameters<typeof register>[1]),props.simulation.spatial_network?.edges);scene.add(indoorFireVisuals.group)
+    indoorFireVisuals=new IndoorFireVisuals(props.simulation.environment.indoor,worldPoint,(object,data)=>register(object,data as Parameters<typeof register>[1]),props.simulation.spatial_network?.edges,()=>{renderDirty=true});scene.add(indoorFireVisuals.group)
     focusIndoorFloor(props.indoorFloor??props.simulation.world?.parameters?.fire_floor??1)
   }
   void loadEnvironmentAssets().catch(() => {
@@ -690,7 +692,8 @@ function focusIndoorFloor(floor:number,buildingId?:string):void {
   if(!indoorView.value)toggleIndoor(true)
   viewMode.value='director';controls.enabled=true
   for(const [modelId,model] of buildingMeshes)model.visible=modelId!==building.id
-  targetLookAt.copy(worldPoint(building.x,building.y,floorHeight(floor)));targetCameraPosition.copy(targetLookAt).add(new THREE.Vector3(10,13,16))
+  targetLookAt.copy(worldPoint(building.x,building.y,floorHeight(floor)))
+  targetCameraPosition.copy(targetLookAt).add(indoorCameraOffset(building.width,building.depth,camera.aspect))
   for(const child of indoorGeometry.children){
     const slice=child.userData.slice
     child.userData.sliceVisible=Boolean(slice&&slice.buildingId===building.id&&slice.high<=floorHeight(floor)+.01&&slice.high>=floorHeight(floor)-.01)
@@ -735,6 +738,9 @@ defineExpose({ focusPoint, focusResident, showIndoor, selectResidents, focusIndo
 
 function animate(time = 0): void {
   animationFrame = requestAnimationFrame(animate)
+  // Balanced and low quality cap expensive scene updates as well as GPU draws.
+  const frameInterval = quality.value === 'low' ? 1000 / 24 : quality.value === 'medium' ? 1000 / 30 : 0
+  if (time - lastFrameTime < frameInterval && !renderDirty) return
   const delta = Math.min(.05, Math.max(0, (time-lastFrameTime)/1000)); lastFrameTime=time
   if (!pageVisible) return
   // Reduced motion removes decorative pulses and camera easing, not the drill's
@@ -876,8 +882,15 @@ function updateStairHeat(): void {
 
 function updateEntities(): void {
   if (scene && props.simulation?.world) {
-    const origin = props.simulation.world.fire_origin
-    if (fireEffects) { fireEffects.group.position.copy(worldPoint(origin.x, origin.y,origin.height));if(props.simulation.environment.indoor){fireEffects.group.scale.setScalar(.32);fireEffects.group.position.y+=.8;fireEffects.group.visible=visibleIndoorFloor.value===props.simulation.world.parameters?.fire_floor} }
+    const anchor = props.simulation.world.fire_source?.ignition_position
+    const origin = anchor ?? props.simulation.world.fire_origin
+    if (fireEffects) {
+      fireEffects.group.position.copy(worldPoint(origin.x, origin.y, origin.height))
+      fireEffects.group.scale.setScalar(props.simulation.environment.indoor ? .32 : 1)
+      // Historical scenes retain their original room-centre flame offset.
+      if (props.simulation.environment.indoor && !anchor) fireEffects.group.position.y += .8
+      fireEffects.group.visible = showFireSource.value
+    }
     if (fireLight) fireLight.position.copy(worldPoint(origin.x, origin.y,origin.height)).add(new THREE.Vector3(0,2,0))
     if(indoorFireVisuals&&props.simulation.environment.indoor){indoorFireVisuals.group.visible=indoorView.value&&visibleIndoorBuilding.value===props.simulation.environment.indoor.building_id;if(indoorFireVisuals.group.visible)indoorFireVisuals.update(props.simulation.environment.indoor,visibleIndoorFloor.value)}
     if (fireCore) {
@@ -1154,6 +1167,8 @@ function onPointerUp(event: PointerEvent): void {
     else flashNotice('请选择高亮的充电棚；楼栋与空地不能设为本案例火源。')
     return
   }
+  if (hit?.object.userData.selection?.action === 'indoor-door') { emit('inspectIndoor', hit.object.userData.selection.doorId); return }
+  if (hit?.object.userData.selection?.action === 'indoor-device') { emit('inspectDevice', hit.object.userData.selection.deviceId); return }
   if (props.interactive === false) return
    const roadHit = hit?.object.userData.selection?.roadEdgeId ? hit : undefined
   const groundHit = raycaster.intersectObject(groundPlane)[0]
@@ -1335,6 +1350,7 @@ onMounted(() => {
   catch { renderError.value = '当前浏览器无法初始化三维渲染，请检查硬件加速设置后重新进入演练中心。' }
 })
 onBeforeUnmount(() => {
+  indoorFireVisuals?.dispose()
   vehicleVisuals?.dispose(); vehicleVisuals = null
   rescueVisuals?.dispose(); rescueVisuals = null
   destroyed = true

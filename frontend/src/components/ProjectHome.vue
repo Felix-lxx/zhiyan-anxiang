@@ -17,7 +17,11 @@ const props = defineProps<{ apiBaseUrl:string; accessToken:string; username:stri
 const emit = defineEmits<{ logout:[]; openMap:[community:Community]; openOperations:[community:Community] }>()
 const api=createApiClient(props.apiBaseUrl,()=>props.accessToken), route=useRoute(), router=useRouter()
 type HistoryRow=DrillIndex & {sceneId:string;sceneName:string}
-const communities=ref<Community[]>([]), scenes=ref<Scene[]>([]), history=ref<HistoryRow[]>([])
+const communities=ref<Community[]>([]), allScenes=ref<Scene[]>([]), history=ref<HistoryRow[]>([])
+const showTestData=ref(false)
+const fixturePattern=/实跑验收|UI 自动验收|流程验收|图册交互验收|完整任务与智能体实跑|完整决策验收/
+const scenes=computed(()=>showTestData.value?allScenes.value:allScenes.value.filter(item=>!fixturePattern.test(item.name)))
+watch(showTestData,()=>{sceneId.value=scenes.value.find(s=>s.id===sceneId.value)?.id||scenes.value.find(s=>s.status==='published')?.id||scenes.value[0]?.id||'';void loadHistory()})
 const communityId=ref(''), sceneId=ref(''), busy=ref(false), loading=ref(true), error=ref(''), guidance=ref(true)
 const section=computed(()=>String(route.query.section || 'home'))
 const historySearch=ref(''), historyStatus=ref('all')
@@ -35,6 +39,7 @@ async function loadHistory(){
  historyController=new AbortController();historyLoading.value=true;historyError.value='';history.value=[]
  const isHistory=section.value==='history'
  const query=new URLSearchParams({page:String(isHistory?historyPage.value:1),page_size:isHistory?'20':'3'})
+ query.set('include_test',String(showTestData.value))
  if(isHistory){
   query.set('search',historySearch.value);query.set('status',historyStatus.value);query.set('sort',historySort.value)
   if(historyScene.value)query.set('scene_id',historyScene.value)
@@ -91,16 +96,16 @@ let generation=0
 function navigate(value:string){void router.push({name:'projects',query:value==='home'?{}:{section:value}})}
 async function load(){
  loading.value=true;error.value=''
- try{communities.value=await api.get<Community[]>('/communities');const preferred=communityId.value||accountProfile.value?.default_community_id;communityId.value=communities.value.find(c=>c.id===preferred)?.id||communities.value[0]?.id||'';if(communityId.value)await loadScenes();else{scenes.value=[];history.value=[];sceneId.value=''}}
+ try{communities.value=await api.get<Community[]>('/communities');const preferred=communityId.value||accountProfile.value?.default_community_id;communityId.value=communities.value.find(c=>c.id===preferred)?.id||communities.value[0]?.id||'';if(communityId.value)await loadScenes();else{allScenes.value=[];history.value=[];sceneId.value=''}}
  catch(e){error.value=e instanceof Error?e.message:'读取失败，请重试。'}finally{loading.value=false}
 }
 async function loadScenes(){
  if(historyTimer)clearTimeout(historyTimer)
  historyController?.abort();historyRequest++;unfinished.value=null;historyTotal.value=0;historyMatched.value=0
- const previousScene=sceneId.value, id=++generation;scenes.value=[];history.value=[];sceneId.value='';error.value='';historyError.value='';historyPage.value=1
+ const previousScene=sceneId.value, id=++generation;allScenes.value=[];history.value=[];sceneId.value='';error.value='';historyError.value='';historyPage.value=1
  try{
  const result=await api.get<Scene[]>('/communities/'+communityId.value+'/scenes');if(id!==generation)return
- scenes.value=result;sceneId.value=result.find(s=>s.id===previousScene)?.id||result.find(s=>s.status==='published')?.id||result[0]?.id||''
+ allScenes.value=result;sceneId.value=scenes.value.find(s=>s.id===previousScene)?.id||scenes.value.find(s=>s.status==='published')?.id||scenes.value[0]?.id||''
  if(!result.some(s=>s.id===historyScene.value))historyScene.value=''
  await loadHistory()
  }catch(e){if(id===generation)error.value=e instanceof Error?e.message:'读取场景失败。'}
@@ -139,6 +144,7 @@ onMounted(load)
   <header class="atlas-home__bar"><div><strong>{{community?.name.split(' · ')[0]||'安巷社区'}}</strong><span>老旧小区消防治理数字孪生与智能决策</span></div><div><span class="atlas-online"><i :data-error="Boolean(error)"></i>{{error?'连接待恢复':loading?'正在连接':'系统在线'}}</span><button aria-label="打开个人中心" @click="navigate('account')"><AppIcon name="person"/><span class="atlas-account-name">{{accountName}}</span><AppIcon name="chevron" :size="16"/></button></div></header>
   <section v-if="section==='home'||section==='history'||section==='training'" class="atlas-home__content">
    <header class="atlas-home__title"><h1>{{section==='history'?'复盘记录':'演练工作台'}}</h1><p>以真实场景锻炼应急能力，让社区更安全</p><label v-if="communities.length>1" class="atlas-community-switch"><span>社区</span><select v-model="communityId" @change="loadScenes"><option v-for="c in communities" :key="c.id" :value="c.id">{{c.name}}</option></select></label></header>
+   <label class="home-test-data"><input v-model="showTestData" type="checkbox"/>显示验收场景与试验记录</label>
    <p v-if="error" class="atlas-home__error" role="alert">{{error}}<button @click="load">重新加载</button></p>
    <div v-if="section!=='history'&&unfinished" class="home-resume"><div><strong>还有一场训练未完成</strong><p>{{unfinished.name}} · {{unfinished.status==='running'?'进行中':'已暂停'}} · 已推进 {{Math.floor(unfinished.elapsed_seconds/60)}} 分 {{unfinished.elapsed_seconds%60}} 秒</p></div><button type="button" @click="continueRun(unfinished)">继续这场演练<AppIcon name="arrowRight" :size="18"/></button></div>
    <nav v-if="section!=='history'" class="home-case-switch" aria-label="选择火灾案例">
@@ -169,6 +175,8 @@ onMounted(load)
 </template>
 
 <style scoped>
+.home-test-data { display:flex; align-items:center; gap:10px; min-height:44px; margin-bottom:16px; font-size:14px; color:var(--text-secondary); }
+.home-test-data input { width:18px; height:18px; accent-color:var(--action-primary); }
 .home-case-switch { display:flex; flex-wrap:wrap; gap:12px; margin-bottom:20px; }
 .home-case-switch button { flex:1 1 260px; display:flex; align-items:center; gap:14px; text-align:left; padding:14px 18px; min-height:64px; border:1px solid var(--border-default); border-radius:8px; background:var(--surface-panel); color:var(--text-primary); }
 .home-case-switch button[aria-pressed=true] { background:var(--color-brand-100); border-color:var(--action-primary); }

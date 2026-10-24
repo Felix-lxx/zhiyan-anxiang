@@ -57,10 +57,20 @@ def coordination_view(run, data, steps):
                 "label": person["label"], "severity": "danger" if person["blocked"] else "warning",
                 "reason": "路线受阻，请定位后核对通道" if person["blocked"] else "累计烟气暴露超过阈值，请检查护送与出口安排"})
     case_pending = [t for t in data.get('tasks', []) if t['status'] != 'completed' and t['status'] != 'waiting'] if run.scope.get('include_case_tasks') else []
+    blocked_ids = {person['id'] for person in attention.values() if person['blocked']}
+    closed_door = next((door for door in data['simulation'].get('environment', {}).get('indoor', {}).get('doors', [])
+                        if door['state'] == 'closed' and any(actor['kind'] == 'resident' and actor['id'] in blocked_ids
+                                                            for actor in door.get('occupants', []))), None)
     if awaiting:
         next_action = {"kind": "review", "label": "核对方案后确认执行", "reason": "当前只完成预演，尚未授权下令。"}
     elif run.status == "needs_review":
         next_action = {"kind": "replan", "label": "重新比较未完成部分", "reason": run.reason}
+    elif closed_door and run.status in {'executing', 'waiting'}:
+        next_action = {'kind': 'indoor', 'label': '检查受阻房门', 'door_id': closed_door['id'],
+                       'reason': closed_door['label']+'处于关闭状态，目标居民无法离开。请核对烟气与人员后决定是否开门。'}
+    elif issues and issues[0]['severity'] == 'danger' and run.status in {'executing', 'waiting'}:
+        next_action = {'kind': 'focus', 'label': '定位'+issues[0]['label'],
+                       'resident_id': issues[0]['resident_id'], 'reason': issues[0]['reason']}
     elif case_pending:
         task = min(case_pending, key=lambda t: (not t.get('verification_ready'), t.get('remaining_seconds', 9999)))
         next_action = {'kind': 'missions', 'label': '处置：'+task['title'],

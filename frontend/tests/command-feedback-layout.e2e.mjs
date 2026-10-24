@@ -23,7 +23,7 @@ try{
     assert.ok(await panel.evaluate(el=>el.scrollWidth<=el.clientWidth+1))
     assert.ok(await detail.evaluate(el=>el.scrollWidth<=el.clientWidth+1))
     await page.screenshot({path:resolve(output,`receipts-${width}.png`)})
-    await panel.getByRole('button',{name:'全部记录 3',exact:true}).click()
+    await panel.getByRole('button',{name:'指令记录 3',exact:true}).click()
     assert.equal(await panel.locator('ol>li').count(),3)
   }
   assert.deepEqual(errors,[])

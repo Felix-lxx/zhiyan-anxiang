@@ -73,6 +73,11 @@ class KitchenSmokeTimeline:
                   'source_label': self.world['fire_source']['name'], 'zones': zones,
                   'doors': [{**door, 'state': self.doors[door['id']]} for door in self.model['doors']]}
         result['density_by_node']={node_id:self.density.get(zone_id,0) for node_id,zone_id in self.model['node_zones'].items()}
+        for key in ('equipment_layout_version', 'equipment_layouts', 'equipment_notice'):
+            if key in self.model:
+                result[key] = self.model[key]
+        from app.services.kitchen_equipment import equipment_state
+        result['devices'] = equipment_state(self.model, self.base_at(elapsed)[1].get('gas_off', False))
         self.frames[elapsed] = result
         while len(self.frames) > 128: self.frames.popitem(last=False)
         return result

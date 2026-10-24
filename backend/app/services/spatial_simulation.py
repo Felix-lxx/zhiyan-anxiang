@@ -100,6 +100,11 @@ def simulate(world, events, elapsed, strategy=None, branch_at=None, *, checkpoin
             ratio = actor.get('edge_progress', 0)/edge['length'] if edge else 0
             if edge and actor.get('edge_from') != edge['start_node_id']: ratio = 1-ratio
             return zone_density(env, actor.get('node_id'), edge, ratio)
+        if world.get('outdoor_smoke_domain') == 'exterior_v1':
+            edge = edges.get(actor.get('edge_id'))
+            node = nodes.get(actor.get('node_id'), {})
+            if (edge and edge.get('kind') not in {'outdoor', 'assembly'}) or (not edge and node.get('kind') not in {'outdoor', 'assembly', 'door'}):
+                return 0.
         return max(0., 1-math.dist(xyz(actor), (origin['x'], origin['y'], 0))/max(.01, fire['smoke_radius'])) if fire['smoke_radius'] > 0 else 0
     sync_doors()
     occupied = defaultdict(list)
@@ -157,6 +162,8 @@ def simulate(world, events, elapsed, strategy=None, branch_at=None, *, checkpoin
                 if edge["status"] == "blocked" or eid in invalid_edges: continue
                 mid = ((nodes[current]["x"]+nodes[other]["x"])/2, (nodes[current]["y"]+nodes[other]["y"])/2)
                 risk = zone_density(env, edge=edge)*3 if world.get('indoor_environment') else max(0, fire["smoke_radius"]-math.dist(mid, (origin["x"], origin["y"]))) * .1
+                if world.get('outdoor_smoke_domain') == 'exterior_v1' and edge.get('kind') not in {'outdoor', 'assembly'}:
+                    risk = 0.
                 congestion = pressure(eid)
                 queue = waiting_counts.get(eid, 0)
                 # A* weighs current occupancy and the queue at the segment
@@ -266,7 +273,7 @@ def simulate(world, events, elapsed, strategy=None, branch_at=None, *, checkpoin
                 for person in people:
                     person["congestion"] = 0.
                     if person["status"] != "evacuated":
-                        density = max(0., 1-math.dist(xyz(person), (origin["x"], origin["y"], 0))/48)
+                        density = exposure_density(person)
                         person["smoke_exposure"] += density*skipped*(1.2 if person["vulnerable"] else .85)
                 now += skipped
                 continue
@@ -460,6 +467,8 @@ def simulate(world, events, elapsed, strategy=None, branch_at=None, *, checkpoin
         source = edges[live_edge["id"]]
         mid = ((source["start"]["x"]+source["end"]["x"])/2, (source["start"]["y"]+source["end"]["y"])/2)
         smoke_risk = round(zone_density(env, edge=source)*100) if world.get('indoor_environment') else round(max(0, 1-math.dist(mid, (origin["x"], origin["y"]))/max(.01, fire["smoke_radius"]))*100) if fire["smoke_radius"] > 0 else 0
+        if world.get('outdoor_smoke_domain') == 'exterior_v1' and source.get('kind') not in {'outdoor', 'assembly'}:
+            smoke_risk = 0
         capacity = edge_capacity(source)
         occupancy, waiting = len(occupied[source["id"]]), waiting_counts[source["id"]]
         reserved_space = sum(footprint(actor)/.8 for actor in occupied[source['id']])
@@ -480,6 +489,9 @@ def simulate(world, events, elapsed, strategy=None, branch_at=None, *, checkpoin
     south = [e for e in roads["edges"] if "南" in e["name"]]
     env["response_staff"] = staff_projection(world, helpers, history)
     env.update(south_lane="blocked" if any(e["status"] == "blocked" for e in south) else "restricted" if any(e["status"] == "restricted" for e in south) else "open", visibility=max(8, round(100-fire["smoke_radius"]*1.8)), blockages=[{"x": (e["start"]["x"]+e["end"]["x"])/2, "y": (e["start"]["y"]+e["end"]["y"])/2, "target": e["name"], "road_edge_id": e["id"]} for e in roads["edges"] if e["status"] == "blocked"])
-    if env.get('indoor'): env['visibility'] = min(zone['visibility'] for zone in env['indoor']['zones'])
+    if env.get('indoor'):
+        from app.services.indoor_safety import project_door_safety
+        env = {**env, 'indoor': project_door_safety(env['indoor'], world['indoor_environment'], people, list(helpers.values()))}
+        env['visibility'] = min(zone['visibility'] for zone in env['indoor']['zones'])
     congested_edges = sorted((edge for edge in runtime_edges.values() if edge["density_percent"] >= 55), key=lambda edge: (-edge["density_percent"], -edge["waiting_count"], edge["id"]))
     return dict(fire=fire, environment=env, sensors={"temperature": fire["temperature"], "smoke_ppm": round(45+fire["smoke_radius"]*31), "alarm": fire["intensity"] >= 35}, residents=people, helpers=list(helpers.values()), world=world, spatial_network=graph, road_network=roads, strategy=strategy or "live_commands", parallel_strategy=strategy, summary=dict(total=len(people), evacuated=sum(p["status"] == "evacuated" for p in people), counted=sum(p["counted"] for p in people), moving=sum(p["status"] == "moving" for p in people), vulnerable=sum(p["vulnerable"] for p in people), missing=sum(p["status"] == "missing" for p in people), smoke_exposed=sum(p["smoke_exposure"] > 5 for p in people), congested=sum(p["congestion"] > 55 for p in people), congested_edges=len(congested_edges), critical_edge=({key: congested_edges[0][key] for key in ("id", "name", "density_percent", "waiting_count")} if congested_edges else None), north_load=sum(p["exit"] == "north" for p in people), south_load=sum(p["exit"] == "south" for p in people)))

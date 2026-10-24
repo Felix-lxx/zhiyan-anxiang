@@ -59,16 +59,26 @@ def allocate_exits(routes, population, spatial_edges, selected_ids, preference="
         balanced[pid] = chosen
         if profiles[pid][chosen]["reachable"]:
             demand.update(profiles[pid][chosen]["edges"])
+    # Explicit exit policies expose genuine alternatives even when the two
+    # heuristics coincide. An unavailable exit never creates an impossible route.
     assignments = [path_first, balanced]
+    rules = ['path', 'risk_capacity']
+    for preferred in ('north', 'south'):
+        assignment = {pid: preferred if profiles[pid][preferred]['reachable'] else
+                      path_first[pid] for pid in selected_ids}
+        if assignment not in assignments:
+            assignments.append(assignment)
+            rules.append(preferred + '_priority')
     result = []
     for index, assignment in enumerate(assignments):
         load = Counter(eid for pid, exit in assignment.items() for eid in profiles[pid][exit]["edges"] if profiles[pid][exit]["reachable"])
         hotspots = sorted(load, key=lambda eid: (-(load[eid] + external[eid]) / max(.35, edges.get(eid, {}).get("flow_capacity_per_second", .35)),
                                                -edges.get(eid, {}).get("risk_score", 0), eid))[:3]
-        result.append((assignment, {"rule": "path" if index == 0 else "risk_capacity",
+        result.append((assignment, {"rule": rules[index],
             "description": "按指定出口分配；可达性仍需核对。" if index == 0 and preference != "balanced" else
                 "优先选择较短通行时间的可达路线。" if index == 0 else
-                "优先安排重点人员，综合行程、烟气风险和共享通道需求逐人分流；最终结果由30秒仿真核对。",
+                "优先安排重点人员，综合行程、烟气风险和共享通道需求逐人分流；最终结果由30秒仿真核对。" if index == 1 else
+                f"优先使用{'北' if rules[index] == 'north_priority' else '南'}侧出口；不可达居民保留原可达路线。比较集中通行带来的风险与排队。",
             "changed_residents": sum(assignment[pid] != path_first[pid] for pid in selected_ids),
             "same_allocation": path_first == balanced,
             "peak_risk": max((profiles[pid][exit]["peak_risk"] for pid, exit in assignment.items()), default=0),

@@ -58,3 +58,17 @@ def test_supervision_counts_beyond_the_display_sample():
     view = coordination_view(run, data, steps)
     assert view["issue_count"] == 10 and len(view["issues"]) == 6
     assert view["bottlenecks"][0]["waiting"] == 10
+
+
+def test_closed_door_links_to_exact_control_before_routine_case_tasks():
+    run, data, steps = fixture()
+    run.scope['include_case_tasks'] = True
+    data['tasks'] = [{'id':'task', 'title':'燃气核验', 'status':'active'}]
+    data['simulation']['environment'] = {'indoor': {'zones': [], 'doors': [
+        {'id':'door-2-east', 'label':'二层东侧房门', 'state':'closed',
+         'occupants':[{'id':'resident-1','kind':'resident'}]}]}}
+    view = coordination_view(run, data, steps)
+    assert view['next_action']['kind'] == 'indoor'
+    assert view['next_action']['door_id'] == 'door-2-east'
+    data['simulation']['environment']['indoor']['doors'][0]['state']='open'
+    assert coordination_view(run, data, steps)['next_action']['kind'] == 'focus'
