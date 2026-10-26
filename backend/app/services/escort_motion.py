@@ -1,5 +1,6 @@
 """Escort contact and bounded trailing positions on the walked route."""
 import math
+from app.services.motion_trace import record_motion
 
 
 def position(actor):
@@ -19,7 +20,7 @@ def can_meet(helper, resident, edges):
     return waiting['node_id'] in (edge['start_node_id'], edge['end_node_id'])
 
 
-def follow_walked_path(helper, resident, spacing=.7):
+def follow_walked_path(helper, resident, spacing=.7, *, elapsed=None):
     # Store only the short tail actually walked, including turns and stairs.
     # Never offset in world X: that puts helpers through narrow corridor walls.
     trail = helper.setdefault('escort_trail', [position(helper)])
@@ -33,6 +34,8 @@ def follow_walked_path(helper, resident, spacing=.7):
         if segment <= remaining+1e-8:
             remaining -= segment
             trail.pop(0)
+            if elapsed is not None:
+                record_motion(helper, elapsed, dict(zip(('x', 'y', 'height'), trail[0])))
         else:
             ratio = remaining/segment
             trail[0] = tuple(a+(b-a)*ratio for a,b in zip(trail[0],trail[1]))

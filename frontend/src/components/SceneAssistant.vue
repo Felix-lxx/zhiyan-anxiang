@@ -6,7 +6,7 @@ import type { AgentAssignment, AgentLiveState } from '../domain/agent'
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import AppIcon from './AppIcon.vue'
 import '../assistant.css'
-export type AssistantAction = { kind: 'missions' | 'events' | 'report' | 'command' | 'rollcall' | 'branch' | 'focus' | 'plan' | 'replay' | 'indoor'; label: string; resident_id?: string; door_id?:string; object_kind?:'robot'; at_seconds?:number }
+export type AssistantAction = { kind: 'training' | 'missions' | 'events' | 'report' | 'command' | 'rollcall' | 'branch' | 'focus' | 'plan' | 'replay' | 'indoor'; label: string; resident_id?: string; door_id?:string; object_kind?:'robot'; at_seconds?:number }
 export interface AssistantFocusContext { kind: 'resident' | 'road' | 'robot' | 'object' | 'command' | 'score' | 'replay'; id?: string; label: string; type?: string; detail?: string; x?: number; y?: number }
 interface Reply {
   mode: 'offline' | 'model'; model: string | null; answer: string; notice: string
@@ -18,6 +18,8 @@ const props = defineProps<{ apiBaseUrl: string; accessToken: string; drillId: st
 const api = createApiClient(props.apiBaseUrl, () => props.accessToken)
 const emit = defineEmits<{ close: []; navigate: [action: AssistantAction]; planPreview: [people: AgentAssignment[]]; stateAction: [action: 'pause'|'resume'|'end'] }>()
 const activeView = ref<'chat' | 'plan'>('chat')
+function showPlan() { activeView.value = 'plan' }
+defineExpose({ showPlan })
 let keepPlanPreview = false
 function previewPlan(people: AgentAssignment[]) {
   emit('planPreview', people)
@@ -144,6 +146,7 @@ onBeforeUnmount(() => { for (const [element, wasInert] of inertSiblings) element
 <template>
   <aside v-show="open" ref="panel" class="scene-assistant" :class="{ 'is-compact': compact }" :style="viewportStyle" :role="mobile ? 'dialog' : undefined" :aria-modal="mobile ? true : undefined" aria-label="场景 AI 助手" @keydown="trapFocus" @keydown.esc.stop="confirmClear ? confirmClear = false : emit('close')">
     <div class="scene-assistant__top"><header class="scene-assistant__header"><div class="scene-assistant__identity"><AppIcon name="brain" :size="25" /><div><h2>安巷指挥助手</h2><p>{{ atSeconds === null ? '实时现场' : '历史 ' + clock(atSeconds) }} · {{ activeView === 'plan' ? '目标计划' : useModel && provider?.configured ? '模型问答' : '离线解读' }}</p></div></div><div><button type="button" aria-label="模型设置" title="模型设置" :aria-expanded="settingsOpen" aria-controls="scene-assistant-settings" @click="showSettings"><AppIcon name="settings" :size="18" /></button><button type="button" :disabled="!messages.length" aria-label="清空本场对话" title="清空本场对话" @click="toggleClear"><AppIcon name="refresh" :size="18" /></button><button type="button" aria-label="关闭 AI 助手" @click="emit('close')"><AppIcon name="close" /></button></div></header><nav class="scene-assistant__views" aria-label="助手工作视图"><button type="button" :aria-pressed="activeView==='chat'" @click="activeView='chat';emit('planPreview',[])"><AppIcon name="brain" :size="18" />场景对话</button><button type="button" :aria-pressed="activeView==='plan'" @click="activeView='plan'"><AppIcon name="route" :size="18" />目标计划</button></nav></div>
+    <button v-if="atSeconds===null" type="button" class="director-workspace-back" @click="emit('navigate',{kind:'training',label:'返回当前任务'})"><AppIcon name="back" :size="18" />返回当前任务</button>
     <div v-if="mobile && atSeconds===null && ['running','paused'].includes(drillStatus??'')" class="scene-assistant__run-controls">
       <span>{{clock(liveSeconds)}} · {{drillStatus==='paused'?'已暂停':'进行中'}}</span>
       <button type="button" :disabled="busy" @click="emit('stateAction',drillStatus==='paused'?'resume':'pause')">{{drillStatus==='paused'?'继续演练':'暂停演练'}}</button>

@@ -1,6 +1,6 @@
 import * as THREE from 'three'
 import type { IndoorState } from '../domain/indoor'
-import { cutFloor, stairOpenings, furnitureFits, doorPortal, type Passage } from './indoorGeometry'
+import { cutFloor, stairOpenings, furnitureFits, doorPortal, doorWallPanels, type Passage } from './indoorGeometry'
 import { KitchenAssets } from './kitchenAssets'
 import { SceneMaterials } from './sceneMaterials'
 
@@ -138,7 +138,18 @@ export class IndoorFireVisuals {
       const passage = this.passages.find(edge => edge.id === door.id)
       const hall = passage?.end ?? this.initial.zones.find(zone => zone.kind === 'corridor' && zone.floor === floor)
       if (!room || !hall) continue
-      const opening = doorPortal(room, hall, passage?.width_meters ?? .9), width = opening.width
+      const legacy = doorPortal(room, hall, passage?.width_meters ?? .9)
+      const opening = door.portal ? {...legacy, x:door.portal.x, y:door.portal.y,
+        width:door.portal.width, rotation:Math.atan2(door.portal.normal_x,door.portal.normal_y),
+        hingeX:-door.portal.width/2-.04} : legacy
+      const width = opening.width
+      for (const panel of doorWallPanels(room, opening)) {
+        if (!furnitureFits(panel, room.height, this.passages)) continue
+        const wall=box(layer,panel.width,1.05,panel.depth,0xc9c9bb,0,0,0)
+        wall.position.copy(this.point(panel.x,panel.y,room.height)); wall.position.y+=.525
+        const cap=box(layer,panel.width+.015,.035,panel.depth+.015,0xe0dac9,0,0,0)
+        cap.position.copy(this.point(panel.x,panel.y,room.height));cap.position.y+=1.0675
+      }
       const frame = new THREE.Group(); frame.position.copy(this.point(opening.x, opening.y, room.height))
       frame.rotation.y = opening.rotation; layer.add(frame)
       for (const side of [-1, 1]) box(frame, .06, 2.14, .1, 0x8b7257, side * (width / 2 + .03), 1.07, 0)
@@ -147,7 +158,8 @@ export class IndoorFireVisuals {
       box(hinge, width, 2.1, .045, 0xb89467, width / 2, 1.05, 0)
       box(hinge, .035, .12, .08, 0x344e46, width - .12, 1, -.05)
       this.doors.set(door.id, hinge)
-      const marker=new THREE.Mesh(new THREE.BoxGeometry(width,.015,.22),new THREE.MeshBasicMaterial({color:0x6dc6ad}))
+      const clearance=door.portal?.clearance_radius??0
+      const marker=new THREE.Mesh(new THREE.BoxGeometry(width+2*clearance,.015,(door.portal?.wall_depth??.22)+2*clearance),new THREE.MeshBasicMaterial({color:0x6dc6ad,transparent:true,opacity:.32,depthWrite:false}))
       marker.position.y=.018;frame.add(marker);this.doorMarkers.set(door.id,marker);this.doorFrames.set(door.id,frame)
       this.register(frame, {title:door.label,type:'可操作房门',action:'indoor-door',doorId:door.id,detail:'点击查看本扇房门、占用人员与通行条件。',x:opening.x,y:opening.y})
     }

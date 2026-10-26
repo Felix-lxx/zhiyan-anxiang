@@ -1,6 +1,7 @@
 export interface IndoorZone { id:string; name:string; kind:string; floor:number; x:number; y:number; height:number; width:number; depth:number; smoke_density:number; visibility:number; temperature:number }
 export interface IndoorDoorOccupant { id:string; kind:'resident'|'helper'; label:string; reason:string }
-export interface IndoorDoor { id:string; label:string; room_id:string; floor:number; state:'open'|'closed'; can_close?:boolean; blocked_reason?:string|null; occupants?:IndoorDoorOccupant[] }
+export interface DoorPortal { x:number; y:number; height:number; width:number; normal_x:number; normal_y:number; clearance_radius:number; wall_depth:number }
+export interface IndoorDoor { id:string; label:string; room_id:string; floor:number; state:'open'|'closed'; portal?:DoorPortal; can_close?:boolean; blocked_reason?:string|null; occupants?:IndoorDoorOccupant[] }
 export interface KitchenEquipmentLayout {
   room_id:string
   counter:{x:number;y:number;width:number;depth:number}

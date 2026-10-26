@@ -1,6 +1,7 @@
 """Deterministic compartment smoke model on the frozen pedestrian topology."""
 from collections import OrderedDict
 from copy import deepcopy
+from app.services.indoor_layout import door_portal
 
 
 def attach_indoor_environment(world):
@@ -22,7 +23,9 @@ def attach_indoor_environment(world):
         links.append({'id': edge['id'], 'a': edge['start_node_id'], 'b': edge['end_node_id']})
         if edge['kind'] == 'room':
             room = next(zone for zone in zones if zone['id'] == edge['start_node_id'])
+            hall = next(zone for zone in zones if zone['id'] == edge['end_node_id'])
             doors.append({'id': edge['id'], 'label': room['name'] + '房门', 'room_id': room['id'], 'floor': room['floor'],
+                          'portal': door_portal(room, hall, edge['width_meters']),
                           'state': world['parameters'].get('room_door_state', 'open') if room['id'] == source['location']['node_id'] else 'open'})
     world['indoor_environment'] = {'model_version': 1, 'building_id': building_id, 'source_zone_id': source['location']['node_id'],
                                  'zones': zones, 'links': links, 'doors': doors,

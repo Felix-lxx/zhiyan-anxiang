@@ -1,6 +1,6 @@
 """Bounded, read-only cross-scene history. Never advances the simulation."""
 from datetime import UTC, datetime
-from sqlalchemy import func, or_, select
+from sqlalchemy import case, func, or_, select
 from app.models.domain import Scene
 from app.models.operations import DrillEvent, DrillScore, DrillSession
 
@@ -59,7 +59,11 @@ def history_page(session, community_id, *, page=1, page_size=20, search='',
                         details=[], recommendations=score.recommendations))
 
     rows = session.execute(query.where(*filters).order_by(*order).offset((page-1)*page_size).limit(page_size))
-    unfinished = session.execute(query.where(scope, DrillSession.status.in_(['running', 'paused']))
+    unfinished = session.execute(query.where(scope, DrillSession.status.in_(['ready', 'running', 'paused']))
+        .order_by(case((DrillSession.status.in_(['running', 'paused']), 0), else_=1),
+                  DrillSession.created_at.desc(), DrillSession.id.desc()).limit(1)).first()
+    review = session.execute(query.where(scope, DrillSession.status == 'ended')
         .order_by(DrillSession.created_at.desc(), DrillSession.id.desc()).limit(1)).first()
     return dict(items=[serialize(row) for row in rows], total=total, matched=matched,
-                page=page, page_size=page_size, latest_unfinished=serialize(unfinished) if unfinished else None)
+                page=page, page_size=page_size, latest_unfinished=serialize(unfinished) if unfinished else None,
+                latest_review=serialize(review) if review else None)

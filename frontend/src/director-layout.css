@@ -133,6 +133,9 @@ html .operations-center--immersive.coach-open>.director-stage :is(.director-metr
   html .operations-center--immersive.drawer-open>.director-stage>:not(.director-drawer):not(.ui-toast) { visibility:hidden; }
 }
 html .operations-center--immersive.drawer-open>.director-stage .director-drawer>.drawer-list { flex:1; min-height:0; overscroll-behavior:contain; }
+html .operations-center--immersive .director-drawer>.training-journey { flex:1; min-height:0; overflow:auto; padding:20px; overscroll-behavior:contain; scrollbar-gutter:stable; }
+.director-workspace-back { display:flex; align-items:center; justify-content:flex-start; flex:0 0 auto; gap:8px; min-height:44px; padding:10px 18px; font:inherit; font-size:14px; color:var(--text-primary); background:var(--surface-panel); border:0; border-bottom:1px solid var(--border-default); cursor:pointer; }
+.director-workspace-back:focus-visible { outline:2px solid var(--text-primary); outline-offset:-3px; }
 @media(min-width:761px) and (max-width:1100px) {
   html .operations-center--immersive { --scene-left:90px; --scene-inspector-width:320px; --scene-tools-top:calc(var(--scene-panel-top,84px) + 184px); }
   html .atlas-director-modes { width:64px; }

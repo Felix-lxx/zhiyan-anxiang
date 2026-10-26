@@ -4,6 +4,7 @@ export interface HelperState {
   state:string;behavior?:string;responsible?:string;met_at_seconds?:number
   congestion?:number;route_reachable?:boolean
   route_points?:Array<{x:number;y:number;height?:number}>
+  motion_trace?:Array<{x:number;y:number;height:number;at_seconds:number}>
 }
 
 export const helperIdentity = (helper:HelperState) => helper.staff_id || helper.id

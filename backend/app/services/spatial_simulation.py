@@ -12,6 +12,7 @@ from app.services.escort_motion import can_meet, follow_walked_path
 from app.services.navigation_geometry import building_obstacles, clear_segment
 from app.services.response_staff import roster as staff_roster, projection as staff_projection
 from app.services.indoor_fire import zone_density
+from app.services.motion_trace import record_motion
 
 
 def xyz(p):
@@ -82,6 +83,8 @@ def simulate(world, events, elapsed, strategy=None, branch_at=None, *, checkpoin
         people = [{**deepcopy(p), "node_id": p["start_node_id"], "edge_id": None, "edge_progress": 0., "exit": "north" if i % 2 == 0 else "south", "status": "waiting", "release_at": 10**9, "assisted": False, "smoke_exposure": 0., "congestion": 0., "travelled": 0., "queue_seconds": 0., "counted": False, "forced_exit": False} for i, p in enumerate(world["residents"])]
         by_id = {p["id"]: p for p in people}
     staff = staff_roster(world)
+    for actor in [*people, *helpers.values()]:
+        record_motion(actor, now)
     flow_dirty = False
     origin = world["fire_origin"]
     fire, env = environment_at(now)
@@ -278,6 +281,8 @@ def simulate(world, events, elapsed, strategy=None, branch_at=None, *, checkpoin
                 now += skipped
                 continue
         actors = [*people, *(h for h in helpers.values() if h["state"] in {"approaching", "blocked"})]
+        for actor in actors:
+            record_motion(actor, now)
         occupied = defaultdict(list)
         waiting_counts = defaultdict(int)
         for a in actors:
@@ -404,7 +409,9 @@ def simulate(world, events, elapsed, strategy=None, branch_at=None, *, checkpoin
                     actor.setdefault("building_exited_at_seconds", now+dt)
                 if not is_helper and nodes[actor["node_id"]].get("is_exit"): actor.setdefault("exit_reached_at_seconds", now+dt)
             if not is_helper and person["id"] in helpers and helpers[person["id"]]["state"] == "escorting":
-                follow_walked_path(helpers[person['id']], person)
+                follow_walked_path(helpers[person['id']], person, elapsed=now+dt)
+        for actor in [*people, *helpers.values()]:
+            record_motion(actor, now + dt)
         now += dt
     if checkpoint_out is not None and not strategy and now * 2 == int(now * 2):
         checkpoint_out.update(revision_id=ENGINE_REVISION, world_digest=digest(world),

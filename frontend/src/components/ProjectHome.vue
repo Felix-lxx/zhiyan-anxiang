@@ -5,6 +5,7 @@ import AppIcon from './AppIcon.vue'
 import CommunityLibrary from './CommunityLibrary.vue'
 import CommunityPlan from './CommunityPlan.vue'
 import CommunityReadiness from './CommunityReadiness.vue'
+import TrainingHomeActions from './TrainingHomeActions.vue'
 import AccountCenter from './AccountCenter.vue'
 import { accountProfile } from '../api/account'
 import { createApiClient } from '../api/client'
@@ -27,7 +28,8 @@ const section=computed(()=>String(route.query.section || 'home'))
 const historySearch=ref(''), historyStatus=ref('all')
 const historyScene=ref(''), historyFrom=ref(''), historyTo=ref(''), historySort=ref('newest'), historyPage=ref(1), historyError=ref('')
 const dateError=computed(()=>Boolean(historyFrom.value && historyTo.value && historyFrom.value>historyTo.value))
-interface HistoryPage {items:HistoryRow[]; total:number; matched:number; page:number; page_size:number; latest_unfinished:HistoryRow|null}
+interface HistoryPage {items:HistoryRow[]; total:number; matched:number; page:number; page_size:number; latest_unfinished:HistoryRow|null; latest_review?:HistoryRow|null}
+const latestReview = ref<HistoryRow | null>(null)
 const historyTotal=ref(0), historyMatched=ref(0), historyLoading=ref(false), unfinished=ref<HistoryRow|null>(null)
 const pageCount=computed(()=>Math.max(1,Math.ceil(historyMatched.value/20)))
 const visibleHistory=computed(()=>history.value)
@@ -49,7 +51,7 @@ async function loadHistory(){
  try{
   const result=await api.get<HistoryPage>('/communities/'+communityId.value+'/drill-history?'+query,{signal:historyController.signal})
   if(id!==historyRequest)return
-  history.value=result.items;historyTotal.value=result.total;historyMatched.value=result.matched;unfinished.value=result.latest_unfinished
+  history.value=result.items;historyTotal.value=result.total;historyMatched.value=result.matched;unfinished.value=result.latest_unfinished;latestReview.value=result.latest_review??null
   if(isHistory)historyPage.value=result.page
  }catch(cause){if(id===historyRequest && !(cause instanceof DOMException&&cause.name==='AbortError'))historyError.value=cause instanceof Error?cause.message:'演练记录读取失败，请重试。'}
  finally{if(id===historyRequest)historyLoading.value=false}
@@ -101,7 +103,7 @@ async function load(){
 }
 async function loadScenes(){
  if(historyTimer)clearTimeout(historyTimer)
- historyController?.abort();historyRequest++;unfinished.value=null;historyTotal.value=0;historyMatched.value=0
+ historyController?.abort();historyRequest++;unfinished.value=null;latestReview.value=null;historyTotal.value=0;historyMatched.value=0
  const previousScene=sceneId.value, id=++generation;allScenes.value=[];history.value=[];sceneId.value='';error.value='';historyError.value='';historyPage.value=1
  try{
  const result=await api.get<Scene[]>('/communities/'+communityId.value+'/scenes');if(id!==generation)return
@@ -118,7 +120,7 @@ async function prepare(){
 }
 async function enter(){
  if(previewError.value){await prepare();return}
- if(scene.value?.status==='published'&&community.value){await router.push({name:'operations',params:{communityId:community.value.id},query:{scene:scene.value.id,autostart:'1'}});return}
+ if(scene.value?.status==='published'&&community.value){await router.push({name:'operations',params:{communityId:community.value.id},query:{scene:scene.value.id,new:'1'}});return}
  if(community.value&&scene.value){await prepare();return}
  busy.value=true;error.value=''
  try{const result=await api.post<{community:Community}>('/communities/demo-ready');emit('openOperations',result.community)}
@@ -146,7 +148,7 @@ onMounted(load)
    <header class="atlas-home__title"><h1>{{section==='history'?'复盘记录':'演练工作台'}}</h1><p>以真实场景锻炼应急能力，让社区更安全</p><label v-if="communities.length>1" class="atlas-community-switch"><span>社区</span><select v-model="communityId" @change="loadScenes"><option v-for="c in communities" :key="c.id" :value="c.id">{{c.name}}</option></select></label></header>
    <label class="home-test-data"><input v-model="showTestData" type="checkbox"/>显示验收场景与试验记录</label>
    <p v-if="error" class="atlas-home__error" role="alert">{{error}}<button @click="load">重新加载</button></p>
-   <div v-if="section!=='history'&&unfinished" class="home-resume"><div><strong>还有一场训练未完成</strong><p>{{unfinished.name}} · {{unfinished.status==='running'?'进行中':'已暂停'}} · 已推进 {{Math.floor(unfinished.elapsed_seconds/60)}} 分 {{unfinished.elapsed_seconds%60}} 秒</p></div><button type="button" @click="continueRun(unfinished)">继续这场演练<AppIcon name="arrowRight" :size="18"/></button></div>
+   <TrainingHomeActions v-if="section!=='history'" :api-base-url="apiBaseUrl" :access-token="accessToken" :unfinished="unfinished" :review="latestReview" :loading="loading||historyLoading" :busy="busy" @resume="unfinished&&continueRun(unfinished)" @prepare="prepare" @review="latestReview&&replay(latestReview)" />
    <nav v-if="section!=='history'" class="home-case-switch" aria-label="选择火灾案例">
      <button type="button" :disabled="loading||busy" :aria-pressed="Boolean(scene)&&!isKitchenCase" @click="chooseCase('night_charging_shed_fire')"><AppIcon name="fire"/><span><strong>充电棚火灾</strong><small>室外通道 · 资源调度 · 分流疏散</small></span></button>
      <button type="button" :disabled="loading||busy" :aria-pressed="Boolean(scene)&&isKitchenCase" @click="chooseCase('kitchen_fire')"><AppIcon name="building"/><span><strong>住宅厨房火灾</strong><small>室内分区 · 房门控制 · 逐层护送</small></span></button>

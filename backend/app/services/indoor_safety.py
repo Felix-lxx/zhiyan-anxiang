@@ -10,6 +10,17 @@ def door_occupants(layout, door, residents, helpers):
             if actor.get('status') == 'evacuated' or actor.get('state') == 'completed':
                 continue
             at_door = door['id'] in (actor.get('current_edge_id'), actor.get('edge_id'))
+            portal = door.get('portal')
+            if portal and all(key in actor for key in ('x', 'y', 'height')):
+                dx, dy = actor['x']-portal['x'], actor['y']-portal['y']
+                normal = dx*portal['normal_x'] + dy*portal['normal_y']
+                tangent = dx*portal['normal_y'] - dy*portal['normal_x']
+                radius = portal['clearance_radius']
+                # A graph edge may already be released while the body still
+                # overlaps the threshold. Manual and agent closure share this.
+                at_door |= (abs(actor['height']-portal['height']) < .5
+                            and abs(normal) <= radius + portal['wall_depth']/2
+                            and abs(tangent) <= portal['width']/2 + radius)
             in_room = aliases.get(actor.get('node_id'), actor.get('node_id')) == door['room_id']
             # Escort helpers follow an actual trail; their graph node can lag
             # behind their physical position. Check their current footprint too.

@@ -20,7 +20,19 @@ const { RoadVisuals } = await load('roadVisuals')
 const { CrowdRenderer } = await load('crowdRenderer')
 const { presentHelpers, meetingRoute } = await load('helperPresentation')
 const { createRouteGuide } = await load('routeGuide')
-const { cutFloor, stairOpenings, furnitureFits, floorContainsHeight, doorPortal } = await load('indoorGeometry')
+const { cutFloor, stairOpenings, furnitureFits, floorContainsHeight, doorPortal, doorWallPanels } = await load('indoorGeometry')
+
+test('kitchen front partitions leave the frozen door and body clearance open', () => {
+  const room = {x:10,y:10,width:4,depth:4}
+  const opening = doorPortal(room,{x:10,y:13},.9)
+  const panels = doorWallPanels(room,opening)
+  assert.equal(panels.length,2)
+  const passage = {kind:'room',width_meters:.9,start:{x:10,y:10,height:0},end:{x:10,y:13,height:0}}
+  for(const panel of panels) {
+    assert.ok(furnitureFits(panel,0,[passage]))
+    assert.ok(panel.x-panel.width/2>=8-1e-8 && panel.x+panel.width/2<=12+1e-8)
+  }
+})
 
 test('door portal follows passage orientation and open leaf clears the walking envelope', () => {
   const room={x:10,y:10,width:4,depth:4}
@@ -128,6 +140,35 @@ test('road risk updates reuse meshes, refresh selection and rebuild only on topo
 const { createApartment } = await load('communityModels')
 const { FireEffects } = await load('fireEffects')
 const { ActorMotion } = await load('actorMotion')
+
+test('actual lane trace bridges snapshots without snapping or cutting the turn', () => {
+  const motion = new ActorMotion(), actor = new THREE.Group()
+  const p=(x,z)=>new THREE.Vector3(x,0,z)
+  motion.accept(actor,p(0,0),[p(0,0),p(4,0),p(4,4)],0,true,0)
+  const trace=[p(0,0),p(2,.25),p(4,0),p(4.25,2)]
+  motion.accept(actor,trace[3],[trace[3],p(4,4)],1,true,1000,trace)
+  assert.ok(actor.position.equals(trace[0]),'A lateral offset must not force an immediate snap')
+  motion.step(actor,1/3,true)
+  assert.ok(actor.position.distanceTo(trace[1])<1e-8,'Follow the confirmed curved lane before the corner')
+  motion.step(actor,10,true)
+  assert.ok(actor.position.distanceTo(trace[3])<1e-8,'Stop exactly at confirmed position')
+})
+
+test('a newly closed door never animates delayed actors through its leaf', () => {
+  const motion=new ActorMotion(),actor=new THREE.Group()
+  const a=new THREE.Vector3(0,0,0),b=new THREE.Vector3(0,0,2)
+  motion.accept(actor,a,[a,b],0,true,0)
+  const barrier={position:new THREE.Vector3(0,0,1),normal:new THREE.Vector3(0,0,1),width:.9,radius:.28}
+  motion.accept(actor,b,[b],1,true,1000,[a,b],[barrier])
+  assert.ok(actor.position.equals(b),'Reconcile to authority when visual history crosses a now-closed door')
+  assert.equal(motion.step(actor,.5,true),0)
+  motion.clear()
+  motion.accept(actor,a,[a,b],0,true,0)
+  motion.accept(actor,b,[b],1,true,1000,[a,b])
+  assert.ok(actor.position.equals(a))
+  motion.accept(actor,b,[b],1,true,1100,[a,b],[barrier])
+  assert.ok(actor.position.equals(b),'A door-only update must cancel an already queued crossing')
+})
 const { assemblyAttendance } = await load('assemblyPoint')
 
 test('assembly marker only counts confirmed arrivals at its own node', () => {

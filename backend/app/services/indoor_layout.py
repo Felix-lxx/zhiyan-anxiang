@@ -1,4 +1,18 @@
 """Geometry for newly frozen kitchen worlds, shared by fire and walking nodes."""
+import math
+
+
+def door_portal(room: dict, hall: dict, width: float) -> dict:
+    """Freeze the wall intersection, not the room centre or the hallway node."""
+    dx, dy = hall['x'] - room['x'], hall['y'] - room['y']
+    length = math.hypot(dx, dy)
+    if length < 1e-8:
+        raise ValueError('房门通道缺少方向，请检查房间与走廊位置。')
+    t = min(1., room['width'] / (2 * abs(dx)) if dx else math.inf,
+            room['depth'] / (2 * abs(dy)) if dy else math.inf)
+    return dict(x=room['x'] + dx*t, y=room['y'] + dy*t, height=room['height'],
+                width=width, normal_x=dx/length, normal_y=dy/length,
+                clearance_radius=.28, wall_depth=.1)
 
 
 def kitchen_rooms(building: dict, stair_width: float = 1.2) -> dict:

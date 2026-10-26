@@ -36,7 +36,7 @@ const emit = defineEmits<{
       <strong>{{ props.displayClock }}</strong>
     </div>
     <div class="director-actions">
-      <UiButton class="director-actions__coach" variant="secondary" :aria-label="props.coachOpen ? '收起教练' : '训练教练'" :aria-pressed="props.coachOpen" @click="emit('toggleCoach')"><AppIcon name="compass" /><span>{{ props.coachOpen ? '收起教练' : '训练教练' }}</span></UiButton>
+      <UiButton class="director-actions__coach" variant="secondary" :aria-label="props.coachOpen ? '收起当前任务' : '当前训练任务'" :aria-pressed="props.coachOpen" @click="emit('toggleCoach')"><AppIcon name="compass" /><span>{{ props.coachOpen ? '收起任务' : '当前任务' }}</span></UiButton>
       <UiButton v-if="props.drillStatus === 'ready'" class="director-actions__primary" variant="primary" :disabled="props.busy" aria-label="开始推演" @click="emit('action', 'start')"><AppIcon name="play" /><span>开始推演</span></UiButton>
       <UiButton v-if="props.drillStatus === 'running'" :disabled="props.busy" aria-label="暂停演练" @click="emit('action', 'pause')"><AppIcon name="pause" /><span>暂停</span></UiButton>
       <UiButton v-if="props.drillStatus === 'paused'" :disabled="props.busy" aria-label="继续演练" @click="emit('action', 'resume')"><AppIcon name="play" /><span>继续</span></UiButton>

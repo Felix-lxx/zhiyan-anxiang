@@ -50,6 +50,7 @@ try{
   await page.goto(base+'/tests/kitchen-director.html')
   const control=page.getByRole('button',{name:'楼内烟气与门控',exact:true});await control.waitFor();await control.click()
   const panel=page.getByRole('region',{name:'楼内烟气与房门'});await panel.waitFor()
+  await panel.getByText(/门洞净宽 0.90 米/).first().waitFor()
   const close=panel.getByRole('button',{name:/^关闭.*房门$/}).first();await close.click()
   await panel.getByRole('button',{name:/^打开.*房门$/}).first().waitFor()
   assert.ok(await panel.evaluate(el=>el.scrollWidth<=el.clientWidth+1))

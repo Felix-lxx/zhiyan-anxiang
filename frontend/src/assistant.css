@@ -8,6 +8,8 @@
 }
 .scene-assistant * { min-width:0; box-sizing:border-box; }
 .scene-assistant:has(.scene-assistant__run-controls) { grid-template-rows:auto auto minmax(0,1fr) auto; }
+.scene-assistant:has(>.director-workspace-back) { grid-template-rows:auto auto minmax(0,1fr) auto; }
+.scene-assistant:has(>.director-workspace-back):has(.scene-assistant__run-controls) { grid-template-rows:auto auto auto minmax(0,1fr) auto; }
 .scene-assistant__run-controls { display:flex; align-items:center; flex-wrap:wrap; gap:8px; padding:8px 14px; border-bottom:1px solid #335347; }
 .scene-assistant__run-controls span { margin-right:auto; font-size:14px; font-variant-numeric:tabular-nums; }
 .scene-assistant h2,.scene-assistant h3,.scene-assistant p { margin:0; }

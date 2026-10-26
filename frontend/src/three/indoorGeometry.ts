@@ -4,6 +4,21 @@ export interface SpatialPoint { x: number; y: number; height: number }
 export interface Passage { id?: string; kind: string; width_meters: number; start: SpatialPoint; end: SpatialPoint }
 export interface FloorRect { x: number; y: number; width: number; depth: number }
 
+/** Partial front walls around the real doorway, never an unbroken room box. */
+export function doorWallPanels(room: FloorRect, opening: {x:number;y:number;width:number;rotation:number}): FloorRect[] {
+  const nx = Math.sin(opening.rotation), ny = Math.cos(opening.rotation)
+  // Historical diagonal doors need their original unobstructed presentation.
+  if (Math.abs(nx) > .001 && Math.abs(ny) > .001) return []
+  const span = Math.abs(ny) > .5 ? room.width : room.depth
+  const center = (room.x-opening.x)*ny - (room.y-opening.y)*nx
+  const intervals = [[center-span/2, -opening.width/2-.08], [opening.width/2+.08, center+span/2]]
+  return intervals.filter(([a,b]) => b! - a! > .08).map(([a,b]) => {
+    const offset = (a!+b!)/2, length = b!-a!
+    return {x:opening.x+ny*offset,y:opening.y-nx*offset,
+      width:Math.abs(ny)>.5?length:.08,depth:Math.abs(ny)>.5?.08:length}
+  })
+}
+
 /** Place the door perpendicular to its authoritative passage, at the room boundary. */
 export function doorPortal(room: FloorRect, hall: {x:number;y:number}, width:number) {
   const dx=hall.x-room.x, dy=hall.y-room.y

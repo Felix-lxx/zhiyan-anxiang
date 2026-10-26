@@ -33,7 +33,7 @@ try {
     await body.evaluate(el => { el.scrollTop = el.scrollHeight })
     await coach.getByRole('button', { name: '收起引导演练' }).click()
     assert.equal(await coach.count(), 0, 'Close remains reachable after scrolling')
-    await page.getByRole('button', { name: '训练教练', exact: true }).click()
+    await page.getByRole('button', { name: '当前训练任务', exact: true }).click()
     await coach.getByRole('button', { name: '检查任务与遗漏' }).click()
     assert.equal(await coach.isVisible(), false, 'Task drawer replaces the coach')
     await page.getByRole('button', { name: '关闭面板' }).click()

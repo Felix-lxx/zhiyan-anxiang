@@ -1,10 +1,12 @@
 import * as THREE from 'three'
 
+export interface MotionBarrier { position:THREE.Vector3; normal:THREE.Vector3; width:number; radius:number }
+
 /** Presentation only. Never extrapolates beyond a server-confirmed position. */
 export class ActorMotion {
   private tracks = new Map<THREE.Object3D, { target: THREE.Vector3; route: THREE.Vector3[]; path: THREE.Vector3[]; cursor: number; speed: number; stamp: number; received: number }>()
 
-  accept(object: THREE.Object3D, target: THREE.Vector3, route: THREE.Vector3[], stamp: number, animate: boolean, now = performance.now()) {
+  accept(object: THREE.Object3D, target: THREE.Vector3, route: THREE.Vector3[], stamp: number, animate: boolean, now = performance.now(), trace: THREE.Vector3[] = [], barriers: MotionBarrier[] = []) {
     const incomingRoute = route
     let nearest = Infinity, segmentIndex = -1
     for (let i = 1; i < route.length; i++) {
@@ -22,6 +24,9 @@ export class ActorMotion {
     }
     // Selection changes and unrelated snapshots must not restart interpolation.
     if (previous.target.distanceToSquared(target) < .000001) {
+      if (this.crossesClosedDoor([object.position,...previous.path.slice(previous.cursor)],barriers)) {
+        object.position.copy(target); previous.path=[]; previous.cursor=0
+      }
       if (stamp !== previous.stamp) { previous.received = now; previous.stamp = stamp }
       previous.route = route
       return
@@ -29,9 +34,13 @@ export class ActorMotion {
     const source = previous.path.slice(previous.cursor).concat(previous.route)
     // A reversed route can still contain the rendered position. Use its real
     // vertices when available instead of a straight line to the next snapshot.
-    const path = this.confirmedPath(object.position, target, source)
+    // Actual sampled positions include lane offsets and completed turns. A
+    // future route is not proof of the path walked between two snapshots.
+    const traced = trace.length > 1 && trace[trace.length - 1]!.distanceToSquared(target) < .000001
+      ? this.pathOnNewRoute(object.position, target, trace) : null
+    const path = traced ?? this.confirmedPath(object.position, target, source)
       ?? this.pathOnNewRoute(object.position, target, incomingRoute)
-    if (!path) {
+    if (!path || this.crossesClosedDoor([object.position, ...path], barriers)) {
       object.position.copy(target)
       this.tracks.set(object, { target: target.clone(), route, path: [], cursor: 0, speed: 0, stamp, received: now })
       return
@@ -40,6 +49,19 @@ export class ActorMotion {
     for (const next of path) { distance += point.distanceTo(next); point = next }
     const duration = THREE.MathUtils.clamp((now - previous.received) / 1000, .12, 1.2)
     this.tracks.set(object, { target: target.clone(), route, path, cursor: 0, speed: distance / duration, stamp, received: now })
+  }
+
+  private crossesClosedDoor(points:THREE.Vector3[], barriers:MotionBarrier[]) {
+    for (const barrier of barriers) for (let i=1;i<points.length;i++) {
+      const a=points[i-1]!, b=points[i]!
+      const start=a.clone().sub(barrier.position).dot(barrier.normal)
+      const end=b.clone().sub(barrier.position).dot(barrier.normal)
+      if (start*end>0 || Math.abs(start-end)<1e-8) continue
+      const hit=a.clone().lerp(b,start/(start-end)).sub(barrier.position)
+      const lateral=hit.x*barrier.normal.z-hit.z*barrier.normal.x
+      if (Math.abs(lateral)<=barrier.width/2+barrier.radius && hit.y>=-.2 && hit.y<=2.1) return true
+    }
+    return false
   }
 
   private pathOnNewRoute(start: THREE.Vector3, target: THREE.Vector3, route: THREE.Vector3[]) {

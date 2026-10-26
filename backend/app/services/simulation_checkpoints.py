@@ -5,7 +5,7 @@ from hashlib import sha256
 import json
 from threading import RLock
 
-ENGINE_REVISION = 8
+ENGINE_REVISION = 9
 _states = OrderedDict()
 _lock = RLock()
 

@@ -853,12 +853,19 @@ def snapshot(session: Session, drill: DrillSession) -> dict:
     task_states = projected_tasks(world, all_events, elapsed, simulation, live_robot) if world else None
     score_preview = calculate_score_data(session, drill, all_events, simulation)
     derived_commands = command_feedback(all_events, simulation, live_robot, elapsed, drill.status)
+    commands = ledger_feedback(session, drill, derived_commands)
+    visible_tasks = task_states if task_states is not None else [{"id": t.id, "title": t.title, "target": t.target, "deadline_seconds": t.deadline_seconds, "status": "completed" if t.id in completed_task_ids else "pending"} for t in tasks]
+    from app.services.training_journey import project_journey
+    journey = project_journey(world=world, status=drill.status, elapsed=elapsed,
+                              simulation=simulation, tasks=visible_tasks, robot=live_robot,
+                              commands=commands, events=all_events)
     return {
         "id": drill.id, "name": drill_label(drill.name, world), "status": drill.status, "time_scale": drill.time_scale,
         "elapsed_seconds": elapsed, "participants": participant_state,
         "events": [{"id": e.id, "sequence": e.sequence, "event_type": e.event_type, "actor": e.actor, "message": e.message, "elapsed_seconds": e.elapsed_seconds, "payload": {k: v for k, v in e.payload.items() if k not in {"world", "token_hash", "participant_token"}}} for e in events],
         "robot": live_robot,
-        "tasks": task_states if task_states is not None else [{"id": t.id, "title": t.title, "target": t.target, "deadline_seconds": t.deadline_seconds, "status": "completed" if t.id in completed_task_ids else "pending"} for t in tasks],
+        "tasks": visible_tasks,
+        "journey": journey,
         "engine_version": world.get("schema_version", 2) if world else 1,
         "branch": next((e.payload for e in all_events if e.event_type == "drill.branched"), None),
         "director_enabled": next((e.payload.get("enabled", False) for e in reversed(all_events) if e.event_type == "director.configured"), False),
@@ -867,8 +874,15 @@ def snapshot(session: Session, drill: DrillSession) -> dict:
         "simulation": simulation,
         "latest_event_sequence": all_events[-1].sequence if all_events else 0,
         "state_version": state_version(all_events[-1].sequence if all_events else 0, elapsed, participant_presence_revision(session, drill.id)),
-        "commands": ledger_feedback(session, drill, derived_commands),
+        "commands": commands,
     }
+
+
+@router.get("/drills/{drill_id}/journey")
+def get_training_journey(drill_id: str, identity: AuthenticatedIdentity = Depends(get_current_identity), session: Session = Depends(get_db)):
+    """One bounded resume read; the history index never simulates every row."""
+    drill = require_drill(session, drill_id, identity.username)
+    return snapshot(session, drill)["journey"]
 
 
 @router.post("/scenes/{scene_id}/drills", status_code=status.HTTP_201_CREATED)
@@ -1453,7 +1467,7 @@ def drill_report(drill_id: str, identity: AuthenticatedIdentity = Depends(get_cu
     return {
         "title": f"{drill.name}复盘报告", "status": drill.status, "duration_seconds": drill.elapsed_seconds,
         "participants": data["participants"], "score": data["score"], "score_preview": data["score_preview"], "simulation_summary": data["simulation"]["summary"], "evidence": [{"id": event.id, "sequence": event.sequence, "event_type": event.event_type, "actor": event.actor, "message": event.message, "elapsed_seconds": event.elapsed_seconds, "payload": {k: v for k, v in event.payload.items() if k not in {"token_hash", "participant_token"}}} for event in all_events],
-        "robot": data["robot"], "tasks": data["tasks"],
+        "robot": data["robot"], "tasks": data["tasks"], "training": data["journey"],
     }
 
 

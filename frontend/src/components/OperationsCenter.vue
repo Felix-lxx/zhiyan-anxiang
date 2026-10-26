@@ -19,6 +19,8 @@ import DigitalTwinArena, { type AssistantSceneContext } from './DigitalTwinArena
 import AppIcon from './AppIcon.vue'
 import TaskWorkflow from './TaskWorkflow.vue'
 import GuidedExercise from './GuidedExercise.vue'
+import TrainingJourneyPanel from './TrainingJourneyPanel.vue'
+import type { TrainingAction } from '../domain/training'
 import SpatialTrainingLab from './SpatialTrainingLab.vue'
 import SceneAssistant, { type AssistantAction, type AssistantFocusContext } from './SceneAssistant.vue'
 import DirectorTopbar from './DirectorTopbar.vue'
@@ -70,7 +72,7 @@ const agentFeed = ref<AgentLiveState|null>(null)
 const loading = ref(true), busy = ref(false), isPreparingDemo = ref(false)
 const autoStartAttempted = ref(false)
 const error = ref(''), form = ref({ name: '', time_scale: 1, training_mode: 'teaching' as 'teaching'|'assessment' })
-type DirectorDrawerName = 'none' | 'missions' | 'indoor' | 'events' | 'branches' | 'report' | 'more' | 'participant' | 'settings' | 'rollcall'
+type DirectorDrawerName = 'none' | 'training' | 'missions' | 'indoor' | 'events' | 'branches' | 'report' | 'more' | 'participant' | 'settings' | 'rollcall'
 const indoorFocus = ref<{buildingId:string;floor:number}|null>(null)
 const selectedIndoorDoor = ref<string>()
 const focusedTaskId = ref<string>()
@@ -122,7 +124,8 @@ async function forkReplay(at:number,sequence?:number) {
 const assistantOpen = computed({ get: () => activePanel.value === 'assistant', set: value => { if (value) activePanel.value = 'assistant'; else if (activePanel.value === 'assistant') activePanel.value = 'none' } })
 const replayWorkspace = ref<InstanceType<typeof ReplayWorkspace> | null>(null)
 const assistantFocus = ref<AssistantFocusContext | null>(null)
-const coachOpen = ref(localStorage.getItem('zhiyan_coach_collapsed') === '0')
+const coachOpen = ref(false)
+const assistant = ref<InstanceType<typeof SceneAssistant> | null>(null)
 const detailPanelOpen = computed(() => activePanel.value !== 'none')
 const coachVisible = computed(() => coachOpen.value && !detailPanelOpen.value && !spatialPreview.value && !spatialPreviewBusy.value)
 const endConfirmationOpen = ref(false)
@@ -192,7 +195,7 @@ const orderedTasks = computed(() => [...(displayed.value?.tasks ?? [])].sort((a,
   return priority(a)-priority(b)||(a.remaining_seconds??Number.POSITIVE_INFINITY)-(b.remaining_seconds??Number.POSITIVE_INFINITY)
 }))
 const visibleTasks=computed(()=>focusedTaskId.value?orderedTasks.value.filter(task=>task.id===focusedTaskId.value):orderedTasks.value)
-const drawerTitle = computed(() => ({ none: '现场工具', missions: '处置任务', indoor:'楼内人员与烟气', events: '事件证据', branches: '比较另一种决策', report: '本场复盘', more: '更多现场工具', participant: '手机参演', settings: '场次与显示', rollcall: '集合清点' } satisfies Record<DirectorDrawerName, string>)[drawer.value])
+const drawerTitle = computed(() => ({ none: '现场工具', training: current.value?.status === 'ready' ? '训练简报' : '当前训练任务', missions: '处置任务', indoor:'楼内人员与烟气', events: '事件证据', branches: '比较另一种决策', report: '本场复盘', more: '更多现场工具', participant: '手机参演', settings: '场次与显示', rollcall: '集合清点' } satisfies Record<DirectorDrawerName, string>)[drawer.value])
 const displayClock = computed(() => formatClock(displayed.value?.elapsed_seconds ?? 0))
 function formatClock(value: number): string { return `${String(Math.floor(value / 60)).padStart(2,'0')}:${String(value % 60).padStart(2,'0')}` }
 const onlineParticipantCount = computed(() => current.value?.participants.reduce((sum, item) => sum + (item.online_count ?? (item.connected ? 1 : 0)), 0) ?? 0)
@@ -244,6 +247,11 @@ async function loadDrills(): Promise<void> {
     if(generation!==indexGeneration || sceneId!==selectedSceneId.value)return
     drills.value=data
     indexLoading.value=false
+    if (route.query.new === '1' && !autoStartAttempted.value) {
+      autoStartAttempted.value = true
+      await createDrill()
+      return
+    }
     const requested=route.query.scene===sceneId&&typeof route.query.drill==='string'?route.query.drill:undefined
     const selected=requested?drills.value.find(item=>item.id===requested):drills.value[0]
     if(requested&&!selected)throw new Error('链接中的场次不属于当前场景或已不可访问，请返回演练记录重新选择。')
@@ -260,7 +268,15 @@ async function loadDrills(): Promise<void> {
   finally { window.clearTimeout(timeout); if(generation===indexGeneration)indexLoading.value=false }
 }
 async function createDrill(): Promise<void> { busy.value = true; try { const drill = await api.request<Drill>(`${props.apiBaseUrl}/scenes/${selectedSceneId.value}/drills`, { method: 'POST', headers: { ...headers(), 'Content-Type': 'application/json' }, body: JSON.stringify({...form.value, name: form.value.name.trim() || `${scenes.value.find(scene=>scene.id===selectedSceneId.value)?.name ?? '社区消防'} · 新一轮演练`}) }); drills.value = [drill, ...drills.value]; selectDrill(drill) } catch (cause) { error.value = cause instanceof Error ? cause.message : '场次创建失败。' } finally { busy.value = false } }
-function selectDrill(drill: Drill): void { closeFloatingPanels(); assistantFocus.value=null; leaveReplay(); current.value = drill; participantInvite.value = null; branchComparison.value = null; void router.replace({query:{scene:selectedSceneId.value,drill:drill.id,...(directorMode.value==='replay'?{mode:'replay'}:{})}}); if(drill.status==='ended'){desiredDrillId=drill.id;stopLive?.();stopLive=undefined;socketState.value='live'}else connectSocket(drill.id); if(directorMode.value==='replay') void seekReplay(0) }
+function selectDrill(drill: Drill): void {
+  closeFloatingPanels(); assistantFocus.value = null; leaveReplay()
+  current.value = drill; participantInvite.value = null; branchComparison.value = null
+  void router.replace({ query: { scene: selectedSceneId.value, drill: drill.id, ...(directorMode.value === 'replay' ? { mode: 'replay' } : {}) } })
+  if (drill.status === 'ended') { desiredDrillId = drill.id; stopLive?.(); stopLive = undefined; socketState.value = 'live' }
+  else connectSocket(drill.id)
+  if (directorMode.value === 'replay') void seekReplay(0)
+  else if (drill.journey) drawer.value = 'training'
+}
 async function loadParticipantInvite(): Promise<void> {
   const drillId = current.value?.id
   participantInvite.value = null
@@ -409,11 +425,40 @@ async function downloadReport(): Promise<void> {
 function closeFloatingPanels(): void { panelGeneration++; focusedTaskId.value=undefined; activePanel.value = 'none'; branchEvidence.value = null; clearSpatialPreview() }
 function toggleAssistant(): void { const next = !assistantOpen.value; closeFloatingPanels(); assistantOpen.value = next }
 function openAssistant(context?: AssistantFocusContext | null): void { if (context !== undefined) assistantFocus.value = context; closeFloatingPanels(); assistantOpen.value = true }
+function openTraining(): void {
+  closeFloatingPanels(); coachOpen.value = false
+  if (current.value?.journey && !replay.value) drawer.value = 'training'
+  else coachOpen.value = true
+}
+async function trainingAction(action: TrainingAction): Promise<void> {
+  if (!current.value || replay.value || busy.value) return
+  switch (action.kind) {
+    case 'start': await act('start'); break
+    case 'resume': await act('resume'); break
+    case 'finish': await act('end'); break
+    case 'task': if (action.target_id) await inspectTask(action.target_id); break
+    case 'rollcall': openRollcall(); break
+    case 'locate': closeFloatingPanels(); if (action.target_id) arena.value?.focusResident(action.target_id); break
+    case 'indoor': inspectIndoor(); break
+    case 'missions': closeFloatingPanels(); drawer.value = 'missions'; break
+    case 'review': await openReplay(); break
+    case 'acknowledge':
+      if (current.value.status !== 'running') { notifyCommand('请先继续训练，再确认响应。'); return }
+      await requestDrill('/participant-actions', 'POST', {role:'应急指挥人员', action:'acknowledge', message:'总控已确认火情并组织响应'}, '响应确认已记录；继续安排疏散与责任任务。')
+      break
+    case 'plan':
+      openAssistant(null)
+      await nextTick()
+      assistant.value?.showPlan()
+      break
+  }
+}
 function updateAssistantContext(context: AssistantSceneContext | null): void { assistantFocus.value = context }
 function askAboutCommand(command: CommandReceipt): void { openAssistant({ kind: 'command', id: command.id, label: command.label, type: '指令执行回执', detail: `${command.reason}；当前状态 ${command.status}` }) }
 function openReplayAssistant(context?: AssistantFocusContext): void { openAssistant(context ?? { kind: 'replay', label: `历史时刻 ${formatClock(replayAt.value)}`, type: '演练复盘', detail: '当前正在查看的只读历史快照' }) }
 function closeAssistant(): void { assistantOpen.value = false; void nextTick(() => document.querySelector<HTMLButtonElement>('[data-director-action="assistant"]')?.focus()) }
 async function assistantNavigate(action: AssistantAction): Promise<void> {
+  if(action.kind==='training'){openTraining();return}
   if(action.kind==='rollcall'){closeFloatingPanels();drawer.value='rollcall';return}
   const historical = directorMode.value === 'replay' || Boolean(replay.value)
   closeFloatingPanels()
@@ -499,8 +544,8 @@ onBeforeUnmount(() => { desiredDrillId = ''; stopLive?.(); clearSpatialPreview()
     <template v-else-if="displayed">
       <ReplayWorkspace v-if="directorMode==='replay'" ref="replayWorkspace" :drill="current" :displayed="displayed" :at="replayAt" :playing="replayPlaying" :loading="replayLoading" :busy="busy" @back="exitReplay" @seek="seekReplay" @play="replayPlaying=!replayPlaying" @fork="forkReplay" @compare="compareBranches" @export="downloadReport" @assistant="openReplayAssistant"/>
       <UiToast v-if="directorMode==='replay'&&error" class="atlas-replay-error" :message="error" tone="danger" @dismiss="error=''"/>
-      <SceneAssistant :key="current.id" :open="assistantOpen" :api-base-url="apiBaseUrl" :access-token="accessToken" :drill-id="current.id" :drill-name="current.name" :drill-status="current.status" :busy="busy" @state-action="act" :live-seconds="current.elapsed_seconds" :at-seconds="directorMode === 'replay' ? replayAt : replay?.at_seconds ?? null" :focus-context="assistantFocus" :agent-feed="agentFeed" :connection="socketState" @plan-preview="people=>routePreview=people" @close="closeAssistant" @navigate="assistantNavigate" />
-      <DirectorTopbar v-show="directorMode!=='replay'" :name="current.name" :subtitle="(current.engine_version ?? 1) >= 2 ? '场景配置已冻结 · 三维现场实时运行' : '历史场次 · 固定主案例模型'" :socket-state="socketState" :status-label="statusLabel" :display-clock="displayClock" :drill-status="current.status" :busy="busy" :coach-open="coachVisible" :replay="Boolean(replay)" @back="emit('back')" @toggle-coach="toggleCoach" @action="act" @create="createDrill" />
+      <SceneAssistant ref="assistant" :key="current.id" :open="assistantOpen" :api-base-url="apiBaseUrl" :access-token="accessToken" :drill-id="current.id" :drill-name="current.name" :drill-status="current.status" :busy="busy" @state-action="act" :live-seconds="current.elapsed_seconds" :at-seconds="directorMode === 'replay' ? replayAt : replay?.at_seconds ?? null" :focus-context="assistantFocus" :agent-feed="agentFeed" :connection="socketState" @plan-preview="people=>routePreview=people" @close="closeAssistant" @navigate="assistantNavigate" />
+      <DirectorTopbar v-show="directorMode!=='replay'" :name="current.name" :subtitle="(current.engine_version ?? 1) >= 2 ? '场景配置已冻结 · 三维现场实时运行' : '历史场次 · 固定主案例模型'" :socket-state="socketState" :status-label="statusLabel" :display-clock="displayClock" :drill-status="current.status" :busy="busy" :coach-open="drawer==='training'||coachVisible" :replay="Boolean(replay)" @back="emit('back')" @toggle-coach="drawer==='training'?closeFloatingPanels():openTraining()" @action="act" @create="createDrill" />
       <section v-show="directorMode!=='replay'" class="director-stage">
         <nav class="atlas-director-modes" aria-label="导演台模式"><button :aria-pressed="directorMode==='observe'" @click="directorMode='observe';closeFloatingPanels()"><AppIcon name="eye"/>观察</button><button :aria-pressed="directorMode==='command'" @click="directorMode='command';closeFloatingPanels()"><AppIcon name="robot"/>指挥</button><button @click="openReplay"><AppIcon name="history"/>复盘</button></nav>
         <GuidedExercise v-if="coachOpen" v-show="coachVisible" @close="closeCoach" :drill="displayed" :busy="busy" :replay="Boolean(replay)" @indoor="arena?.showIndoor()" @start="act('start')" @resume="act('resume')" @finish="act('end')" @retry="createDrill" @live="leaveReplay" @tasks="toggleDrawer('missions')" @compare="toggleDrawer('branches')" @dispatch="dispatchTask" @assign="assignTask" @locate="locateTask" @broadcast="robot('broadcast')" @assist="ids => commandResidents({ residentIds: ids, exit: 'north', action: 'priority_assist' })" @evacuate="(ids, exit) => commandResidents({ residentIds: ids, exit, action: 'evacuate' })" @focus="id => arena?.focusResident(id)" @task="taskAction" @block="id => inject('channel_blocked', { road_edge_id: id })" @reopen="reopenRoad" @seek="seekReplay"><SpatialTrainingLab v-if="(current.engine_version ?? 1) >= 3" ref="trainingLab" :drill="displayed" :api-base-url="apiBaseUrl" :access-token="accessToken" :replay="Boolean(replay)" @updated="updateFromLab" @forked="forkFromLab" @select="ids => arena?.selectResidents(ids)" @preview="people => routePreview = people as Resident[]" @focus="id => arena?.focusResident(id)" @compare="compareEditable" /><section v-else class="training-upgrade"><h2>当前场次使用历史模型</h2><p>新建连续空间训练，启用楼内行走、路线预览、集合核验与历史重做；原场次不会删除或改写。</p><button :disabled="busy" @click="createDrill">新建连续空间训练</button></section></GuidedExercise>
@@ -515,7 +560,9 @@ onBeforeUnmount(() => { desiredDrillId = ''; stopLive?.(); clearSpatialPreview()
         <div class="director-intelligence" role="status"><strong>{{ replay ? '历史过程只读；拖动底部时间轴查看当时的道路、人员和任务' : current.status === 'ended' ? '本场已结束。查看评分证据，或从底部回放关键过程。' : latestCue }}</strong></div>
         <KeepAlive :key="current.id" :max="7">
         <UiDrawer v-if="drawer !== 'none'" :key="drawer" :section="drawer" v-slot="{ section: drawer }" class="director-drawer" :title="drawerTitle" :subtitle="replay ? '历史时刻 ' + displayClock : '与当前场次实时联动'" @close="closeFloatingPanels">
-          <AssemblyRollcall v-if="drawer==='rollcall'" :people="displayed.simulation.residents" :busy="busy" :running="!replay&&current.status==='running'" @confirm="confirmRollcall" @focus="id=>{closeFloatingPanels();arena?.focusResident(id)}"/>
+          <button v-if="drawer!=='training' && current.journey && !replay" type="button" class="director-workspace-back" @click="openTraining"><AppIcon name="back" :size="18" />返回当前任务</button>
+          <TrainingJourneyPanel v-if="drawer==='training' && current.journey && !replay" :journey="current.journey" :status="current.status" :busy="busy" @action="trainingAction" />
+          <AssemblyRollcall v-else-if="drawer==='rollcall'" :people="displayed.simulation.residents" :busy="busy" :running="!replay&&current.status==='running'" @confirm="confirmRollcall" @focus="id=>{closeFloatingPanels();arena?.focusResident(id)}"/>
           <div v-else-if="drawer==='indoor' && displayed.simulation?.environment.indoor" class="drawer-list">
             <IndoorFirePanel :tasks="displayed.tasks" @task="inspectTask" :selected-door-id="selectedIndoorDoor" :state="displayed.simulation.environment.indoor" :residents="displayed.simulation.residents" :active-floor="indoorFocus?.buildingId===displayed.simulation.environment.indoor.building_id?indoorFocus.floor:undefined" :readonly="Boolean(replay)||current.status!=='running'" :busy="busy" @door="value=>requestDrill('/indoor/doors','POST',value,'房门状态已更新，烟气与通行同步改变')" @focus="floor=>{selectedIndoorDoor=undefined;arena?.focusIndoorFloor(floor)}" @resident="id=>{closeFloatingPanels();arena?.focusResident(id)}" @select="ids=>{closeFloatingPanels();arena?.selectResidents(ids)}"/>
           </div>
@@ -538,6 +585,8 @@ onBeforeUnmount(() => { desiredDrillId = ''; stopLive?.(); clearSpatialPreview()
           <div v-else-if="drawer === 'branches'" class="branch-launcher"><button v-if="current.branch" @click="compareEditable">查看本分支与原训练的实际差异</button><p>从同一历史时刻比较三种既定疏散策略。此功能是规则预测，不是独立可编辑世界。</p><label>方案 A<select v-model="branchForm.baseline_strategy"><option value="south_standard">南门常规疏散</option><option value="north_priority">北门重点优先</option><option value="dual_exit">双出口分流</option></select></label><label>方案 B<select v-model="branchForm.alternative_strategy"><option value="north_priority">北门重点优先</option><option value="dual_exit">双出口分流</option><option value="south_standard">南门常规疏散</option></select></label><button type="button" :disabled="busy || branchForm.baseline_strategy === branchForm.alternative_strategy" @click="compareBranches">查看两种结果</button></div>
           <div v-else-if="drawer === 'report'" class="score-drawer"><strong>{{ (current.score ?? current.score_preview).total_score }}</strong><span>/ 100 · {{ current.score ? '最终得分' : '当前过程评分' }}</span><p>{{ (current.engine_version ?? 1) >= 2 ? '按疏散结果、人员风险、核验任务与响应时效计分；不按点击次数加分。' : '历史版本评分，保留当时的统计口径。新开一轮使用场景驱动模型。' }}</p><ol><li v-for="item in (current.score ?? current.score_preview).details" :key="item.name"><div><span>{{ item.name }}</span><b>{{ item.score }}/{{ item.max_score ?? '—' }}</b></div><progress v-if="item.max_score" :value="item.score" :max="item.max_score" :aria-label="item.name + '得分'"></progress><small>{{ item.evidence }}</small><button v-if="item.at_seconds !== undefined" type="button" @click="seekReplay(item.at_seconds)">回到相关事件</button></li></ol><button type="button" @click="seekReplay(0)">从头回放本场</button><button type="button" :disabled="!current.score" @click="downloadReport">导出证据报告</button></div>
           <nav v-else-if="drawer === 'more'" class="director-more-menu" aria-label="更多现场工具">
+            <button type="button" @click="openTraining"><AppIcon name="tasks" /><span><strong>当前训练任务</strong><small>简报、待办与结束条件</small></span><AppIcon name="arrowRight" /></button>
+            <button type="button" @click="toggleCoach"><AppIcon name="route" /><span><strong>空间训练工具</strong><small>选择人员、预览路线与历史重做</small></span><AppIcon name="arrowRight" /></button>
             <button type="button" @click="toggleDrawer('branches')"><AppIcon name="split" /><span><strong>双世界决策对比</strong><small>从同一时刻比较另一种选择</small></span><AppIcon name="arrowRight" /></button>
             <button type="button" @click="toggleInvite"><AppIcon name="phone" /><span><strong>手机参演</strong><small>邀请居民与处置角色实时回执</small></span><AppIcon name="arrowRight" /></button>
             <button type="button" @click="toggleControls"><AppIcon name="settings" /><span><strong>场次与显示</strong><small>自动导演、声音、灯光与镜头</small></span><AppIcon name="arrowRight" /></button>
@@ -588,7 +637,7 @@ onBeforeUnmount(() => { desiredDrillId = ''; stopLive?.(); clearSpatialPreview()
         </div>
         <UiToast v-if="error" :message="error" tone="danger" @dismiss="error = ''" />
         <UiToast v-else-if="commandNotice && !replay" :message="commandNotice" tone="success" action-label="查看执行" @action="commandNotice = ''; toggleDrawer('missions')" @dismiss="commandNotice = ''" />
-        <UiConfirmDialog :open="endConfirmationOpen" title="结束本场并生成评分？" :description="`结束后本场不能继续，当前仍有 ${activeTaskCount} 项任务未完成。系统将冻结现场并生成复盘证据。`" confirm-label="结束并评分" cancel-label="继续演练" :busy="busy" theme="immersive" danger @confirm="confirmEnd" @cancel="endConfirmationOpen = false" />
+        <UiConfirmDialog :open="endConfirmationOpen" title="结束本场并生成评分？" :description="`结束后本场不能继续。${current.journey?.completion.blockers.length ? current.journey.completion.blockers.join('；')+'。' : `待处置任务 ${activeTaskCount} 项。`}系统将按当前实际结果冻结评分与复盘证据。`" confirm-label="结束并评分" cancel-label="继续演练" :busy="busy" theme="immersive" danger @confirm="confirmEnd" @cancel="endConfirmationOpen = false" />
       </section>
       <section v-if="showParallel && branchComparison" class="parallel-worlds" aria-label="左右双世界三维平行推演"><header><div><h2>同一现场，两种疏散策略</h2><p>向前预测 {{ branchComparison.projection_seconds }} 秒 · 规则仿真</p></div><button type="button" @click="showParallel = false">返回现场</button></header><div class="parallel-worlds__stage"><article v-for="side in (['baseline','alternative'] as const)" :key="side"><DigitalTwinArena :key="current.id + '-' + side" status="running" :elapsed-seconds="branchComparison.at_seconds" :robot="branchComparison.robots[side]" :simulation="branchComparison.worlds[side]" compact :high-contrast="highContrast" :world-label="branchComparison[side].name" /><footer><span>疏散 {{ branchComparison[side].evacuation_seconds === null ? '无法完成' : branchComparison[side].evacuation_seconds + ' 秒' }}</span><span>暴露 {{ branchComparison[side].smoke_exposed }} 人</span><span>不可达 {{ branchComparison[side].unreachable }}</span><strong>{{ branchComparison[side].projected_score }} 分</strong></footer></article></div><div class="parallel-verdict"><strong>{{ branchComparison.recommendation }}</strong><small>{{ branchComparison.disclaimer }}</small></div></section>
       <section v-if="activePanel === 'branch-evidence' && branchEvidence" class="parallel-worlds spatial-comparison" aria-label="历史分支实际结果对比">

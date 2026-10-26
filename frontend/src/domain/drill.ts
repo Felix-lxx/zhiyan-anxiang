@@ -1,5 +1,6 @@
 import type { ExerciseTask } from './task'
 import type { IndoorState } from './indoor'
+import type { TrainingJourney } from './training'
 
 export interface DrillIndex { id:string; name:string; status:string; created_at:string; elapsed_seconds:number; resident_count:number|null; score:Score|null }
 
@@ -26,7 +27,27 @@ export interface Participant { role: string; name: string; ready: boolean; conne
 export interface CommandOrigin { kind:'director'|'agent';plan_id:string|null;revision:number|null;step_id:string|null }
 export interface CommandReceipt { id: string; kind: string; label: string; actor: string; origin?:CommandOrigin|null; submitted_at?: number; accepted_at: number; completed_at?: number | null; status: 'submitted' | 'accepted' | 'completed' | 'executing' | 'queued' | 'blocked' | 'paused' | 'superseded' | 'cancelled' | 'unfinished' | 'failed'; progress: number; reason: string; remaining_seconds: number | null; resident_ids: string[]; event_ids: string[]; score_before: number | null; score_after_acceptance: number | null; completed_count: number; selected_count: number; failure_code?: string | null }
 
-export interface Drill { state_version?: string; latest_event_sequence?: number; commands?: CommandReceipt[]; branch?: { source_name: string } | null; id: string; name: string; status: string; time_scale: number; elapsed_seconds: number; participants: Participant[]; events: DrillEvent[]; tasks: DrillTask[]; robot: Robot | null; score: Score | null; score_preview: Score; simulation: Simulation; engine_version?: number; director_enabled?: boolean }
+export interface Drill {
+  id: string
+  name: string
+  status: string
+  time_scale: number
+  elapsed_seconds: number
+  state_version?: string
+  latest_event_sequence?: number
+  engine_version?: number
+  director_enabled?: boolean
+  branch?: { source_name: string } | null
+  journey?: TrainingJourney | null
+  commands?: CommandReceipt[]
+  participants: Participant[]
+  events: DrillEvent[]
+  tasks: DrillTask[]
+  robot: Robot | null
+  score: Score | null
+  score_preview: Score
+  simulation: Simulation
+}
 
 export interface BranchPlan { strategy: string; name: string; evacuation_seconds: number | null; vulnerable_rescue_seconds: number | null; smoke_exposed: number; congested: number; unreachable: number; average_resident_route_units: number; projected_score: number }
 

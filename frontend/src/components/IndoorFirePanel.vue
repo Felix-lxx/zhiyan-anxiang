@@ -41,6 +41,7 @@ const conditionLabel=(status:string)=>({moving:'沿通道撤离',waiting:'等待
       <p>关闭房门会减少烟气交换并阻断通行，先确认房内与门口人员已撤离。</p>
       <article v-for="door in doors" :key="door.id" class="indoor-fire-panel__door" :class="{'is-selected':door.id===selectedDoorId}">
         <div class="indoor-fire-panel__door-title"><strong>{{door.label}}</strong><span>{{door.id===selectedDoorId?'现场选中 · ':''}}{{door.state==='open'?'打开，可通行':'关闭，暂不可通行'}}</span></div>
+        <p v-if="door.portal">门洞净宽 {{door.portal.width.toFixed(2)}} 米 · 地面标记显示人员净距检查区；人工和智能体关门使用同一占用校验。</p>
         <p v-if="door.state==='open'&&door.can_close===false" class="indoor-fire-panel__warning">{{door.blocked_reason}}</p>
         <ul v-if="door.occupants?.length" class="indoor-fire-panel__occupants">
           <li v-for="person in door.occupants" :key="person.kind+person.id"><span>{{person.label}} · {{person.reason}}</span><button v-if="person.kind==='resident'&&person.id" type="button" @click="emit('resident',person.id)">定位人员</button></li>

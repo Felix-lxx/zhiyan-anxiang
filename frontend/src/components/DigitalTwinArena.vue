@@ -27,6 +27,7 @@ import AppIcon from './AppIcon.vue'
 
 interface Resident extends RescueResident { height?: number; building_id?: string; floor?: number; current_floor?: number; indoor_stage?: string; current_edge_id?: string | null; id: string; label: string; vulnerable: boolean; status: string; x: number; y: number; progress: number; exit?: 'north' | 'south'; behavior?: string; smoke_exposure?: number; congestion?: number; queue_seconds?: number; last_location?: string; assisted?: boolean; search_responsible?: string; speed_factor?: number; route_points?: Array<{ x: number; y: number; height?: number }>; route_edge_ids?: string[]; route_reachable?: boolean; estimated_seconds?: number }
 interface SpatialEdgeState { id: string; kind: string; start: { x: number; y: number; height: number }; end: { x: number; y: number; height: number }; width_meters: number; density_percent?: number; live_occupancy?: number; waiting_count?: number; capacity_persons?: number }
+interface Resident { motion_trace?: Array<{ x:number; y:number; height:number; at_seconds:number }> }
 interface RoadEdgeState { geometry_blocked?: boolean; blocked_reason?: string; reserved_by_vehicle?: string | null; id: string; name: string; start: { x: number; y: number }; end: { x: number; y: number }; width_meters: number; status: 'open' | 'restricted' | 'blocked'; blocked_by_event: boolean; risk_score: number; smoke_risk?: number; density_percent?: number; live_occupancy?: number; waiting_count?: number; capacity_persons?: number; flow_capacity_per_second?: number }
 interface Simulation {
   vehicles?: Vehicle[]
@@ -936,6 +937,11 @@ function updateEntities(): void {
     disposeLayer(residentTrailLayer)
   }
   lastEntitySeconds = props.elapsedSeconds
+  const closedDoors = (props.simulation?.environment.indoor?.doors ?? [])
+    .filter(door => door.state === 'closed' && door.portal)
+    .map(door => ({position:worldPoint(door.portal!.x,door.portal!.y,door.portal!.height),
+      normal:new THREE.Vector3(door.portal!.normal_x,0,door.portal!.normal_y),
+      width:door.portal!.width,radius:door.portal!.clearance_radius}))
   for (const [id, marker] of assemblyModels) marker.update(assemblyAttendance(assemblyPeople.value,id))
   for (const exit of exitModels) {
     const node=props.simulation?.road_network?.nodes.find(item=>item.id===exit.nodeId)
@@ -982,7 +988,8 @@ function updateEntities(): void {
     if(staffRing){staffRing.color.setHex(presentation.color);staffRing.opacity=helper.state==='completed'?.4:.8}
     const next=worldPoint(helper.x, helper.y, helper.height ?? 0)
     const route = (helper.route_points ?? []).map(point => worldPoint(point.x, point.y, point.height))
-    actorMotion.accept(mesh, next, route, props.elapsedSeconds, props.status === 'running')
+    actorMotion.accept(mesh, next, route, props.elapsedSeconds, props.status === 'running', performance.now(),
+      (helper.motion_trace ?? []).map(p => worldPoint(p.x, p.y, p.height)), closedDoors)
     mesh.userData.behaviorState = helper.state
     mesh.userData.crowded = (helper.congestion ?? 0) > 55
     mesh.userData.targetPosition=next;mesh.visible = indoorActorVisible(helper)
@@ -1004,7 +1011,8 @@ function updateEntities(): void {
     const mesh = residentMeshes.get(resident.id)
     if (mesh) {
       const nextPosition=worldPoint(resident.x, resident.y, resident.height ?? 0)
-      actorMotion.accept(mesh, nextPosition, (resident.route_points ?? []).map(p => worldPoint(p.x, p.y, p.height)), props.elapsedSeconds, props.status === 'running')
+      actorMotion.accept(mesh, nextPosition, (resident.route_points ?? []).map(p => worldPoint(p.x, p.y, p.height)), props.elapsedSeconds, props.status === 'running', performance.now(),
+        (resident.motion_trace ?? []).map(p => worldPoint(p.x, p.y, p.height)), closedDoors)
       mesh.userData.targetPosition=nextPosition; mesh.visible = indoorView.value || !resident.indoor_stage || resident.indoor_stage === 'outdoor'
       const ringMaterial = (mesh.userData.ring as THREE.Mesh | undefined)?.material as THREE.MeshBasicMaterial | undefined
       const danger = (resident.smoke_exposure ?? 0) > 5

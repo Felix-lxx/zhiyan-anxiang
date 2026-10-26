@@ -14,7 +14,9 @@ export function kitchenPreview(parameters=kitchenDefaults){
       nodes.push(node,portal);zones.push({...node,width:5.8,depth:4,smoke_density:floor===parameters.fire_floor&&room===parameters.fire_room?.5:.01,temperature:45,visibility:50},{...portal,width:.9,depth:1,smoke_density:.01,temperature:25,visibility:99})
       const edge={id:'door-'+floor+'-'+room,name:'房门',kind:'room',start_node_id:node.id,end_node_id:portal.id,start:node,end:portal,width_meters:.9,status:'open'};edges.push(edge)
       edges.push({id:node.id+':corridor',name:'走廊',kind:'corridor',start_node_id:portal.id,end_node_id:hall.id,start:portal,end:hall,width_meters:1.5,status:'open'})
-      doors.push({id:edge.id,label:node.name+'房门',floor,room_id:node.id,state:floor===parameters.fire_floor&&room===parameters.fire_room?parameters.room_door_state:'open'})
+      doors.push({id:edge.id,label:node.name+'房门',floor,room_id:node.id,
+        portal:{x:node.x,y:node.y+2,height:node.height,width:.9,normal_x:0,normal_y:1,clearance_radius:.28,wall_depth:.1},
+        state:floor===parameters.fire_floor&&room===parameters.fire_room?parameters.room_door_state:'open'})
     }
     edges.push({id:'hall-edge-'+floor,kind:'corridor',name:'走廊',start:hall,end:stair,start_node_id:hall.id,end_node_id:stair.id,width_meters:1.5,status:'open'})
     const below=nodes.find(node=>node.id==='stair-'+(floor-1))
