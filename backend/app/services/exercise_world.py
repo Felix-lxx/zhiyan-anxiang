@@ -90,6 +90,8 @@ def capture_world(session: Session, version: SceneVersion, parameters_override: 
         from app.services.kitchen_equipment import attach_kitchen_equipment
         attach_kitchen_equipment(world)
     from app.services.training_journey import build_briefing
+    from app.services.scoring_reference import build_scoring_reference
+    world['scoring_reference'] = build_scoring_reference(world)
     world['training_briefing'] = build_briefing(world)
     return world
 

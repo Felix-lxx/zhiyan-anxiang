@@ -16,17 +16,17 @@ html .operations-center--immersive.detail-panel-open .scene-floor-controls,
    The measured toolbar height reserves room for the wrapping controls. */
 html .operations-center--immersive.detail-panel-open .scene-quality { display:flex; }
 html .operations-center--immersive {
-  --director-topbar:76px; --director-timeline:176px; --scene-left:112px;
+  --director-topbar:76px; --director-timeline:116px; --scene-left:96px;
   --scene-bottom:calc(var(--director-timeline) + 14px); --scene-rail-space:20px;
   --scene-inspector-width:380px; --scene-tools-top:calc(var(--scene-panel-top,84px) + 148px);
 }
 html .operations-center--immersive>.director-topbar { position:fixed; inset:0 0 auto; z-index:130; height:var(--director-topbar); min-height:var(--director-topbar); padding-inline:22px; gap:24px; box-sizing:border-box; }
 html .operations-center--immersive>.director-stage { margin-top:var(--director-topbar); }
 html .operations-center--immersive>.director-stage { overflow:hidden; min-height:0; height:calc(100dvh - var(--director-topbar)); }
-html .operations-center--immersive>.director-stage>.twin-stage,
+html .operations-center--immersive>.director-stage>.twin-stage { inset:0 0 auto; width:100%; height:calc(100% - var(--director-timeline)); min-height:0; }
 html .operations-center--immersive .twin-stage__viewport { inset:0; width:100%; height:100%; min-height:0; }
-html .atlas-director-modes { position:absolute; z-index:8; inset:18px auto auto 10px; width:82px; max-height:calc(100% - var(--scene-bottom) - 30px); overflow-y:auto; }
-html .atlas-director-modes button { width:100%; height:100px; }
+html .atlas-director-modes { position:absolute; z-index:8; inset:18px auto auto 10px; width:68px; max-height:calc(100% - var(--scene-bottom) - 30px); overflow-y:auto; }
+html .atlas-director-modes button { width:100%; height:80px; }
 html .operations-center--immersive>.director-stage .twin-views {
   inset:var(--scene-panel-top,84px) auto auto var(--scene-left); display:flex; flex-wrap:nowrap; width:auto; overflow-x:auto;
   max-width:calc(100% - var(--scene-left) - 298px); padding:4px; gap:4px; translate:none;
@@ -67,8 +67,11 @@ html .operations-center--immersive>.director-stage .director-drawer { inset:var(
 html .operations-center--immersive>.director-stage .director-drawer>header { flex:0 0 auto; }
 html .operations-center--immersive>.scene-assistant { position:fixed; z-index:120; inset:calc(var(--director-topbar) + var(--scene-panel-top,84px)) 20px calc(var(--director-timeline) + 82px) auto; width:min(480px,calc(100vw - var(--scene-left) - 40px)); max-height:none; }
 html .operations-center--immersive[data-mode=replay]>.scene-assistant { inset:16px 16px 16px auto; }
-html .operations-center--immersive .exercise-timeline { height:var(--director-timeline); min-height:var(--director-timeline); display:flex; flex-wrap:wrap; padding:106px 24px 14px; align-content:flex-end; }
-html .operations-center--immersive .atlas-timeline-events { position:absolute; inset:9px 24px auto; display:flex; justify-content:flex-start; gap:12px; overflow-x:auto; padding-bottom:6px; scrollbar-gutter:stable; }
+html .operations-center--immersive .exercise-timeline { height:var(--director-timeline); min-height:var(--director-timeline); display:flex; flex-wrap:wrap; padding:12px 24px; align-content:center; gap:8px; }
+html .operations-center--immersive .atlas-timeline-events { position:relative; inset:auto; display:flex; flex:1 1 100%; min-width:0; justify-content:flex-start; gap:12px; overflow-x:auto; padding-bottom:4px; scrollbar-gutter:stable; max-height:48px; }
+html .operations-center--immersive .atlas-timeline-events button{display:flex;flex:0 0 auto;align-items:center;justify-content:flex-start;gap:8px;min-height:36px;max-width:320px;padding:4px 8px;font-size:14px;text-align:left}
+html .operations-center--immersive .atlas-timeline-events button i{flex:none}
+html .operations-center--immersive .atlas-timeline-events button span{display:block;min-width:0;max-width:240px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 html .operations-center--immersive .exercise-timeline .execution-link { display:inline-flex; align-items:center; min-width:44px; max-width:240px; gap:6px; padding-inline:10px; }
 .execution-link span { min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
 .execution-link svg { flex-shrink:0; }

@@ -39,7 +39,27 @@ export function indoorCameraOffset(width: number, depth: number, aspect: number)
   // Add the depth extent so near corners remain inside the perspective frustum.
   const nearExtent = (direction.x * width + direction.z * depth) / 2
   const distance = Math.max(halfHeight, halfWidth / Math.max(.3, aspect)) / Math.tan(24 * Math.PI / 180) + nearExtent * .5
-  return direction.multiplyScalar(Math.max(10, distance))
+  return direction.multiplyScalar(Math.max(6, distance))
+}
+
+/** Fit all eligible ignition objects, including their visible height and footprint. */
+export function fireSourceCamera(objects: FloorRect[], aspect: number) {
+  const bounds = new THREE.Box3()
+  for (const object of objects) {
+    bounds.expandByPoint(new THREE.Vector3(object.x-object.width/2, 0, object.y-object.depth/2))
+    bounds.expandByPoint(new THREE.Vector3(object.x+object.width/2, 4, object.y+object.depth/2))
+  }
+  const target = bounds.getCenter(new THREE.Vector3())
+  const direction = new THREE.Vector3(24,32,30).normalize()
+  const right = new THREE.Vector3(direction.z,0,-direction.x).normalize()
+  const up = new THREE.Vector3().crossVectors(direction,right).normalize()
+  const tangent = Math.tan(24*Math.PI/180)
+  let distance = 10
+  if (!bounds.isEmpty()) for (const x of [bounds.min.x,bounds.max.x]) for (const y of [bounds.min.y,bounds.max.y]) for (const z of [bounds.min.z,bounds.max.z]) {
+    const point = new THREE.Vector3(x,y,z).sub(target)
+    distance = Math.max(distance, point.dot(direction) + 1.15*Math.max(Math.abs(point.dot(right))/(tangent*Math.max(.1,aspect)),Math.abs(point.dot(up))/tangent))
+  }
+  return { target, position: target.clone().addScaledVector(direction,distance) }
 }
 
 /** Slab geometry and furnishings use the same frozen passages as the walkers. */

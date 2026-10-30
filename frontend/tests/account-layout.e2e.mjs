@@ -13,7 +13,7 @@ const context = await browser.newContext({ viewport: { width: 1440, height: 1000
 const page = await context.newPage(), errors = [], checks = []
 page.setDefaultTimeout(20000)
 page.on('pageerror', e => errors.push(e.message))
-let token
+let token, initial
 async function api(path, method = 'GET', data) {
   const r = await context.request.fetch(apiRoot + path, { method, headers: token ? { Authorization: 'Bearer ' + token } : {}, ...(data ? { data } : {}) })
   assert.ok(r.ok(), `${path}: ${r.status()} ${r.ok() ? '' : await r.text()}`)
@@ -36,7 +36,7 @@ async function inspect(name, widths = [1440, 1024, 390]) {
 try {
   token = (await api('/auth/login', 'POST', { username: 'admin', password: process.env.QA_PASSWORD })).access_token
   const demo = await api('/communities/demo-ready', 'POST')
-  const initial = await api('/account/profile')
+  initial = await api('/account/profile')
   await api('/account/profile', 'PATCH', { display_name: '页面验收员', organization: '', text_size: 'comfortable', reduced_motion: false, default_community_id: null, revision: initial.revision })
   await page.goto(base + '/login')
   // API login already set the HttpOnly cookie on this browser context.
@@ -44,6 +44,7 @@ try {
   await page.getByRole('button', { name: '打开个人中心', exact: true }).click()
   await page.locator('#profile-name').fill('安巷社区演练负责人')
   await page.locator('#profile-organization').fill('安巷社区物业服务中心')
+  await page.getByRole('button', { name: '阅读与操作偏好', exact: true }).click()
   await page.locator('#profile-community').selectOption(demo.community.id)
   await page.getByLabel('大字 · 正文 18 像素', { exact: true }).check()
   await page.getByLabel('减少界面动画', { exact: false }).check()
@@ -55,12 +56,15 @@ try {
   await page.unroute('**/account/profile')
   await page.getByRole('button', { name: '保存设置', exact: true }).click()
   await page.getByText('资料与阅读设置已保存，刷新或再次登录后仍然生效。', { exact: true }).waitFor()
-  await page.reload(); await page.locator('#profile-name').waitFor()
+  await page.reload(); await page.locator('#profile-community').waitFor()
   assert.equal(await page.locator('#profile-name').inputValue(), '安巷社区演练负责人')
   assert.equal(await page.locator('#profile-community').inputValue(), demo.community.id)
   assert.equal(await page.locator('html').getAttribute('data-reading-size'), 'large')
   assert.ok(await page.locator('.account-heading p').evaluate(e => parseFloat(getComputedStyle(e).fontSize) >= 18))
   await inspect('account')
+  await page.getByRole('button', { name: '登录与安全', exact: true }).click()
+  await inspect('account-security', [1440, 390])
+  await page.getByRole('button', { name: '个人资料', exact: true }).click()
   checks.push('Profile saves to API, refresh restores preferences, failed save retains input without false persistence')
   await page.locator('#profile-organization').fill('未保存修改')
   page.once('dialog', dialog => dialog.dismiss())
@@ -87,4 +91,11 @@ try {
 } catch (error) {
   await page.screenshot({ path: resolve(artifacts, 'failure.png'), fullPage: true }).catch(() => {})
   throw error
-} finally { await browser.close() }
+} finally {
+  if (initial && token) {
+    const current = await api('/account/profile')
+    const { display_name, organization, text_size, reduced_motion, default_community_id } = initial
+    await api('/account/profile', 'PATCH', { display_name, organization, text_size, reduced_motion, default_community_id, revision: current.revision })
+  }
+  await browser.close()
+}

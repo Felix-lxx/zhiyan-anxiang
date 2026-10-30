@@ -40,10 +40,15 @@ def test_room_address_freeze_and_compartment_smoke(kitchen):
     assert source['position']['height']==3.38
     assert world['spatial_units']['height_mode']=='meters'
     assert model['equipment_layout_version'] == 1
-    # The generic community fixture has 1.4 x 1.2 m rooms: do not hide
-    # invalid furniture by shrinking the pedestrian clearance.
-    assert not model['equipment_layouts']
-    assert model['equipment_notice'] and 'ignition_position' not in source
+    # The built-in residential floor must provide usable kitchens, without
+    # shrinking the walking envelope to squeeze decorative furniture into it.
+    assert model['equipment_layouts'] and not model.get('equipment_notice')
+    assert source['device_id'] and source['ignition_position']['height'] == 4.3
+    from app.services.kitchen_equipment import clears_passages
+    for layout in model['equipment_layouts']:
+        room = next(zone for zone in model['zones'] if zone['id'] == layout['room_id'])
+        assert room['width'] >= 2.7 and room['depth'] >= 3
+        assert clears_passages(layout['counter'], room['height'], world['spatial_network']['edges'])
     assert len(world['tasks'])==4 and {'gas_off','containment','broadcast','escort'}=={task['kind'] for task in world['tasks']}
     assert model['source_zone_id'] in {node['id'] for node in world['spatial_network']['nodes']}
     shut=EnvironmentTimeline(world,[]).at(120)[1]['indoor']

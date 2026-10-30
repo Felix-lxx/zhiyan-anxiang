@@ -144,9 +144,12 @@ class DrillCommandApplication:
                 })
             events = list(session.scalars(select(DrillEvent).where(
                 DrillEvent.drill_session_id == drill_id).order_by(DrillEvent.sequence)))
-            at = runtime.elapsed(drill)
-            simulation = runtime.simulation(session, drill, events, at)
-            robot = runtime.robot(session, drill, events, at)
+            # apply() returns the authoritative post-action projection. The new
+            # receipt changes bookkeeping, not motion; reuse this same instant
+            # instead of advancing the world again while accepting one command.
+            at = result['elapsed_seconds']
+            simulation = result['simulation']
+            robot = result['robot']
             derived = command_feedback(events, simulation, robot, at, drill.status)
             synchronize_records(session, drill, derived, at)
             feedback = next((item for item in derived if item['id'] == payload.command_id), None)

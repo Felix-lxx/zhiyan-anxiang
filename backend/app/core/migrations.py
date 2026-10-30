@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from datetime import UTC, datetime
 
-from sqlalchemy import inspect, text
+from sqlalchemy import inspect, text, select, update
 from sqlalchemy.engine import Engine
 
 
@@ -15,6 +15,22 @@ def run_schema_migrations(engine: Engine) -> None:
             "version VARCHAR(64) PRIMARY KEY, applied_at TIMESTAMP NOT NULL)"
         ))
         applied = {row[0] for row in connection.execute(text("SELECT version FROM schema_migrations"))}
+        if '20261030_01_demo_kitchen_floor' not in applied:
+            inspector = inspect(connection)
+            if all(inspector.has_table(name) for name in ('communities', 'community_versions', 'map_objects')):
+                from app.models.domain import Community, CommunityVersion, MapObject, MapObjectType
+                from app.services.demo_community import DEMO_COMMUNITY_NAME, DEMO_KITCHEN_PROPERTIES
+                houses = connection.execute(select(MapObject.id, MapObject.properties).join(
+                    CommunityVersion, MapObject.community_version_id == CommunityVersion.id
+                ).join(Community, CommunityVersion.community_id == Community.id).where(
+                    Community.name == DEMO_COMMUNITY_NAME, MapObject.object_type == MapObjectType.BUILDING,
+                    MapObject.name == '1 号楼'))
+                for house_id, properties in houses:
+                    if not ({'width', 'depth'} & properties.keys()):
+                        connection.execute(update(MapObject).where(MapObject.id == house_id).values(
+                            properties={**properties, **DEMO_KITCHEN_PROPERTIES}))
+                connection.execute(text('INSERT INTO schema_migrations(version, applied_at) VALUES (:version, :applied_at)'),
+                    {'version': '20261030_01_demo_kitchen_floor', 'applied_at': datetime.now(UTC).isoformat()})
         if "20261002_01_user_credentials" not in applied:
             inspector = inspect(connection)
             columns = {column["name"] for column in inspector.get_columns("users")} if inspector.has_table("users") else set()

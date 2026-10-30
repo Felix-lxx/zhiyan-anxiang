@@ -24,13 +24,13 @@ def test_observation_survives_stop_and_uses_original_horizon(exercise):
     assert pending["population"] == 2 and pending["result"] is None
     assert client.post(url, headers=headers, json=body).status_code == 200
     assert client.post(url, headers=headers, json={"action": "stop", "revision": 1}).status_code == 200
-    due = candidate["forecast_at"] + 30
+    due = candidate["forecast_at"] + candidate["forecast_seconds"]
     with operations.SessionLocal() as db:
         record = db.get(AgentRun, plan["id"])
         settle_checks(db, record, operations)
         assert len(list(db.scalars(select(AgentDecisionCheck)))) == 1
         assert db.scalar(select(AgentDecisionCheck)).status == "pending"
-    tick(due + 12)  # Late scheduler must not compare 42 seconds to a 30-second forecast.
+    tick(due + 12)  # A late scheduler must compare the original forecast horizon.
     with operations.SessionLocal() as db:
         record = db.get(AgentRun, plan["id"])
         settle_checks(db, record, operations)

@@ -194,7 +194,7 @@ onBeforeUnmount(()=>{disposed=true;generation++;pollEpoch++;clearTimeout(timer);
         </section>
         <section v-if="detail==='plan'" aria-label="候选分流方案">
           <p v-if="run.status==='needs_review'" class="agent-workspace__notice">后续自动下令已暂停；下面保留的是原方案。请先“按当前现场重新比较”，不会取消已经受理的行动。</p>
-          <p v-if="run.candidates.length" class="agent-workspace__meta">同一起点向后预演 30 秒。预估分只反映该时刻已形成的结果，尚未完成的核验、清点与结束项不计入，最终得分以结束复盘为准。居民北侧蓝线、南侧金线，机器人为紫线。</p>
+          <p v-if="run.candidates.length" class="agent-workspace__meta">同一起点按所选路线最长预计耗时进行限时预演。预估分只反映预演时域内已形成的结果，尚未完成的核验、清点与结束项不计入，最终得分以结束复盘为准。居民北侧蓝线、南侧金线，机器人为紫线。</p>
           <p v-if="run.candidates.length===1" role="status" class="agent-workspace__meta">当前条件下没有第二个不同的可执行方案；相同动作已合并。</p>
           <div class="agent-workspace__candidates">
             <article v-for="item in run.candidates" :key="item.id" :data-selected="candidate?.id===item.id">
@@ -205,7 +205,7 @@ onBeforeUnmount(()=>{disposed=true;generation++;pollEpoch++;clearTimeout(timer);
               <section v-if="item.allocation" class="agent-workspace__decision" aria-label="出口分配依据">
                 <h4>为什么这样分流</h4><p>{{item.allocation.description}}</p>
                 <p v-if="item.allocation.rule==='risk_capacity'" class="agent-workspace__meta">相对路径优先方案，{{item.allocation.changed_residents}} 人调整出口。{{item.allocation.same_allocation?'当前两种规则得到相同分配，不人为制造方案差异。':''}}</p>
-                <p v-if="item.baseline_metrics" class="agent-workspace__meta">相对不下达本方案、沿用原安排：30 秒后到场 {{signed(item.metrics.arrived-item.baseline_metrics.arrived)}} 人，暴露超阈值 {{signed(item.metrics.exposed-item.baseline_metrics.exposed)}} 人，累计排队 {{signed(item.metrics.queue_seconds-item.baseline_metrics.queue_seconds)}} 人秒。</p>
+                <p v-if="item.baseline_metrics" class="agent-workspace__meta">相对不下达本方案、沿用原安排：{{item.forecast_seconds}} 秒后到场 {{signed(item.metrics.arrived-item.baseline_metrics.arrived)}} 人，暴露超阈值 {{signed(item.metrics.exposed-item.baseline_metrics.exposed)}} 人，累计排队 {{signed(item.metrics.queue_seconds-item.baseline_metrics.queue_seconds)}} 人秒。</p>
                 <details v-if="item.allocation.bottlenecks.length">
                   <summary>查看 {{item.allocation.bottlenecks.length}} 处共享通道压力</summary>
                   <ul><li v-for="place in item.allocation.bottlenecks" :key="place.edge_id">
@@ -214,7 +214,7 @@ onBeforeUnmount(()=>{disposed=true;generation++;pollEpoch++;clearTimeout(timer);
                   </li></ul>
                 </details>
               </section>
-              <dl><div><dt>出口分配</dt><dd>北 {{item.metrics.north}} · 南 {{item.metrics.south}}</dd></div><div><dt>不可达</dt><dd>{{item.metrics.unreachable}} 人</dd></div><div><dt>30 秒后到场</dt><dd>{{item.metrics.arrived}} 人</dd></div><div><dt>暴露超阈值</dt><dd>{{item.metrics.exposed}} 人</dd></div><div><dt>累计排队</dt><dd>{{item.metrics.queue_seconds}} 人秒</dd></div><div><dt>30秒状态预估分</dt><dd>{{item.metrics.score}} <small>（{{item.metrics.score_delta>=0?'+':''}}{{item.metrics.score_delta}}）</small></dd></div></dl>
+              <dl><div><dt>出口分配</dt><dd>北 {{item.metrics.north}} · 南 {{item.metrics.south}}</dd></div><div><dt>不可达</dt><dd>{{item.metrics.unreachable}} 人</dd></div><div><dt>{{item.forecast_seconds}} 秒后到场</dt><dd>{{item.metrics.arrived}} 人</dd></div><div><dt>暴露超阈值</dt><dd>{{item.metrics.exposed}} 人</dd></div><div><dt>累计排队</dt><dd>{{item.metrics.queue_seconds}} 人秒</dd></div><div><dt>{{item.forecast_seconds}}秒状态预估分</dt><dd>{{item.metrics.score}} <small>（{{item.metrics.score_delta>=0?'+':''}}{{item.metrics.score_delta}}）</small></dd></div></dl>
               <p v-if="item.assist_resource?.required" class="agent-workspace__resource-summary">需护送 {{item.assist_resource.required}} 人；本场 {{item.assist_resource.capacity}} 名值守员，{{item.assist_resource.busy}} 名正在执行。{{item.assist_resource.waves ? `至少分 ${item.assist_resource.waves} 批安排，实际等待取决于在途任务。` : '当前无可用值守员，不能执行护送。'}}</p>
               <section v-if="item.robot_support" class="agent-workspace__resource" aria-label="机器人协同条件">
                 <h4><AppIcon name="robot" :size="18" />{{ item.robot_support.target }}</h4>

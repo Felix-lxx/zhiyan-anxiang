@@ -20,7 +20,20 @@ const { RoadVisuals } = await load('roadVisuals')
 const { CrowdRenderer } = await load('crowdRenderer')
 const { presentHelpers, meetingRoute } = await load('helperPresentation')
 const { createRouteGuide } = await load('routeGuide')
-const { cutFloor, stairOpenings, furnitureFits, floorContainsHeight, doorPortal, doorWallPanels } = await load('indoorGeometry')
+const { cutFloor, stairOpenings, furnitureFits, floorContainsHeight, doorPortal, doorWallPanels, fireSourceCamera } = await load('indoorGeometry')
+
+test('fire selection camera keeps every candidate footprint inside wide and narrow viewports', () => {
+  const objects = [{x:-20,y:-15,width:10,depth:6},{x:20,y:15,width:10,depth:6}]
+  for (const aspect of [2.1,1,.45]) {
+    const camera = new THREE.PerspectiveCamera(48,aspect,.1,400)
+    const frame = fireSourceCamera(objects,aspect)
+    camera.position.copy(frame.position); camera.lookAt(frame.target); camera.updateMatrixWorld()
+    for (const object of objects) for (const dx of [-5,5]) for (const dz of [-3,3]) {
+      const projected = new THREE.Vector3(object.x+dx,4,object.y+dz).project(camera)
+      assert.ok(Math.abs(projected.x)<1 && Math.abs(projected.y)<1,'Candidate must be visible and clickable')
+    }
+  }
+})
 
 test('kitchen front partitions leave the frozen door and body clearance open', () => {
   const room = {x:10,y:10,width:4,depth:4}

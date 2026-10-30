@@ -53,14 +53,18 @@ def assign_residents(runtime, session, drill, payload, identity):
     event = runtime.append_event(session, drill, 'resident.command', '应急指挥人员',
         f'已指挥 {len(payload.resident_ids)} 名居民向{exit_name}{action_name}。',
         {**payload.model_dump(), **({'staff_assignments': bindings} if bindings else {})})
-    at = runtime.elapsed(drill) + 30
-    baseline = runtime.simulation(session, drill, events, at)
-    after = runtime.simulation(session, drill, [*events, event], at)
-    event.payload = {**event.payload, 'impact': {
-        'congested_before': baseline['summary']['congested'], 'congested_after': after['summary']['congested'],
-        'smoke_exposed_before': baseline['summary']['smoke_exposed'], 'smoke_exposed_after': after['summary']['smoke_exposed'],
-        'forecast_horizon_seconds': 30, 'selected_count': len(payload.resident_ids),
-    }}
+    if not agent_id:
+        # The approved agent candidate already owns a forecast and observation
+        # check. Re-running two future worlds for every group delays the next
+        # group while the real exercise clock continues ticking.
+        at = runtime.elapsed(drill) + 30
+        baseline = runtime.simulation(session, drill, events, at)
+        after = runtime.simulation(session, drill, [*events, event], at)
+        event.payload = {**event.payload, 'impact': {
+            'congested_before': baseline['summary']['congested'], 'congested_after': after['summary']['congested'],
+            'smoke_exposed_before': baseline['summary']['smoke_exposed'], 'smoke_exposed_after': after['summary']['smoke_exposed'],
+            'forecast_horizon_seconds': 30, 'selected_count': len(payload.resident_ids),
+        }}
     commit_changes(session)
     return runtime.snapshot(session, drill)
 

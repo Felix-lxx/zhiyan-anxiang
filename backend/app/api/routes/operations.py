@@ -149,15 +149,16 @@ def advance_engine(session: Session, drill: DrillSession) -> None:
     reconcile_vehicle_services(session, drill)
     record_vehicle_arrivals(session, drill)
     ledger_events = list(session.scalars(select(DrillEvent).where(DrillEvent.drill_session_id == drill.id).order_by(DrillEvent.sequence)))
-    ledger_simulation = simulation_state(drill, ledger_events, effective_elapsed(drill), session=session)
-    ledger_robot = robot_runtime(agent, ledger_events, effective_elapsed(drill))
+    live = snapshot(session, drill)
+    feedback = command_feedback(ledger_events, live['simulation'], live['robot'], live['elapsed_seconds'], drill.status)
     synchronize_records(
         session,
         drill,
-        command_feedback(ledger_events, ledger_simulation, ledger_robot, effective_elapsed(drill), drill.status),
-        effective_elapsed(drill),
+        feedback,
+        live['elapsed_seconds'],
     )
-    persist_snapshot(session, drill, snapshot(session, drill), force=drill.status != "running")
+    live['commands'] = ledger_feedback(session, drill, feedback)
+    persist_snapshot(session, drill, live, force=drill.status != "running")
     commit_changes(session)
 
 
@@ -511,28 +512,12 @@ def require_drill(session: Session, drill_id: str, username: str) -> DrillSessio
 
 
 def calculate_score_data(session: Session, drill: DrillSession, events: list[DrillEvent] | None = None, simulation: dict | None = None) -> dict:
-    world = frozen_world(session, drill)
+    world = simulation.get('world') if simulation is not None else frozen_world(session, drill)
     if world:
         history = events if events is not None else list(session.scalars(select(DrillEvent).where(DrillEvent.drill_session_id == drill.id).order_by(DrillEvent.sequence)))
         sim = simulation or simulation_state(drill, history, session=session)
-        completed = {e.payload.get("task_id"): e for e in history if e.event_type == "task.completed"}
-        total = max(1, sim["summary"]["total"])
-        alarm = next((e for e in history if e.event_type == "robot.alarm_confirmed"), None)
-        acknowledgement = next((e for e in history if e.event_type == "participant.acknowledge" and alarm and e.elapsed_seconds >= alarm.elapsed_seconds), None)
-        timely = sum(t["id"] in completed and alarm is not None and completed[t["id"]].elapsed_seconds - alarm.elapsed_seconds <= t["deadline_seconds"] for t in world["tasks"])
-        vulnerable = [p for p in sim["residents"] if p["vulnerable"]]
-        criteria = [
-            ("疏散结果", round((20 * sim["summary"]["evacuated"] + 10 * sim["summary"].get("counted", sim["summary"]["evacuated"])) / total), 30, "participant.resident_counted" if world.get("schema_version", 2) >= 3 else "resident.command", f"已到达 {sim['summary']['evacuated']}/{total} 人；已核验 {sim['summary'].get('counted', sim['summary']['evacuated'])}/{total} 人"),
-            ("烟气与失联控制", max(0, round(20 * (1 - (sim["summary"]["smoke_exposed"] + sim["summary"]["missing"]) / total))), 20, "resident.command", f"暴露 {sim['summary']['smoke_exposed']} 人；失联 {sim['summary']['missing']} 人"),
-            ("按时核验处置", round(25 * timely / max(1, len(world["tasks"]))), 25, "task.completed", f"按时完成 {timely}/{len(world['tasks'])} 项，超时完成仍留证但不计此项"),
-            ("重点人员护送", round(10 * sum(p["status"] == "evacuated" and p.get("assisted") for p in vulnerable) / max(1, len(vulnerable))), 10, "resident.command", "只计算护送到达，不按下达指令次数计分"),
-            ("感知与响应", (5 if alarm else 0) + (5 if acknowledgement and acknowledgement.elapsed_seconds - alarm.elapsed_seconds <= 30 else 0), 10, "robot.alarm_confirmed", "连续采样确认后 30 秒内回执告警"),
-            ("演练完整性", 5 if any(e.event_type == "drill.ended" for e in history) else 0, 5, "drill.ended", "场次结束并冻结结果"),
-        ]
-        details = [{"name": name, "score": value, "max_score": maximum, "evidence": explanation, "event_ids": [e.id for e in history if e.event_type == kind], "at_seconds": next((e.elapsed_seconds for e in reversed(history) if e.event_type == kind), 0)} for name, value, maximum, kind, explanation in criteria]
-        if world.get('outdoor_smoke_domain') == 'exterior_v1':
-            details[1]['evidence'] += '；本场为室外烟羽模型，暴露从进入室外通道累计，不模拟楼内渗透'
-        return {"version": 2, "total_score": sum(d["score"] for d in details), "details": details, "recommendations": [d["name"] + "：" + d["evidence"] for d in details if d["score"] < d["max_score"]] or ["本轮所有结果指标已达标，可调整扰动重新验证。"]}
+        from app.services.scoring import score_frozen_world
+        return score_frozen_world(world, history, sim)
     events = events if events is not None else list(session.scalars(select(DrillEvent).where(DrillEvent.drill_session_id == drill.id)))
     event_types = {event.event_type for event in events}
     completed_tasks = {event.payload.get("task_id") for event in events if event.event_type == "task.completed"}
@@ -604,9 +589,16 @@ def simulation_state(
     branch_at: int | None = None,
 ) -> dict:
     elapsed = effective_elapsed(drill) if elapsed_override is None else elapsed_override
-    network = road_network_state(session, drill, []) if session is not None else {"nodes": [], "edges": []}
     evidence = [{"sequence": event.sequence, "elapsed_seconds": event.elapsed_seconds, "event_type": event.event_type, "payload": event.payload} for event in events]
     world = frozen_world(session, drill) if session else None
+    # Continuous worlds reconstruct their own roads from frozen inputs. Do not
+    # load and deep-copy the same world again to build an unused legacy graph.
+    if world and world.get('schema_version', 0) >= 3:
+        network = world['road_network']
+    elif session is not None:
+        network = road_network_state(session, drill, [])
+    else:
+        network = {"nodes": [], "edges": []}
     if session and world and world.get("schema_version", 0) >= 3 and not strategy:
         from app.services.state_store import restore_engine_checkpoint
         restore_engine_checkpoint(session, drill.id, world, elapsed)
@@ -641,6 +633,13 @@ def record_vehicle_arrivals(session: Session, drill: DrillSession):
 
 def reconcile_vehicle_services(session: Session, drill: DrillSession):
     """Only the engine/command transaction emits completions; projections stay read-only."""
+    # An empty fleet has no service work to settle. Avoid a full resident and
+    # environment projection on every scheduler tick before any vehicle mission.
+    if not session.scalar(select(DrillEvent.id).where(
+        DrillEvent.drill_session_id == drill.id,
+        DrillEvent.event_type.in_(['vehicle.dispatched', 'vehicle.action_started'])
+    ).limit(1)):
+        return
     events, state = vehicle_state(session, drill)
     elapsed = effective_elapsed(drill)
     for vehicle in state["vehicles"]:

@@ -35,6 +35,19 @@ def ops():
     return operations
 
 
+def forecast_horizon(routes, support=None):
+    """Return one bounded comparison horizon for every candidate in a run."""
+    estimates = [
+        float(route.get("remaining_seconds", route.get("estimated_seconds")) or 0)
+        for options in routes.values()
+        for route in options.values()
+        if route.get("route_reachable")
+    ]
+    if support and support.get("can_apply"):
+        estimates.append(float(support.get("duration_seconds") or 0))
+    return max(30, min(90, int(math.ceil(max(estimates, default=30) / 10) * 10)))
+
+
 def events_for(session, drill):
     return list(session.scalars(select(DrillEvent).where(DrillEvent.drill_session_id == drill.id).order_by(DrillEvent.sequence)))
 
@@ -103,7 +116,8 @@ def build_candidates(session, drill, data, scope, run=None):
             'rule': 'containment', 'description': '居民先撤离起火房间，安全条件满足后关闭房门，限制烟气向走廊交换。',
             'door_id': door['id']}))
     results = []
-    baseline = operations.simulation_state(drill, events, at + 30, session=session)
+    forecast_seconds = forecast_horizon(routes, support)
+    baseline = operations.simulation_state(drill, events, at + forecast_seconds, session=session)
     baseline_score = operations.calculate_score_data(session, drill, events, baseline)["total_score"]
     baseline_people = [p for p in baseline["residents"] if p["id"] in id_set]
     baseline_metrics = {"arrived": sum(p["status"] == "evacuated" for p in baseline_people),
@@ -120,7 +134,9 @@ def build_candidates(session, drill, data, scope, run=None):
                     groups.append({"id": str(uuid4()), "label": f"{'重点护送' if assist else '居民分流'} · {'北门' if exit == 'north' else '南门'} · {len(batch)} 人",
                                    "resident_ids": batch, "exit": exit, "action": "priority_assist" if assist else "evacuate",
                                    "route_edge_ids": sorted({edge for pid in batch for edge in routes[exit][pid].get("route_edge_ids", [])})})
-        # Same environment, official score function, bounded 30-second projection.
+        # Same environment and official score function.  The shared bounded
+        # horizon covers the slowest selected route, so every candidate is
+        # compared at the same meaningful point instead of a fixed 30 seconds.
         # Only available escort slots are released in the forecast; future waves remain waiting.
         escorted = {h["resident_id"] for h in data["simulation"].get("helpers", []) if h["state"] != "completed"}
         simulated, free = list(events), max(0, capacity - len(escorted))
@@ -141,7 +157,7 @@ def build_candidates(session, drill, data, scope, run=None):
                     event_type="robot.target_assigned", payload={"target": support["target"], "target_x": support["x"], "target_y": support["y"],
                     "route_points": support["route_points"], "route_edge_ids": support["route_edge_ids"], "route": support["route"],
                     "planned_duration_seconds": support["duration_seconds"], "battery": support["battery_available"] - support["battery_required"] + 3}))
-            if support.get("target_count", 1) == 1 and support["duration_seconds"] <= 30:
+            if support.get("target_count", 1) == 1 and support["duration_seconds"] <= forecast_seconds:
                 sequence += 1
                 simulated.append(SimpleNamespace(id="agent-preview-broadcast", sequence=sequence,
                     elapsed_seconds=at + support["duration_seconds"], event_type="robot.broadcast_completed",
@@ -156,7 +172,7 @@ def build_candidates(session, drill, data, scope, run=None):
                 sequence += 1
                 simulated.append(SimpleNamespace(id='agent-preview-containment', sequence=sequence, elapsed_seconds=at+15,
                     event_type='indoor.door_changed', payload={'door_id': door['id'], 'room_id': door['room_id'], 'state': 'closed'}))
-        forecast = operations.simulation_state(drill, simulated, at + 30, session=session)
+        forecast = operations.simulation_state(drill, simulated, at + forecast_seconds, session=session)
         predicted = [p for p in forecast["residents"] if p["id"] in id_set]
         score = operations.calculate_score_data(session, drill, simulated, forecast)["total_score"]
         assignment_list = [{"id": pid, "label": population[pid]["label"], "exit": assignments[pid], "vulnerable": population[pid]["vulnerable"],
@@ -177,8 +193,8 @@ def build_candidates(session, drill, data, scope, run=None):
                                     "unreachable": len(unresolved), "arrived": sum(p["status"] == "evacuated" for p in predicted),
                                     "exposed": sum(p.get("smoke_exposure", 0) > 5 for p in predicted), "queue_seconds": round(sum(p.get("queue_seconds", 0) for p in predicted)),
                                     "score": score, "score_delta": score - baseline_score},
-                        "forecast_seconds": 30, "forecast_at": at, "forecast_sequence": data["latest_event_sequence"],
-                        "coverage": "30 秒居民与首批可用护送资源预演；" + ("机器人按预计到位时刻计入广播，居民不等待机器人；" if support else "") + "后续批次待资源释放，车辆与人工任务沿用当前安排。"})
+                        "forecast_seconds": forecast_seconds, "forecast_at": at, "forecast_sequence": data["latest_event_sequence"],
+                        "coverage": f"{forecast_seconds} 秒居民与首批可用护送资源预演；" + ("机器人按预计到位时刻计入广播，居民不等待机器人；" if support else "") + "后续批次待资源释放，车辆与人工任务沿用当前安排。"})
     # The director workspace deliberately presents at most two actionable
     # decisions.  More alternatives increase review time without improving
     # the plan: keep the best forecast and one materially different fallback;

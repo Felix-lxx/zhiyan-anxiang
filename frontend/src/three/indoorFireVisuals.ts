@@ -32,6 +32,14 @@ export class IndoorFireVisuals {
         new THREE.MeshBasicMaterial({ color: 0xdab467, transparent: true, opacity: .02, depthWrite: false }))
       volume.position.copy(this.point(zone.x, zone.y, zone.height)).add(new THREE.Vector3(0, 2, 0))
       layer.add(volume); this.volumes.set(zone.id, volume)
+      if (zone.kind === 'corridor') {
+        const corridor = new THREE.Group(); corridor.position.copy(this.point(zone.x, zone.y, zone.height)); layer.add(corridor)
+        for (const tile of cutFloor({x:zone.x,y:zone.y,width:zone.width,depth:zone.depth},stairOpenings(this.passages,zone.height))) {
+          const slab=box(corridor,tile.width,.018,tile.depth,0xb9b7aa,tile.x-zone.x,.009,tile.y-zone.y)
+          slab.material.dispose(); slab.material=this.materials.surface('tile',0xc8c7bd,tile.width/.7,tile.depth/.7)
+        }
+        continue
+      }
       if (zone.kind !== 'room') continue
       const kitchen = new THREE.Group(); kitchen.position.copy(this.point(zone.x, zone.y, zone.height)); layer.add(kitchen)
       this.roomObjects.set(zone.id, kitchen)
@@ -48,7 +56,10 @@ export class IndoorFireVisuals {
       }
       for (const side of [-1,1]) {
         const wall={x:zone.x+side*zone.width/2,y:zone.y,width:.08,depth:zone.depth}
-        if(furnitureFits(wall,zone.height,this.passages)) box(kitchen,.08,1.05,zone.depth,0xc9c9bb,side*zone.width/2,.525,0)
+        if(furnitureFits(wall,zone.height,this.passages)) {
+          box(kitchen,.08,2.2,zone.depth,0xc9c9bb,side*zone.width/2,1.1,0)
+          box(kitchen,.045,.09,zone.depth-.08,0x727b70,side*(zone.width/2-.05),.065,0)
+        }
       }
       // Small historical rooms may have no safe cabinet footprint. Keep their
       // selectable marker, never fill the residents' route with decorative furniture.
@@ -145,10 +156,10 @@ export class IndoorFireVisuals {
       const width = opening.width
       for (const panel of doorWallPanels(room, opening)) {
         if (!furnitureFits(panel, room.height, this.passages)) continue
-        const wall=box(layer,panel.width,1.05,panel.depth,0xc9c9bb,0,0,0)
-        wall.position.copy(this.point(panel.x,panel.y,room.height)); wall.position.y+=.525
+        const wall=box(layer,panel.width,2.2,panel.depth,0xc9c9bb,0,0,0)
+        wall.position.copy(this.point(panel.x,panel.y,room.height)); wall.position.y+=1.1
         const cap=box(layer,panel.width+.015,.035,panel.depth+.015,0xe0dac9,0,0,0)
-        cap.position.copy(this.point(panel.x,panel.y,room.height));cap.position.y+=1.0675
+        cap.position.copy(this.point(panel.x,panel.y,room.height));cap.position.y+=2.2175
       }
       const frame = new THREE.Group(); frame.position.copy(this.point(opening.x, opening.y, room.height))
       frame.rotation.y = opening.rotation; layer.add(frame)

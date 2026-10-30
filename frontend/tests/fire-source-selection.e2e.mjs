@@ -3,6 +3,13 @@ import assert from 'node:assert/strict'
 import { mkdirSync } from 'node:fs'
 import { resolve } from 'node:path'
 import { PerspectiveCamera, Vector3 } from '../node_modules/three/build/three.module.js'
+import ts from 'typescript'
+import {readFile} from 'node:fs/promises'
+import {pathToFileURL} from 'node:url'
+const geometrySource = await readFile(new URL('../src/three/indoorGeometry.ts',import.meta.url),'utf8')
+const compiled = ts.transpileModule(geometrySource,{compilerOptions:{target:ts.ScriptTarget.ES2022,module:ts.ModuleKind.ESNext}}).outputText
+const threeUrl = pathToFileURL(resolve('node_modules/three/build/three.module.js')).href
+const {fireSourceCamera} = await import('data:text/javascript;base64,'+Buffer.from(compiled.replace("from 'three'",`from '${threeUrl}'`)).toString('base64'))
 const { default: playwright } = await import(process.env.PLAYWRIGHT_MODULE || 'playwright')
 const browser = await playwright.chromium.launch({ headless: true, ...(process.env.QA_BROWSER_PATH ? { executablePath: process.env.QA_BROWSER_PATH } : {}) })
 const output = resolve('../output/playwright/fire-source-selection'); mkdirSync(output, { recursive: true })
@@ -50,7 +57,8 @@ try {
     const bounds = await canvas.boundingBox()
     assert.ok(bounds.height >= 200, `Three-dimensional picker too short at ${width}: ${bounds.height}px`)
     const camera = new PerspectiveCamera(48, bounds.width / bounds.height, .1, 400)
-    camera.position.set(66, 76, 74); camera.lookAt(0, 0, 0); camera.updateMatrixWorld()
+    const frame = fireSourceCamera(sources.map(source=>({x:source.x-50,y:source.y-50,width:10,depth:6})),camera.aspect)
+    camera.position.copy(frame.position); camera.lookAt(frame.target); camera.updateMatrixWorld()
     const position = new Vector3(20, 2.6, 15).project(camera)
     await page.mouse.click(bounds.x + (position.x + 1) * bounds.width / 2, bounds.y + (1 - position.y) * bounds.height / 2)
     await page.waitForFunction(() => document.querySelector('#fire-source')?.value === 'west')

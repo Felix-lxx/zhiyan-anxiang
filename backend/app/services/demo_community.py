@@ -17,6 +17,7 @@ from app.services.communities import get_community_or_none
 
 
 DEMO_COMMUNITY_NAME = "安巷社区 · 夜间充电棚火灾主案例"
+DEMO_KITCHEN_PROPERTIES = {'width': 8.5, 'depth': 8, 'indoor_layout_version': 3}
 
 
 def get_or_create_demo_community(session: Session, owner_username: str) -> tuple[Community, bool]:
@@ -28,6 +29,15 @@ def get_or_create_demo_community(session: Session, owner_username: str) -> tuple
         .where(Community.owner.has(username=owner_username), Community.name == DEMO_COMMUNITY_NAME)
     )
     if existing is not None:
+        # Only repair the unconfigured built-in house. Explicit user dimensions
+        # and every already frozen drill world remain untouched.
+        house = session.scalar(select(MapObject).join(CommunityVersion).where(
+            CommunityVersion.community_id == existing.id,
+            MapObject.object_type == MapObjectType.BUILDING, MapObject.name == '1 号楼'
+        ).order_by(CommunityVersion.version_number.desc()))
+        if house is not None and not ({'width', 'depth'} & house.properties.keys()):
+            house.properties = {**house.properties, **DEMO_KITCHEN_PROPERTIES}
+            session.commit()
         return get_community_or_none(session, existing.id), False  # type: ignore[return-value]
 
     owner = ensure_development_user(session, owner_username)
@@ -51,7 +61,7 @@ def get_or_create_demo_community(session: Session, owner_username: str) -> tuple
     session.flush()
 
     objects = [
-        (MapObjectType.BUILDING, "1 号楼", 26, 26, {"floors": 6, "resident_groups": "普通居民"}),
+        (MapObjectType.BUILDING, "1 号楼", 26, 26, {"floors": 6, "resident_groups": "普通居民", **DEMO_KITCHEN_PROPERTIES}),
         (MapObjectType.BUILDING, "2 号楼", 46, 24, {"floors": 6, "resident_groups": "普通居民"}),
         (MapObjectType.BUILDING, "3 号楼", 58, 48, {"floors": 6, "resident_groups": "含 2 名独居老人、1 名行动不便人员"}),
         (MapObjectType.BUILDING, "4 号楼", 34, 68, {"floors": 5}),

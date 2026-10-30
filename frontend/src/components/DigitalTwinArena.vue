@@ -16,7 +16,7 @@ import { RescueVisuals, type RescueResident } from '../three/rescueVisuals'
 import type { Vehicle } from '../domain/drill'
 import { FireEffects } from '../three/fireEffects'
 import { IndoorFireVisuals } from '../three/indoorFireVisuals'
-import { indoorCameraOffset } from '../three/indoorGeometry'
+import { indoorCameraOffset, fireSourceCamera } from '../three/indoorGeometry'
 import { cutFloor, stairOpenings, floorContainsHeight } from '../three/indoorGeometry'
 import type { IndoorState } from '../domain/indoor'
 import { RoadVisuals } from '../three/roadVisuals'
@@ -147,6 +147,7 @@ let lastFrameTime = 0
 let visualSeconds = 0
 let frameCount = 0
 let sampleStarted = 0
+let slowFrameSamples = 0
 const fps = ref(0)
 const quality = ref<'low' | 'medium' | 'high'>(window.innerWidth < 760 ? 'low' : (navigator.hardwareConcurrency ?? 8) <= 4 ? 'medium' : 'high')
 const residentMeshes = new Map<string, THREE.Group>()
@@ -498,12 +499,33 @@ function buildScene(): void {
   renderer.domElement.addEventListener('webglcontextrestored', onContextRestored)
   document.addEventListener('visibilitychange', onVisibilityChange)
   resizeObserver = new ResizeObserver(resize); if (host.value) resizeObserver.observe(host.value)
-  resize(); animate()
+  resize()
+  if (props.fireSourceSelection?.enabled && !props.simulation?.environment.indoor) {
+    frameFireSources()
+  } else if (!props.simulation?.environment.indoor) {
+    const origin = props.simulation?.world?.fire_source?.ignition_position ?? props.simulation?.world?.fire_origin
+    if (origin) {
+      targetLookAt.copy(worldPoint(origin.x, origin.y, origin.height))
+      targetCameraPosition.copy(targetLookAt).add(props.compact ? new THREE.Vector3(24, 32, 30) : new THREE.Vector3(42, 48, 48))
+      camera.position.copy(targetCameraPosition); controls.target.copy(targetLookAt)
+    }
+  }
+  animate()
 }
 
 function resize(): void {
   if (!host.value || !renderer || !camera) return
   const { clientWidth, clientHeight } = host.value; renderer.setSize(clientWidth, clientHeight, false); camera.aspect = clientWidth / Math.max(1, clientHeight); camera.updateProjectionMatrix(); renderDirty = true
+  if (props.fireSourceSelection?.enabled && !props.simulation?.environment.indoor) frameFireSources()
+  else if (indoorView.value && viewMode.value === 'director' && visibleIndoorFloor.value && !userOrbiting) focusIndoorFloor(visibleIndoorFloor.value, visibleIndoorBuilding.value)
+}
+
+function frameFireSources(): void {
+  const candidates = props.simulation?.world?.objects.filter(object => props.fireSourceSelection?.eligibleIds.includes(object.id)) ?? []
+  if (!candidates.length || !camera) return
+  const frame = fireSourceCamera(candidates.map(object => ({x:object.x-50,y:object.y-50,width:object.width,depth:object.depth})),camera.aspect)
+  targetLookAt.copy(frame.target); targetCameraPosition.copy(frame.position)
+  camera.position.copy(frame.position); controls.target.copy(frame.target); controls.update(); renderDirty=true
 }
 
 function markRenderDirty(): void { renderDirty = true }
@@ -805,7 +827,17 @@ function animate(time = 0): void {
   }
   renderer.render(scene, camera)
   frameCount++
-  if(time-sampleStarted>=1000) { fps.value=activelyAnimating?Math.round(frameCount*1000/(time-sampleStarted)):0;frameCount=0;sampleStarted=time }
+  if(time-sampleStarted>=1000) {
+    fps.value=activelyAnimating?Math.round(frameCount*1000/(time-sampleStarted)):0
+    if (activelyAnimating && !reducedMotion && fps.value > 0 && fps.value < 22) slowFrameSamples++
+    else if (fps.value >= 28 || !activelyAnimating) slowFrameSamples=0
+    if (slowFrameSamples >= 3 && quality.value !== 'low') {
+      quality.value = quality.value === 'high' ? 'medium' : 'low'
+      slowFrameSamples=0
+      flashNotice(`设备帧率偏低，已切换为${quality.value === 'medium' ? '均衡' : '流畅'}画质`)
+    }
+    frameCount=0;sampleStarted=time
+  }
   const cameraSettled = camera.position.distanceTo(targetCameraPosition) < .08 && controls.target.distanceTo(targetLookAt) < .08
   renderDirty = !activelyAnimating && !reducedMotion && !cameraSettled
 }
@@ -1129,7 +1161,12 @@ function setView(mode: typeof viewMode.value): void {
   if (mode === 'resident') selectedResident.value = activeResident.value?.id ?? props.simulation?.residents[0]?.id ?? ''
   if(mode==='resident' && activeResident.value?.indoor_stage && activeResident.value.indoor_stage!=='outdoor' && !indoorView.value)showIndoor()
   viewMode.value = mode; controls.enabled = mode === 'director'
-  if (mode === 'director') { targetCameraPosition.set(66, 76, 74); targetLookAt.set(0, 0, 0) }
+  if (mode === 'director') {
+    if (indoorView.value && visibleIndoorFloor.value) { focusIndoorFloor(visibleIndoorFloor.value, visibleIndoorBuilding.value); return }
+    const origin = props.simulation?.world?.fire_source?.ignition_position ?? props.simulation?.world?.fire_origin
+    targetLookAt.copy(origin ? worldPoint(origin.x, origin.y, origin.height) : new THREE.Vector3())
+    targetCameraPosition.copy(targetLookAt).add(new THREE.Vector3(42, 48, 48))
+  }
   if (mode === 'rescue') { targetCameraPosition.set(-58, 32, 54); targetLookAt.set(4, 0, 0) }
   updateEntities(); renderDirty = true
 }
@@ -1168,12 +1205,13 @@ function onPointerUp(event: PointerEvent): void {
   raycaster.setFromCamera(pointer, camera)
   const hits = raycaster.intersectObjects(interactiveMeshes, true)
   // Hidden LODs and indoor residents remain registered, but must not steal a click.
-  const hit = hits.find(candidate => {
+  const visibleHits = hits.filter(candidate => {
     let object: THREE.Object3D | null = candidate.object
     while (object) { if (!object.visible) return false; object = object.parent }
     return true
   })
-  if(props.roomSelection){const room=hit?.object.userData.selection?.fireRoom;if(room)emit('fireRoomPick',room);else flashNotice('请选择当前楼层的厨房台面，或使用右侧房间列表。');return}
+  const hit = visibleHits[0]
+  if(props.roomSelection){const room=visibleHits.find(candidate=>candidate.object.userData.selection?.fireRoom)?.object.userData.selection?.fireRoom;if(room)emit('fireRoomPick',room);else flashNotice('请选择当前楼层的厨房台面，或使用右侧房间列表。');return}
   if (props.fireSourceSelection?.enabled) {
     const id = hit?.object.userData.selection?.objectId as string | undefined
     if (id && props.fireSourceSelection.eligibleIds.includes(id)) emit('fireSourcePick', id)

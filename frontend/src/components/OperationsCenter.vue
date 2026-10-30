@@ -113,7 +113,7 @@ const soundEnabled = ref(false), effectsEnabled = ref(true)
 const guideOpen = computed({ get: () => activePanel.value === 'guide', set: value => { if (value) activePanel.value = 'guide'; else if (activePanel.value === 'guide') activePanel.value = 'none' } })
 const directorMode = ref<'observe' | 'command' | 'replay'>(route.query.mode === 'replay' ? 'replay' : 'observe')
 const timelineEvents = computed(() => (displayed.value?.events ?? []).filter(event => event.event_type !== 'command.accepted').sort((a,b)=>a.sequence-b.sequence).slice(-7))
-async function openReplay() { closeFloatingPanels(); directorMode.value='replay'; void router.replace({query:{scene:selectedSceneId.value,drill:current.value?.id,mode:'replay'}}); await seekReplay(replay.value?.at_seconds ?? 0) }
+async function openReplay() { closeFloatingPanels(); directorMode.value='replay'; void router.replace({query:{scene:selectedSceneId.value,drill:current.value?.id,mode:'replay'}}); await seekReplay(replay.value?.at_seconds ?? current.value?.elapsed_seconds ?? 0) }
 function exitReplay() { directorMode.value='observe'; leaveReplay(); void router.replace({query:{scene:selectedSceneId.value,drill:current.value?.id}}) }
 async function forkReplay(at:number,sequence?:number) {
   if(!current.value || busy.value)return
@@ -274,7 +274,7 @@ function selectDrill(drill: Drill): void {
   void router.replace({ query: { scene: selectedSceneId.value, drill: drill.id, ...(directorMode.value === 'replay' ? { mode: 'replay' } : {}) } })
   if (drill.status === 'ended') { desiredDrillId = drill.id; stopLive?.(); stopLive = undefined; socketState.value = 'live' }
   else connectSocket(drill.id)
-  if (directorMode.value === 'replay') void seekReplay(0)
+  if (directorMode.value === 'replay') void seekReplay(drill.elapsed_seconds)
   else if (drill.journey) drawer.value = 'training'
 }
 async function loadParticipantInvite(): Promise<void> {
