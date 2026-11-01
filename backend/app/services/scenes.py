@@ -4,8 +4,9 @@ from sqlalchemy.orm import Session, selectinload
 from app.models.domain import Community, DecisionOption, DecisionPoint, Scene, SceneStatus, SceneTemplate, SceneVersion
 from app.services.map_objects import current_version
 from app.models.tasks import DecisionTask
-from app.services.scenario_contracts import contract_for, scene_contract, require_available, canonical_defaults
+from app.services.scenario_contracts import contract_for, scene_contract, require_available
 from app.services.fire_sources import resolve_fire_source, fire_source_address
+from app.services.scene_parameters import initial_parameters
 
 
 TEMPLATES = [
@@ -42,7 +43,8 @@ def create_scene(session: Session, *, community: Community, template_id: str, na
     scene = Scene(community_id=community.id, template_id=template.id, name=name, status=SceneStatus.DRAFT)
     session.add(scene)
     session.flush()
-    scene_version = SceneVersion(scene_id=scene.id, community_version_id=version.id, version_number=1, status=SceneStatus.DRAFT, parameters=canonical_defaults(template.defaults))
+    parameters = initial_parameters(session, version.id, template.defaults)
+    scene_version = SceneVersion(scene_id=scene.id, community_version_id=version.id, version_number=1, status=SceneStatus.DRAFT, parameters=parameters)
     session.add(scene_version); session.flush()
     from app.services.scenario_tasks import ensure_standard_tasks
     ensure_standard_tasks(session, scene_version, template.code)
@@ -105,8 +107,15 @@ def update_scene_parameters(session: Session, *, scene: Scene, parameters: dict)
                 session.add(DecisionTask(scene_version_id=draft.id, decision_point_id=point.id,
                     title=task.title, target=task.target, deadline_seconds=task.deadline_seconds, status='pending'))
         scene.status = SceneStatus.DRAFT
+        target_version = draft
     else:
         version.parameters = merged_parameters
+        target_version = version
+    # Legacy scenes can predate the standard task contract. Saving a valid
+    # configuration repairs the editable version, never its published source
+    # or an existing drill's frozen world. Existing/custom tasks are preserved.
+    from app.services.scenario_tasks import ensure_standard_tasks
+    ensure_standard_tasks(session, target_version, scene_contract(scene).code)
     session.commit()
     session.expire(scene, ["versions"])
     return session.scalar(select(Scene).where(Scene.id == scene.id).options(selectinload(Scene.versions)))

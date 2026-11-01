@@ -137,7 +137,7 @@ function hydrateParameters(scene: Scene) {
   const p = latestVersion(scene)?.parameters ?? {}
   parameterForm.value = {
     fire_source_type: isKitchen.value ? 'kitchen' : 'charging_shed', fire_floor: Number(p.fire_floor ?? 1), fire_room: String(p.fire_room ?? 'east'), room_door_state: String(p.room_door_state ?? 'open'),
-    fire_source_object_id: String(p.fire_source_object_id ?? ''), start_time: String(p.start_time ?? '20:15'), wind_direction: String(p.wind_direction ?? '微风'), resident_count: Number(p.resident_count ?? (isKitchen.value?24:60)), hydrant_status: String(p.hydrant_status ?? 'faulty'), south_lane_status: String(p.south_lane_status ?? 'restricted'), stair_width: Number(p.stair_width ?? 1.2),
+    fire_source_object_id: String(p.fire_source_object_id ?? ''), start_time: String(p.start_time ?? (isKitchen.value?'18:30':'20:15')), wind_direction: String(p.wind_direction ?? '微风'), resident_count: Number(p.resident_count ?? (isKitchen.value?8:18)), hydrant_status: String(p.hydrant_status ?? 'available'), south_lane_status: String(p.south_lane_status ?? 'restricted'), stair_width: Number(p.stair_width ?? 1.2),
   }
   parameterBaseline.value = { ...parameterForm.value }
   parametersDirty.value = false
@@ -286,6 +286,7 @@ async function repairTasks() {
     scenes.value=scenes.value.map(s=>s.id===value.id?value:s)
     notice.value='标准处置任务已补齐。已发布场景会生成新草稿，原演练不变；请重新校验发布。'
     await validateCurrent()
+    await loadPreview(sceneId, false)
   }catch(cause){error.value=cause instanceof Error?cause.message:'补齐任务失败，请重试。'}finally{isSaving.value=false}
 }
 function handleBeforeUnload(event: BeforeUnloadEvent) { if (parametersDirty.value) event.preventDefault() }
@@ -311,6 +312,7 @@ onBeforeUnmount(() => { fireSourcesRequest++; previewRequest++; window.removeEve
       </div>
       <aside class="atlas-preparation__inspector">
        <p v-if="locationNotice" class="configuration-location" role="status">{{locationNotice}}</p>
+       <section v-if="previewError.includes('缺少标准处置任务')" class="atlas-property-group" role="alert" aria-label="修复场景任务"><h3>需要补齐案例任务</h3><p>该旧场景缺少演练必需的处置任务。补齐后恢复预览，重新校验并发布即可用于新场次；已有演练不受影响。</p><p v-if="parametersDirty">请先保存当前参数，保存时会同时补齐任务。</p><button type="button" class="primary-button" :disabled="isSaving || parametersDirty" @click="repairTasks">{{isSaving?'正在补齐…':'补齐任务并恢复预览'}}</button></section>
        <section v-if="!activeCanRun" class="scenario-unavailable" aria-label="案例支持情况"><h2>{{activeScene.capabilities?.title??'案例能力待确认'}}</h2><p>{{activeScene.capabilities?.notice??'未能读取案例运行能力，请重新进入场景准备。'}}</p><button type="button" class="primary-button" @click="startNewScene">选择可演练案例</button><button type="button" class="secondary-button" @click="router.push({name:'projects',query:{section:'history'}})">查看历史演练</button></section>
        <template v-else-if="preparationStep===0"><h2>社区底图</h2><p>楼栋、道路、消防设施与集合点</p><div class="atlas-property-group"><h3>当前社区</h3><strong>{{community.name}}</strong><p>{{community.address || '尚未填写地址'}}</p><button class="primary-button" @click="openMapEditor">打开地图编辑器</button></div><div class="atlas-property-group"><h3>场景关联</h3><p>保存后的社区坐标和路网进入当前三维预览；发布时冻结为运行版本。</p><button class="secondary-button" @click="toggleComparison(activeScene)">方案对比</button><TrainingComparison v-if="comparisonScene" :key="comparisonScene.id" :api-base-url="apiBaseUrl" :access-token="accessToken" :scene-id="comparisonScene.id" :scene-name="comparisonScene.name" @close="comparisonSceneId=''" @open-drill="id=>emit('openDrill',activeScene!.id,id)"/></div></template>
        <form v-else-if="preparationStep===1 || preparationStep===2" class="atlas-properties" @submit.prevent="saveParameters" @input="handleParameterChange" @change="handleParameterChange"><h2>{{preparationStep===1?'人员与南侧通道':'火源与烟气'}}</h2><p>{{preparationStep===1?'配置居民规模、楼梯容量与疏散条件':'配置起火点、时刻和环境条件'}}</p>

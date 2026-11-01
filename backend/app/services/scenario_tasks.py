@@ -24,6 +24,9 @@ def missing_tasks(session, version, code):
 
 
 def ensure_standard_tasks(session, version, code):
+    # Production sessions disable autoflush. Include cloned/pending tasks in
+    # the existence check so saving a published scene cannot duplicate them.
+    session.flush()
     missing = missing_tasks(session, version, code)
     if not missing:
         return 0
