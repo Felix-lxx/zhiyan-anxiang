@@ -1,7 +1,7 @@
 """Deterministic compartment smoke model on the frozen pedestrian topology."""
 from collections import OrderedDict
 from copy import deepcopy
-from app.services.indoor_layout import door_portal
+from app.services.indoor_layout import door_portal, CORRIDOR_CLEAR_WIDTH
 
 
 def attach_indoor_environment(world):
@@ -14,6 +14,8 @@ def attach_indoor_environment(world):
             continue
         width = building['width'] * (.4 if node['kind'] == 'room' else .18 if node['kind'] == 'stairs' else .7)
         depth = building['depth'] * (.4 if node['kind'] == 'room' else .7 if node['kind'] == 'stairs' else .16)
+        if node['kind'] == 'corridor':
+            depth = max(depth, CORRIDOR_CLEAR_WIDTH)
         zones.append({**node, 'width': node.get('width', width), 'depth': node.get('depth', depth)})
     ids = {zone['id'] for zone in zones}
     links, doors = [], []
@@ -27,7 +29,7 @@ def attach_indoor_environment(world):
             doors.append({'id': edge['id'], 'label': room['name'] + '房门', 'room_id': room['id'], 'floor': room['floor'],
                           'portal': door_portal(room, hall, edge['width_meters']),
                           'state': world['parameters'].get('room_door_state', 'open') if room['id'] == source['location']['node_id'] else 'open'})
-    world['indoor_environment'] = {'model_version': 1, 'building_id': building_id, 'source_zone_id': source['location']['node_id'],
+    world['indoor_environment'] = {'model_version': 1, 'geometry_revision': 2, 'building_id': building_id, 'source_zone_id': source['location']['node_id'],
                                  'zones': zones, 'links': links, 'doors': doors,
                                  'node_zones':{node['id']:node.get('zone_id',node['id']) for node in graph['nodes'] if node.get('building_id')==building_id}}
     for task in world['tasks']:
@@ -72,7 +74,7 @@ class KitchenSmokeTimeline:
         zones = [{**zone, 'smoke_density': round(self.density[zone['id']], 4),
                   'visibility': round(100*(1-self.density[zone['id']])),
                   'temperature': round(22+self.density[zone['id']]*180, 1)} for zone in self.model['zones']]
-        result = {'model_version': 1, 'building_id': self.model['building_id'], 'source_zone_id': self.model['source_zone_id'],
+        result = {'model_version': 1, 'geometry_revision': self.model.get('geometry_revision', 1), 'building_id': self.model['building_id'], 'source_zone_id': self.model['source_zone_id'],
                   'source_label': self.world['fire_source']['name'], 'zones': zones,
                   'doors': [{**door, 'state': self.doors[door['id']]} for door in self.model['doors']]}
         result['density_by_node']={node_id:self.density.get(zone_id,0) for node_id,zone_id in self.model['node_zones'].items()}

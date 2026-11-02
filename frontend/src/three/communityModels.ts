@@ -1,12 +1,22 @@
 import * as THREE from 'three'
+import { ROAD_SURFACE_Y } from './roadSurface'
 import type { SceneMaterials } from './sceneMaterials'
+import { batchStaticParts } from './staticMeshBatch'
+import type { StreetCuts } from './roadJunctions'
+
+// Each model owns its palette. Do not share disposable materials across arenas.
+const palettes = new WeakMap<THREE.Group, Map<number, THREE.MeshStandardMaterial>>()
 
 function surface(color: number, roughness = .86) {
   return new THREE.MeshStandardMaterial({ color, roughness })
 }
 
 function box(group: THREE.Group, dimensions: [number,number,number], position: [number,number,number], color: number) {
-  const mesh = new THREE.Mesh(new THREE.BoxGeometry(...dimensions), surface(color))
+  let palette = palettes.get(group)
+  if (!palette) { palette = new Map(); palettes.set(group, palette) }
+  let material = palette.get(color)
+  if (!material) { material = surface(color); palette.set(color, material) }
+  const mesh = new THREE.Mesh(new THREE.BoxGeometry(...dimensions), material)
   mesh.position.set(...position); mesh.castShadow = true; mesh.receiveShadow = true; group.add(mesh)
   return mesh
 }
@@ -48,9 +58,21 @@ export function createApartment(width: number, depth: number, floors: number, se
       box(group,[(width-doorway)/2,height,wall],[(width+doorway)/4,height/2,depth/2-wall/2],colors[seed % colors.length]!),
       box(group,[doorway,height-2.55,wall],[0,(height+2.55)/2,depth/2-wall/2],colors[seed % colors.length]!),
     ]
+    const facadeMaterial = materials?.surface('plaster', colors[seed % colors.length]!, Math.max(1,width/4), floors).clone()
+    if (facadeMaterial) {
+      shellParts[0]!.material.dispose()
+      palettes.get(group)?.delete(colors[seed % colors.length]!)
+    }
     for (const shell of shellParts) {
       shell.name = 'building-envelope'
-      if (materials) { shell.material.dispose(); shell.material = materials.surface('plaster', colors[seed % colors.length]!, Math.max(1,width/4), floors).clone() }
+      if (facadeMaterial) shell.material = facadeMaterial
+    }
+    if (detailed) {
+      // Lower plinth protects the entry; keep the real doorway completely open.
+      for (const side of [-1,1]) box(group,[(width-doorway)/2,.5,.035],[side*(width+doorway)/4,.25,depth/2+.02],0x858b7d)
+      const vents:Array<[number,number,number,number]>=[]
+      for(let floor=0;floor<floors;floor++)for(let i=0;i<4;i++)vents.push([width/2+.075,floor*3.2+.65+i*.06,-depth*.28,0])
+      instances(group,new THREE.BoxGeometry(.055,.022,.4),surface(0x5e716d,.4),vents)
     }
     box(group,[width+.45,.25,depth+.45],[0,height+.12,0],0x6b7770)
     for (const side of [-1,1]) {
@@ -76,6 +98,12 @@ export function createApartment(width: number, depth: number, floors: number, se
           if (floor > 0 && col % 3 === 1) {
             balconySlabs.push([x,y-.86,z+side*.43,0]); railings.push([x,y-.12,z+side*.88,0])
             for (let bar=-3;bar<=3;bar++) balconyBars.push([x+bar*.21,y-.46,z+side*.88,0])
+            // Return rails close both sides; a front rail alone leaves a floating,
+            // open-sided balcony. Keep additions over its existing slab.
+            for (const end of [-1,1]) {
+              box(group,[.045,.055,.8],[x+end*.72,y-.12,z+side*.46],0x485953)
+              for (const offset of [.2,.45,.7]) box(group,[.035,.74,.035],[x+end*.72,y-.46,z+side*offset],0x485953)
+            }
           } else if (floor < 2) {
             for (let bar=-2;bar<=2;bar++) grilles.push([x+bar*.19,y,z+side*.15,0])
           }
@@ -83,7 +111,7 @@ export function createApartment(width: number, depth: number, floors: number, se
       }
       for(const side of [-1,1]) dark.push([side*(width/2+.04),floor*3.2+1.8,0,Math.PI/2])
     }
-    instances(group,new THREE.BoxGeometry(.95,1.35,.07),surface(0x314e57,.35),dark)
+    instances(group,new THREE.BoxGeometry(.95,1.35,.07),new THREE.MeshPhysicalMaterial({color:0x314e57,roughness:.22,metalness:.18,clearcoat:.8}),dark)
     instances(group,new THREE.BoxGeometry(.95,1.35,.07),new THREE.MeshStandardMaterial({color:0xe5c185,emissive:0xe5a554,emissiveIntensity:night?.65:0,roughness:.6}),lit)
     if(detailed) {
       instances(group,new THREE.BoxGeometry(1.15,.12,.4),surface(0xddd8c5),ledges)
@@ -99,7 +127,8 @@ export function createApartment(width: number, depth: number, floors: number, se
       box(group,[width*.35,1.5,depth*.38],[0,height+.9,0],0x939c91)
       const tank=new THREE.Mesh(new THREE.CylinderGeometry(.65,.65,1.1,16),new THREE.MeshStandardMaterial({color:0xaeb8b1,roughness:.4,metalness:.6}));tank.position.set(-width*.28,height+.8,0);tank.castShadow=true;group.add(tank)
       for(const x of [-width/2+.25,width/2-.25]) box(group,[.08,height,.1],[x,height/2,depth/2+.1],0x647872)
-      box(group,[.12,height,.12],[width/2-.45,height/2,-depth/2-.12],0x7e7c6e)
+      const drain = new THREE.Mesh(new THREE.CylinderGeometry(.055,.055,height,10),surface(0x7e7c6e,.55))
+      drain.position.set(width/2-.45,height/2,-depth/2-.12);drain.castShadow=true;group.add(drain)
       for(let level=0;level<floors;level++) box(group,[.2,.08,.15],[width/2-.45,level*3.2+1,-depth/2-.12],0x575b54)
     }
     // Door leaves are held against the jambs, outside the traversable opening.
@@ -108,6 +137,7 @@ export function createApartment(width: number, depth: number, floors: number, se
       box(group,[.10,2.55,.14],[side*(doorway/2+.02),1.275,depth/2],0x697e72)
     }
     box(group,[Math.min(width,2.8),.15,1.2],[0,2.7,depth/2+.4],0x798a80)
+    batchStaticParts(group,new Set(['building-envelope']),'apartment-static-fittings')
     // Both levels retain windows. Only small fixtures disappear in overview.
     lod.addLevel(group,detailed?0:90, .12)
   }
@@ -122,13 +152,19 @@ export function createChargingShed(width: number, depth: number) {
   for(let x=-width/2;x<=width/2;x+=.35) ribs.push([x,2.88,0,0])
   instances(group,new THREE.BoxGeometry(.04,.055,depth+.65),surface(0x7c9490,.45),ribs)
   box(group,[width,.12,.12],[0,2.35,-depth/2+.18],0x3f504a)
+  // Service conduit and sockets sit on the rear beam, away from residents' routes.
+  const conduit=new THREE.Mesh(new THREE.CylinderGeometry(.022,.022,Math.max(.1,width-.4),8),new THREE.MeshStandardMaterial({color:0x69736b,metalness:.55,roughness:.48}))
+  conduit.rotation.z=Math.PI/2;conduit.position.set(0,1.7,-depth/2+.22);group.add(conduit)
   sign(group,'集中充电 · 禁止烟火',Math.min(width,5),2.53,depth/2+.35)
   for(const x of [-width/2+.2,width/2-.2]) for(const z of [-depth/2+.2,depth/2-.2]) box(group,[.12,2.7,.12],[x,1.4,z],0x748a83)
   const count=Math.max(2,Math.floor(width/1.3))
   for(let i=0;i<count;i++) {
     const x=(i-(count-1)/2)*(width/(count+1))
     box(group,[.32,.65,.16],[x,1.2,-depth/2+.2],0xeee6cf)
-    box(group,[.12,.12,.025],[x,1.3,-depth/2+.29],0x31574e)
+    const indicator=box(group,[.12,.12,.025],[x,1.3,-depth/2+.29],0x31574e)
+    indicator.material.emissive.setHex(0x398373);indicator.material.emissiveIntensity=.45
+    const lead=new THREE.CatmullRomCurve3([new THREE.Vector3(x+.1,1.04,-depth/2+.3),new THREE.Vector3(x+.22,.55,-depth/2+.38),new THREE.Vector3(x+.12,.72,-depth/2+.45)])
+    group.add(new THREE.Mesh(new THREE.TubeGeometry(lead,8,.012,5,false),surface(0x303f3b)))
     box(group,[.3,.12,.46],[x,1.03,.05],0x293631)
     box(group,[.36,.25,.8],[x,.8,0],0x55777a)
     for(const z of [-.4,.4]) {
@@ -171,19 +207,26 @@ export function createStreetFurniture() {
 }
 
 /** Physical pavement stays stable while the separate risk layer changes. */
-export function createStreet(length: number, width: number, materials?: SceneMaterials) {
-  const group = new THREE.Group()
-  const road = box(group,[width,.1,length],[0,.02,0],0x505a57)
-  if(materials) { road.material.dispose(); road.material = materials.surface('asphalt',0x737774,Math.max(1,width/3),Math.max(1,length/3)) }
-  for(const side of [-1,1]) box(group,[.3,.17,length],[side*(width/2+.18),.1,0],0xa4aca0)
+export function createStreet(length: number, width: number, materials?: SceneMaterials, cuts?:StreetCuts) {
+  const group = new THREE.Group();group.name='road-street-surface'
+  const road = box(group,[width,.1,length],[0,ROAD_SURFACE_Y-.05,0],0x505a57);road.name='road-pavement'
+  if(materials) { road.material.dispose(); road.material = materials.surface('asphalt',0x737774,1,1) }
+  const start=Math.min(length,Math.max(0,cuts?.start??width*.9)),end=Math.min(length,Math.max(0,cuts?.end??width*.9))
+  const curbRun=Math.max(0,length-start-end),center=(start-end)/2
+  for(const side of [-1,1]) {
+    // Connected road nodes and building entries need an actual break in the curb.
+    if(width>=2.5){if(curbRun>.1)box(group,[.18,.16,curbRun],[side*(width/2+.1),.08,center],0xa4aca0)}
+    else if(curbRun>.1)box(group,[.035,.004,curbRun],[side*(width/2-.025),ROAD_SURFACE_Y+.003,center],0xc5c5ac)
+  }
   const marks: Array<[number,number,number,number]>=[]
-  for(let z=-length/2+1.5;z<length/2-1;z+=3.5) marks.push([0,.09,z,0])
-  instances(group,new THREE.BoxGeometry(.09,.02,1.5),surface(0xd8d3b5),marks)
-  if(length>8) {
-    const cover=new THREE.Mesh(new THREE.CylinderGeometry(.42,.42,.025,24),surface(0x414944,.8)); cover.position.set(width*.22,.084,Math.min(3,length*.2));group.add(cover)
+  if(width>=3.5)for(let z=-length/2+start+.85;z+.75<length/2-end;z+=3.5) marks.push([0,ROAD_SURFACE_Y+.004,z,0])
+  instances(group,new THREE.BoxGeometry(.09,.004,1.5),surface(0xd8d3b5),marks)
+  if(curbRun>8) {
+    const coverZ=center+Math.min(3,curbRun*.2)
+    const cover=new THREE.Mesh(new THREE.CylinderGeometry(Math.min(.42,width*.25),Math.min(.42,width*.25),.025,24),surface(0x414944,.8)); cover.position.set(width*.15,ROAD_SURFACE_Y-.0125,coverZ);group.add(cover)
     const grooves: Array<[number,number,number,number]> = []
-    for(let i=-3;i<=3;i++)grooves.push([width*.22,.101,Math.min(3,length*.2)+i*.09,0])
-    instances(group,new THREE.BoxGeometry(.52,.012,.018),surface(0x788079),grooves)
+    for(let i=-3;i<=3;i++)grooves.push([width*.15,ROAD_SURFACE_Y+.002,coverZ+i*Math.min(.09,width*.04),0])
+    instances(group,new THREE.BoxGeometry(Math.min(.52,width*.4),.004,.018),surface(0x788079),grooves)
   }
   return group
 }

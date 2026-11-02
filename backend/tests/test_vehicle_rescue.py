@@ -103,6 +103,11 @@ def test_patient_must_be_counted_loaded_driven_and_handed_over(exercise):
     picked = next(p for p in pickup["simulation"]["residents"] if p["id"] == person["id"])
     assert picked["medical_transfer"]["phase"] == "loading"
     assert (picked["x"], picked["y"]) != (resident["x"], resident["y"])
+    boarding = tick(at + service["duration_seconds"] - 4)
+    boarding_person = next(p for p in boarding["simulation"]["residents"] if p["id"] == person["id"])
+    assert boarding_person["medical_transfer"]["phase"] == "boarding"
+    assert service["loading_position"] and service["boarding_position"]
+    assert boarding_person["height"] > 0
     loaded = tick(at + service["duration_seconds"] + 1)
     ambulance = loaded["simulation"]["vehicles"][1]
     assert ambulance["passenger"]["id"] == person["id"]

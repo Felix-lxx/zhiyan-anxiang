@@ -11,7 +11,7 @@ try {
   page.on('pageerror', error => errors.push(error.message))
   await page.route('**/assets/actors/*.glb', route => route.fulfill({ status: 503, body: '' }))
   await page.goto((process.env.QA_BASE_URL || 'http://127.0.0.1:5181') + '/tests/arena-recovery.html')
-  const retry = page.getByRole('button', { name: '重试人物与机器人精细模型' })
+  const retry = page.getByRole('button', { name: '重试人物机器人与车辆精细模型' })
   await retry.waitFor({ timeout: 30000 })
   assert.ok(await page.locator('canvas').count(), 'Fallback retains a usable scene')
   await page.unroute('**/assets/actors/*.glb')

@@ -2,6 +2,9 @@
 import math
 
 
+CORRIDOR_CLEAR_WIDTH = 1.5
+
+
 def door_portal(room: dict, hall: dict, width: float) -> dict:
     """Freeze the wall intersection, not the room centre or the hallway node."""
     dx, dy = hall['x'] - room['x'], hall['y'] - room['y']
@@ -22,11 +25,15 @@ def kitchen_rooms(building: dict, stair_width: float = 1.2) -> dict:
     left = x - width * .3 + stair_width / 2 + .2
     right = x + width / 2 - .2
     room_width = (right - left - .2) / 2
-    room_depth = depth * .4
+    # The room wall must sit beyond the actual corridor half-width and wall margin.
+    # The previous 5%-of-depth gap was only .4 m in an 8 m building.
+    corridor_front = y - CORRIDOR_CLEAR_WIDTH / 2 - .10
+    rear_wall = y - depth / 2 + .10
+    room_depth = min(depth * .4, corridor_front - rear_wall)
     if room_width < 1.2 or room_depth < 1.12:
         raise ValueError('住宅平面过小或楼梯过宽，无法容纳两间厨房及独立通道；请调整建筑宽深或楼梯宽度。')
     return {
         side: {'x': left + room_width / 2 + index * (room_width + .2),
-               'y': y - depth * .25, 'width': room_width, 'depth': room_depth}
+               'y': corridor_front - room_depth / 2, 'width': room_width, 'depth': room_depth}
         for index, side in enumerate(('west', 'east'))
     }

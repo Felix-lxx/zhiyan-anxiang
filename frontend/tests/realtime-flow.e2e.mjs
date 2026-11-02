@@ -88,7 +88,8 @@ try {
   // Confirmation dismisses the selection panel. Verify the authoritative
   // road and its delivery to the phone, rather than an obsolete panel state.
   assert.ok((await api('/drills/'+drillId)).simulation.road_network.edges.some(edge=>edge.name==='北门主通道'&&edge.status==='blocked'))
-  await phone.getByText(/导演注入|通道堵塞|北门主通道/).first().waitFor()
+  await phone.locator('.participant-alert summary').click()
+  await phone.locator('.participant-alert p').filter({hasText:/导演注入|通道堵塞|北门主通道/}).waitFor()
   const result = await api('/drills/' + drillId)
   assert.ok(result.commands.some(c => c.kind === 'residents.assign'))
   assert.ok(result.commands.some(c => c.kind === 'event.inject' && c.status === 'completed'))

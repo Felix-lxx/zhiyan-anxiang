@@ -5,6 +5,8 @@ import { useSceneOverlayLayout } from '../composables/useSceneOverlayLayout'
 const sceneUtilities = useSceneOverlayLayout()
 import * as THREE from 'three'
 import { createApartment, createChargingShed, createFireStation, createStreet, createStreetFurniture, createRoadBarrier } from '../three/communityModels'
+import { alignRoadTexture, createJunctionPatch, roadJunctions } from '../three/roadJunctions'
+import { ROAD_SURFACE_Y, roadWidth } from '../three/roadSurface'
 import { SceneMaterials, displayHeight as legacyDisplayHeight } from '../three/sceneMaterials'
 import { createPerson, createPatrolRobot, posePerson } from '../three/actors'
 import { CrowdRenderer } from '../three/crowdRenderer'
@@ -14,14 +16,17 @@ import { helperIdentity, helperPresentation, meetingRoute, presentHelpers, type 
 import { VehicleVisuals } from '../three/vehicleVisuals'
 import { RescueVisuals, type RescueResident } from '../three/rescueVisuals'
 import type { Vehicle } from '../domain/drill'
+import { VisualClock } from '../three/visualClock'
 import { FireEffects } from '../three/fireEffects'
+import { createStairFlight, stairSurface, stairHeight, type StairSurface } from '../three/stairFlight'
 import { IndoorFireVisuals } from '../three/indoorFireVisuals'
-import { indoorCameraOffset, fireSourceCamera } from '../three/indoorGeometry'
-import { cutFloor, stairOpenings, floorContainsHeight } from '../three/indoorGeometry'
+import { indoorCameraOffset, fireSourceCamera, kitchenCamera } from '../three/indoorGeometry'
+import { cutFloor, stairOpenings, floorContainsHeight, furnitureFits } from '../three/indoorGeometry'
 import type { IndoorState } from '../domain/indoor'
 import { RoadVisuals } from '../three/roadVisuals'
 import { createRouteGuide } from '../three/routeGuide'
 import { assemblyAttendance, createAssemblyPoint, type AssemblyResident } from '../three/assemblyPoint'
+import { RoomEnvironment } from 'three/examples/jsm/environments/RoomEnvironment.js'
 import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js'
 import AppIcon from './AppIcon.vue'
 
@@ -44,7 +49,7 @@ interface Simulation {
 interface Robot { state: string; battery: number; x: number; y: number; route: string[]; reason: string; task_queue?: Array<{ id: string; label: string; status: string; progress?: number; ends_at_seconds?: number; route_points?: Array<{ x: number; y: number; height?: number }> }> }
 interface DrillEvent { sequence: number; event_type: string; message: string; payload?: { x?: number; y?: number; target?: string; route_points?: Array<{ x: number; y: number; height?: number }>; severity?: string } }
 export interface AssistantSceneContext { kind: 'resident' | 'road' | 'robot' | 'object'; id?: string; label: string; type?: string; detail?: string; x?: number; y?: number }
-type SelectedObject = { title: string; type: string; detail: string; action?: string; residentId?: string; roadEdgeId?: string; vehicleId?: string; x?: number; y?: number }
+type SelectedObject = { fireRoom?:{floor:number;room:string}; title: string; type: string; detail: string; action?: string; residentId?: string; roadEdgeId?: string; vehicleId?: string; x?: number; y?: number }
 type SpatialIntent =
   | { kind: 'road'; edgeId: string }
   | { kind: 'robot'; x: number; y: number; target: string }
@@ -132,6 +137,9 @@ let fireLight: THREE.PointLight
 let ambientLight: THREE.HemisphereLight
 let userOrbiting = false
 const helperMeshes = new Map<string, THREE.Group>()
+let studioEnvironment: THREE.WebGLRenderTarget | undefined
+const communityContext = new Set<THREE.Object3D>()
+const roomInspection = ref(false)
 let groundPlane: THREE.Mesh
 let blockageLayer: THREE.Group
 let environmentAssetLayer: THREE.Group
@@ -145,6 +153,7 @@ const sceneMaterials = new SceneMaterials()
 let fireEffects: FireEffects
 let lastFrameTime = 0
 let visualSeconds = 0
+const effectClock = new VisualClock()
 let frameCount = 0
 let sampleStarted = 0
 let slowFrameSamples = 0
@@ -165,6 +174,7 @@ const indoorFloors = computed(() => [...new Set(props.simulation?.spatial_networ
 const residentTrails = new Map<string, THREE.Vector3[]>()
 const residentTrailLines = new Map<string, THREE.Line>()
 const helperLinkLines = new Map<string, THREE.Line>()
+const stairSurfaces:StairSurface[]=[]
 const stairHeatMeshes = new Map<string, THREE.Mesh>()
 let roadHeatMesh: THREE.InstancedMesh | null = null
 const indoorView = ref(false)
@@ -198,13 +208,23 @@ const selectedAssembly = computed(() => assemblyNodes.value.find(node => node.na
 const assemblyPeople = computed(() => (props.simulation?.residents ?? []) as Array<Resident & AssemblyResident>)
 const assemblyCounts = computed(() => selectedAssembly.value ? assemblyAttendance(assemblyPeople.value, selectedAssembly.value.id) : null)
 const assemblyPending = computed(() => selectedAssembly.value ? assemblyPeople.value.filter(person => person.node_id === selectedAssembly.value!.id && person.status === 'evacuated' && !person.counted) : [])
-const actorAssetStatus = ref<ActorAssetStatus>('loading')
+const actorAssetStatus = ref<ActorAssetStatus>('ready')
+const vehicleModelFailures=ref(0),vehicleModelLoading=ref(0)
+const modelResourceStatus=computed<ActorAssetStatus>(()=>actorAssetStatus.value==='loading'||vehicleModelLoading.value?'loading':actorAssetStatus.value==='fallback'||vehicleModelFailures.value?'fallback':'ready')
 const retryingModels = ref(false)
-const actorAssets = new ActorAssets(status => { actorAssetStatus.value = status; renderDirty = true })
+function walkingSurface(x:number,z:number,reference:number):number {
+  let nearest:number|undefined
+  for(const surface of stairSurfaces){
+    const height=stairHeight(surface,x,z,reference)
+    if(height!==undefined&&(nearest===undefined||Math.abs(height-reference)<Math.abs(nearest-reference)))nearest=height
+  }
+  return nearest??reference
+}
+const actorAssets = new ActorAssets(status => { actorAssetStatus.value = status; renderDirty = true },walkingSurface)
 async function retryActorModels() {
   if (retryingModels.value || destroyed) return
   retryingModels.value = true
-  try { await actorAssets.retryFailed() }
+  try { await Promise.allSettled([actorAssets.retryFailed(),vehicleVisuals?.retryFailed()]) }
   finally { retryingModels.value = false }
 }
 const actorMotion = new ActorMotion()
@@ -214,7 +234,7 @@ const currentRobotTask = computed(() => props.robot?.task_queue?.find(task => ['
 const robotProgress = computed(() => Math.round(100 * Math.max(0, Math.min(1, currentRobotTask.value?.progress ?? (['arrived', 'completed'].includes(props.robot?.state ?? '') ? 1 : 0)))))
 const robotRemaining = computed(() => currentRobotTask.value?.ends_at_seconds === undefined || currentRobotTask.value.status === 'blocked' ? null : Math.max(0, Math.ceil(currentRobotTask.value.ends_at_seconds - props.elapsedSeconds)))
 const robotStateLabel = computed(() => ({ idle: '待命', executing: '前往目标', blocked: '路线受阻', arrived: '已到达 · 等待广播', completed: '广播已完成', sensing: '感知现场', inspecting: '现场巡检', scanning: '扫描现场', verifying: '现场复核' }[props.robot?.state ?? ''] ?? '等待状态同步'))
-const actorAssetLabel = computed(() => actorAssetStatus.value === 'loading' ? '精细模型正在加载；可继续演练' : actorAssetStatus.value === 'fallback' ? '部分精细模型加载失败，已使用轻量模型；可原地重试' : '骨骼人物与巡检底盘已就绪；靠近对象查看细节')
+const actorAssetLabel = computed(() => modelResourceStatus.value === 'loading' ? '精细模型正在加载；可继续演练' : modelResourceStatus.value === 'fallback' ? '部分精细模型加载失败，已使用轻量模型；可原地重试' : '当前现场所需模型已就绪；靠近对象查看细节')
 
 const clockLabel = computed(() => `${String(Math.floor(props.elapsedSeconds / 60)).padStart(2, '0')}:${String(props.elapsedSeconds % 60).padStart(2, '0')}`)
 const activeResident = computed(() => props.simulation?.residents.find((item) => item.id === selectedResident.value) ?? props.simulation?.residents.find((item) => item.status === 'moving'))
@@ -238,9 +258,18 @@ const stairCongestion = computed(() => {
     density: stairs.reduce((peak, edge) => Math.max(peak, edge.density_percent ?? 0), 0),
   }
 })
+const indoorFlameBounds=computed(()=>{
+  const indoor=props.simulation?.environment.indoor
+  if(!indoor)return undefined
+  const room=indoor.zones.find(zone=>zone.id===indoor.source_zone_id)
+  const stove=indoor.equipment_layouts?.find(layout=>layout.room_id===indoor.source_zone_id)?.stove
+  const anchor=props.simulation?.world?.fire_source?.ignition_position
+  const elevation=room&&anchor?worldPoint(anchor.x,anchor.y,anchor.height).y-worldPoint(room.x,room.y,room.height).y:.8
+  return {width:stove?.width??.45,depth:stove?.depth??.45,height:Math.max(.08,2.42-elevation)}
+})
 const povExposureLevel = computed(() => Math.min(100, Math.round((activeResident.value?.smoke_exposure ?? 0) * 6)))
 const latestRoutePoints = computed(() => props.robotRoutePreview?.length ? props.robotRoutePreview : props.robot?.task_queue?.find((item) => ['executing', 'blocked'].includes(item.status))?.route_points ?? props.robot?.task_queue?.filter((item) => item.status === 'completed').slice(-1)[0]?.route_points ?? [])
-const toolHelp = computed(() => ({ inspect: '拖动旋转视角，滚轮缩放；点击对象查看实时状态。', block: '点击有颜色的真实路段：红色封锁、橙色受限，提交后立即重算所有 A* 路线。', robot: '点击任意空间目标，机器人会沿当前道路图逐段移动并持续回传进度。', residents: '点击或拖动框选居民；点击出口预览，确认后观察连续行走与队列。' }[toolMode.value]))
+const toolHelp = computed(() => ({ inspect: '拖动旋转视角，滚轮缩放；点击对象查看实时状态。', block: '点击有颜色的真实路段：红色封锁、橙色受限，提交后立即重算所有 A* 路线。', robot: '点击室外道路或建筑入口，预演机器人路线，再确认执行。', residents: '点击或拖动框选居民；点击出口预览，确认后观察连续行走与队列。' }[toolMode.value]))
 const accessibleObjects = computed(() => [
   ...(props.simulation?.vehicles?.map(v => ({ key: `vehicle:${v.id}`, label: v.name })) ?? []),
   ...(props.robot ? [{ key: 'robot', label: '巡检广播机器人 R-01' }] : []),
@@ -286,12 +315,12 @@ function addBuilding(name: string, x: number, z: number, width: number, depth: n
 function addRoad(x: number, z: number, width: number, depth: number, rotation = 0): void {
   const roadGroup = new THREE.Group()
   const road = new THREE.Mesh(new THREE.BoxGeometry(width, .16, depth), material(0x2c3736, .98))
-  road.position.y = .08; road.receiveShadow = true; roadGroup.add(road)
+  road.position.y = ROAD_SURFACE_Y-.08; road.receiveShadow = true; roadGroup.add(road)
   const vertical = depth > width
   const length = vertical ? depth : width
   for (let offset = -length / 2 + 3; offset < length / 2 - 2; offset += 7) {
     const stripe = new THREE.Mesh(new THREE.BoxGeometry(vertical ? .14 : 2.4, .025, vertical ? 2.4 : .14), new THREE.MeshBasicMaterial({ color: 0xc4c4ad }))
-    stripe.position.set(vertical ? 0 : offset, .18, vertical ? offset : 0); roadGroup.add(stripe)
+    stripe.position.set(vertical ? 0 : offset, ROAD_SURFACE_Y+.014, vertical ? offset : 0); roadGroup.add(stripe)
   }
   const curbGeometry = new THREE.BoxGeometry(vertical ? .48 : length, .2, vertical ? length : .48)
   for (const side of [-1, 1]) {
@@ -424,7 +453,7 @@ function createRobot(): void {
   scan.rotation.x = -Math.PI / 2; scan.position.set(0, 1, -6); scan.visible=false;robotGroup.add(scan);robotGroup.userData.scan=scan
   robotGroup.position.copy(worldPoint(18, 53)); scene.add(robotGroup)
   register(robotGroup, { title: '巡检广播机器人 R-01', type: '具身智能体', detail: '点击后可推进感知—复核—上报—执行闭环', action: 'robot', x: 18, y: 53 })
-  void actorAssets.robot(robotGroup)
+  if(props.robot)void actorAssets.robot(robotGroup)
 }
 
 function createResidents(): void {
@@ -448,6 +477,18 @@ function createResidents(): void {
   }
 }
 
+/** Optional reflections must never prevent the operational scene from loading. */
+function refreshEnvironment():void {
+  studioEnvironment?.dispose();studioEnvironment=undefined
+  const environment=new RoomEnvironment(),generator=new THREE.PMREMGenerator(renderer)
+  try {
+    studioEnvironment=generator.fromScene(environment,.04,.1,100)
+    scene.environment=studioEnvironment.texture;scene.environmentIntensity=indoorView.value ? .65 : .45
+  } catch {
+    scene.environment=null
+  } finally { environment.dispose();generator.dispose() }
+}
+
 function buildScene(): void {
   const hour = Number.parseInt(props.simulation?.world?.parameters?.start_time?.split(':')[0] ?? '20', 10)
   const night = hour >= 18 || hour < 6
@@ -456,6 +497,7 @@ function buildScene(): void {
   camera = new THREE.PerspectiveCamera(48, 1, .1, 400); camera.position.copy(targetCameraPosition)
   renderer = new THREE.WebGLRenderer({ antialias: qualityFactor === 1, powerPreference: 'high-performance' }); renderer.setPixelRatio(Math.min(window.devicePixelRatio, qualityFactor === 1 ? 1.5 : 1)); renderer.shadowMap.enabled = qualityFactor === 1; renderer.shadowMap.type = THREE.PCFShadowMap; renderer.outputColorSpace = THREE.SRGBColorSpace
   renderer.toneMapping = THREE.ACESFilmicToneMapping; renderer.toneMappingExposure = night ? 1.3 : 1.05
+  refreshEnvironment()
   host.value?.appendChild(renderer.domElement)
   controls = new OrbitControls(camera, renderer.domElement); controls.enableDamping = true; controls.dampingFactor = .075; controls.maxPolarAngle = Math.PI * .47; controls.minDistance = 2.5; controls.maxDistance = 145; controls.target.set(0, 0, 0); controls.addEventListener('change', markRenderDirty)
   controls.addEventListener('start', () => { userOrbiting = true })
@@ -470,6 +512,7 @@ function buildScene(): void {
   residentTrailLayer = new THREE.Group(); scene.add(residentTrailLayer)
   helperLinkLayer = new THREE.Group(); scene.add(helperLinkLayer)
   indoorGeometry = new THREE.Group(); scene.add(indoorGeometry); buildSpatialGeometry()
+  const beforeCommunity = new Set(scene.children)
   if (props.simulation?.world) {
     buildFrozenCommunity()
   } else {
@@ -483,9 +526,10 @@ function buildScene(): void {
   ;[[-7,-17,0],[7,-17,Math.PI],[-7,18,0],[7,18,Math.PI],[-36,2,0],[35,4,Math.PI]].forEach(([x,z,rotation]) => addStreetLight(x, z, rotation))
   addParkedVehicle(-8, -7, 0x6e8f8b, Math.PI / 2); addParkedVehicle(8, 8, 0x9c6d5e, Math.PI / 2); addParkedVehicle(-20, 7, 0x66717b, 0)
   }
+  for(const object of scene.children)if(!beforeCommunity.has(object))communityContext.add(object)
   createFireSystem(); createRobot(); createResidents(); updateEntities(); indoorGeometry.visible = false
   if(props.simulation?.environment.indoor) {
-    indoorFireVisuals=new IndoorFireVisuals(props.simulation.environment.indoor,worldPoint,(object,data)=>register(object,data as Parameters<typeof register>[1]),props.simulation.spatial_network?.edges,()=>{renderDirty=true});scene.add(indoorFireVisuals.group)
+    indoorFireVisuals=new IndoorFireVisuals(props.simulation.environment.indoor,worldPoint,(object,data)=>register(object,data as Parameters<typeof register>[1]),props.simulation.spatial_network?.edges);scene.add(indoorFireVisuals.group)
     focusIndoorFloor(props.indoorFloor??props.simulation.world?.parameters?.fire_floor??1)
   }
   void loadEnvironmentAssets().catch(() => {
@@ -510,6 +554,7 @@ function buildScene(): void {
       camera.position.copy(targetCameraPosition); controls.target.copy(targetLookAt)
     }
   }
+  camera.position.copy(targetCameraPosition); controls.target.copy(targetLookAt); controls.update()
   animate()
 }
 
@@ -517,7 +562,9 @@ function resize(): void {
   if (!host.value || !renderer || !camera) return
   const { clientWidth, clientHeight } = host.value; renderer.setSize(clientWidth, clientHeight, false); camera.aspect = clientWidth / Math.max(1, clientHeight); camera.updateProjectionMatrix(); renderDirty = true
   if (props.fireSourceSelection?.enabled && !props.simulation?.environment.indoor) frameFireSources()
-  else if (indoorView.value && viewMode.value === 'director' && visibleIndoorFloor.value && !userOrbiting) focusIndoorFloor(visibleIndoorFloor.value, visibleIndoorBuilding.value)
+  else if (indoorView.value && viewMode.value === 'director' && visibleIndoorFloor.value && !userOrbiting) {
+    if(roomInspection.value)focusKitchen();else focusIndoorFloor(visibleIndoorFloor.value, visibleIndoorBuilding.value)
+  }
 }
 
 function frameFireSources(): void {
@@ -538,7 +585,7 @@ function applyQuality(): void {
   let lampCount=0
   scene.traverse(object=>{
     if(object instanceof THREE.DirectionalLight)object.castShadow=quality.value!=='low'
-    if(object instanceof THREE.PointLight && object!==fireLight)object.visible=lampCount++<(quality.value==='high'?10:quality.value==='medium'?5:2)
+    if(object instanceof THREE.PointLight && object!==fireLight)object.visible=object.userData.indoor?indoorView.value:!indoorView.value&&lampCount++<(quality.value==='high'?10:quality.value==='medium'?5:2)
     if(object instanceof THREE.LOD && object.levels[1] && !object.parent?.userData.actorLod)object.levels[1].distance=object.parent?.userData.limbs ? (quality.value==='high'?32:quality.value==='medium'?22:14) : (quality.value==='high'?150:quality.value==='medium'?100:55)
   })
   actorAssets.setQuality(quality.value)
@@ -546,10 +593,17 @@ function applyQuality(): void {
 }
 
 function buildFrozenCommunity(): void {
-  for (const edge of props.simulation?.road_network?.edges ?? []) {
-    const street=createStreet(Math.hypot(edge.end.x-edge.start.x,edge.end.y-edge.start.y),Math.max(1.8,edge.width_meters),sceneMaterials)
+  const edges=props.simulation?.road_network?.edges ?? []
+  const junctions=roadJunctions(edges)
+  for(const points of junctions.patches)scene.add(createJunctionPatch(points,sceneMaterials.surface('asphalt',0x737774,1,1)))
+  for (const edge of edges) {
+    const distance=Math.hypot(edge.end.x-edge.start.x,edge.end.y-edge.start.y)
+    if(!Number.isFinite(distance)||distance<.001)continue
+    const street=createStreet(distance,roadWidth(edge.width_meters),sceneMaterials,junctions.cuts.get(edge.id))
     street.position.copy(worldPoint((edge.start.x+edge.end.x)/2,(edge.start.y+edge.end.y)/2))
     street.rotation.y=Math.atan2(edge.end.x-edge.start.x,edge.end.y-edge.start.y);scene.add(street)
+    const pavement=street.getObjectByName('road-pavement')
+    if(pavement instanceof THREE.Mesh)alignRoadTexture(pavement)
     const length=Math.hypot(edge.end.x-edge.start.x,edge.end.y-edge.start.y)
     if(length>12) addStreetLight(street.position.x+(edge.end.y-edge.start.y)/length*(edge.width_meters/2+.8),street.position.z-(edge.end.x-edge.start.x)/length*(edge.width_meters/2+.8),street.rotation.y)
   }
@@ -589,6 +643,7 @@ function buildFrozenCommunity(): void {
 function buildSpatialGeometry(): void {
   const graph=props.simulation?.spatial_network
   if(!graph)return
+  const passages=graph.edges.map(edge=>({...edge,start:{...edge.start,height:displayHeight(edge.start.height)},end:{...edge.end,height:displayHeight(edge.end.height)}}))
   const homeId=props.simulation?.residents.find(p=>p.building_id)?.building_id
   const homes=props.simulation?.world?.objects.filter(o=>o.type==='building') ?? []
   for(const home of homes) {
@@ -604,6 +659,10 @@ function buildSpatialGeometry(): void {
       }
       floor.userData.slice={buildingId:home.id,low:height,high:height};indoorGeometry.add(floor)
       for(const side of [-1,1]) {
+        // Detailed kitchens own their envelope; a second low wall cut through counters.
+        if(props.simulation?.environment.indoor?.building_id===home.id)continue
+        const rect={x:home.x+home.width*.16,y:home.y+side*home.depth*.46,width:home.width*.63,depth:.1}
+        if(!furnitureFits(rect,displayHeight(height),passages))continue
         const wall=new THREE.Mesh(new THREE.BoxGeometry(home.width*.63,.85,.1),material(0xbeb9a6))
         wall.position.copy(worldPoint(home.x+home.width*.16,home.y+side*home.depth*.46,height));wall.position.y+=.42;wall.userData.slice={buildingId:home.id,low:height,high:height};indoorGeometry.add(wall)
       }
@@ -631,36 +690,20 @@ function buildSpatialGeometry(): void {
     drawnConnections.add(visualKey)
     const firstChild = indoorGeometry.children.length
     const a=worldPoint(edge.start.x,edge.start.y,edge.start.height), b=worldPoint(edge.end.x,edge.end.y,edge.end.height)
-    a.y+=.035;b.y+=.035
     const horizontal=Math.hypot(b.x-a.x,b.z-a.z), rise=Math.abs(b.y-a.y)
     if(horizontal>.05) {
       const width=Math.max(.6,edge.width_meters), yaw=Math.atan2(b.x-a.x,b.z-a.z)
       if(edge.kind==='stairs' && rise>.05) {
-        const steps=Math.max(2,Math.ceil(rise/.18))
-        const geometry=new THREE.BoxGeometry(width,.12,horizontal/steps+.025)
-        const stair=new THREE.InstancedMesh(geometry,material(0xb5b5a6),steps)
-        const transform=new THREE.Object3D()
-        for(let i=0;i<steps;i++) { transform.position.copy(a).lerp(b,(i+.5)/steps);transform.position.y-=.06;transform.rotation.y=yaw;transform.updateMatrix();stair.setMatrixAt(i,transform.matrix) }
-        stair.receiveShadow=true;indoorGeometry.add(stair)
+        const surface=stairSurface(a,b,width),flight=createStairFlight(surface)
+        stairSurfaces.push(surface);indoorGeometry.add(flight.group)
+        flight.heat.userData.density=0;stairHeatMeshes.set(edge.id,flight.heat)
       } else {
         const deck=new THREE.Mesh(new THREE.BoxGeometry(width,.12,horizontal),material(edge.kind==='room'?0xb6aa92:0xaaa99b))
-        deck.position.copy(a).lerp(b,.5);deck.position.y-=.07;deck.rotation.y=yaw;deck.receiveShadow=true;indoorGeometry.add(deck)
-      }
-      if(edge.kind==='stairs')for(const side of [-1,1]) {
-        const offset=new THREE.Vector3(Math.cos(yaw)*width*.48,.9,-Math.sin(yaw)*width*.48).multiply(new THREE.Vector3(side,1,side))
-        const rail=new THREE.Mesh(new THREE.CylinderGeometry(.025,.025,a.distanceTo(b),8),material(0x677c73,.4))
-        rail.position.copy(a).lerp(b,.5).add(offset);rail.quaternion.setFromUnitVectors(new THREE.Vector3(0,1,0),b.clone().sub(a).normalize());indoorGeometry.add(rail)
-        for(let i=0;i<=4;i++){const post=new THREE.Mesh(new THREE.CylinderGeometry(.022,.022,.9,6),material(0x677c73,.4));post.position.copy(a).lerp(b,i/4).add(offset);post.position.y-=.45;indoorGeometry.add(post)}
+        deck.position.copy(a).lerp(b,.5);deck.position.y-=.06;deck.rotation.y=yaw;deck.receiveShadow=true;indoorGeometry.add(deck)
       }
     }
-    const color=edge.kind==='stairs'?0x599fea:edge.kind==='assembly'?0x80d6a6:0x67aa9c
-    const rail=new THREE.Mesh(new THREE.CylinderGeometry(.055,.055,a.distanceTo(b),6),material(color))
-    rail.position.copy(a).lerp(b,.5);rail.quaternion.setFromUnitVectors(new THREE.Vector3(0,1,0),b.clone().sub(a).normalize());indoorGeometry.add(rail)
-    if(edge.kind==='stairs') {
-      const heatMaterial = new THREE.MeshBasicMaterial({ color: 0x54d4a4, transparent: true, opacity: .2, depthWrite: false, blending: THREE.AdditiveBlending })
-      const heat = new THREE.Mesh(new THREE.CylinderGeometry(Math.max(.28, edge.width_meters * .3), Math.max(.28, edge.width_meters * .3), a.distanceTo(b), 8, 1, true), heatMaterial)
-      heat.position.copy(a).lerp(b,.5); heat.quaternion.setFromUnitVectors(new THREE.Vector3(0,1,0),b.clone().sub(a).normalize()); heat.userData.density = 0; indoorGeometry.add(heat); stairHeatMeshes.set(edge.id, heat)
-    }
+    // Only the selected residents' confirmed routes receive navigation arrows.
+    // Permanent centre-line rods looked like physical obstacles through stair flights.
     const node=graph.nodes.find(n=>n.x===edge.start.x&&n.y===edge.start.y&&n.height===edge.start.height)
     for(const child of indoorGeometry.children.slice(firstChild))child.userData.slice={buildingId:node?.building_id,low:Math.min(edge.start.height,edge.end.height),high:Math.max(edge.start.height,edge.end.height)}
   }
@@ -684,6 +727,8 @@ function showIndoor(): void {
 }
 function toggleIndoor(silent:boolean): void {
   indoorView.value = !indoorView.value
+  roomInspection.value=false
+  syncIndoorContext()
   if(indoorGeometry) indoorGeometry.visible=indoorView.value
   const person = activeResident.value ?? props.simulation?.residents.find(p => p.floor)
   const home = props.simulation?.world?.objects.find(o => o.id === person?.building_id)
@@ -709,12 +754,14 @@ function focusIndoorFloor(floor:number,buildingId?:string):void {
   const id=buildingId||props.simulation?.environment.indoor?.building_id||visibleIndoorBuilding.value||indoorBuildings.value[0]?.id
   const building=props.simulation?.world?.objects.find(object=>object.id===id)
   if(!building)return
+  roomInspection.value=false
   floor=Math.max(1,Math.min(building.floors,Math.round(floor)))
   visibleIndoorFloor.value=floor;visibleIndoorBuilding.value=building.id
   if(!scene)return
   if(!indoorView.value)toggleIndoor(true)
   viewMode.value='director';controls.enabled=true
-  for(const [modelId,model] of buildingMeshes)model.visible=modelId!==building.id
+  syncIndoorContext()
+  for(const model of buildingMeshes.values())model.visible=false
   targetLookAt.copy(worldPoint(building.x,building.y,floorHeight(floor)))
   targetCameraPosition.copy(targetLookAt).add(indoorCameraOffset(building.width,building.depth,camera.aspect))
   for(const child of indoorGeometry.children){
@@ -722,11 +769,34 @@ function focusIndoorFloor(floor:number,buildingId?:string):void {
     child.userData.sliceVisible=Boolean(slice&&slice.buildingId===building.id&&slice.high<=floorHeight(floor)+.01&&slice.high>=floorHeight(floor)-.01)
     child.visible=child.userData.sliceVisible
   }
+  camera.position.copy(targetCameraPosition);controls.target.copy(targetLookAt);controls.update()
   updateEntities();emit('indoorFocus',{buildingId:building.id,floor});renderDirty=true
 }
-function indoorActorVisible(person:{height?:number;building_id?:string;x:number;y:number}):boolean {
+function syncIndoorContext():void {
+  if(!scene)return
+  const interior=indoorView.value
+  for(const object of communityContext)object.visible=!interior
+  for(const marker of assemblyModels.values())marker.group.visible=!interior
+  for(const layer of [groundPlane,environmentAssetLayer,roadNetworkLayer,blockageLayer,vehicleVisuals?.layer,rescueVisuals?.layer])if(layer)layer.visible=!interior
+  const hour=Number.parseInt(props.simulation?.world?.parameters?.start_time?.split(':')[0]??'20',10)
+  const night=hour>=18||hour<6
+  scene.background=new THREE.Color(interior?0x263a3d:night?0x142329:0xdde3e3)
+  scene.fog=interior?null:new THREE.FogExp2(night?0x142329:0xdde3e3,night ? .008 : .005)
+  scene.environmentIntensity=interior ? .65 : .45
+}
+function focusKitchen():void {
+  const indoor=props.simulation?.environment.indoor
+  const room=indoor?.zones.find(zone=>zone.id===indoor.source_zone_id)
+  if(!room)return
+  focusIndoorFloor(room.floor,indoor!.building_id)
+  roomInspection.value=true
+  const frame=kitchenCamera({x:room.x-50,y:room.y-50,width:room.width,depth:room.depth,height:worldPoint(room.x,room.y,room.height).y},camera.aspect)
+  targetLookAt.copy(frame.target);targetCameraPosition.copy(frame.position);camera.position.copy(frame.position);controls.target.copy(frame.target);controls.update();renderDirty=true
+}
+function indoorActorVisible(person:{height?:number;building_id?:string;indoor_stage?:string;x:number;y:number}):boolean {
   if(!indoorView.value)return (person.height??0)===0
   if(!visibleIndoorFloor.value)return true
+  if(person.indoor_stage==='outdoor')return false
   if(person.building_id&&person.building_id!==visibleIndoorBuilding.value)return (person.height??0)===0
   if(!person.building_id&&(person.height??0)>0){
     const home=indoorBuildings.value.find(b=>b.id===visibleIndoorBuilding.value)
@@ -736,12 +806,14 @@ function indoorActorVisible(person:{height?:number;building_id?:string;x:number;
   return height===0||floorContainsHeight(height,level,visibleIndoorFloor.value===1?0:floorHeight(visibleIndoorFloor.value-1)+.06)
 }
 function focusPoint(x: number, y: number): void {
+  if(indoorView.value)toggleIndoor(true)
   viewMode.value = 'director'; controls.enabled = true
   targetLookAt.copy(worldPoint(x, y)); targetCameraPosition.copy(targetLookAt).add(new THREE.Vector3(15, 28, 26)); renderDirty = true
 }
 function focusResident(id: string): void {
   const person = props.simulation?.residents.find(p => p.id === id)
   if (!person) return
+  if(person.indoor_stage==='outdoor'&&indoorView.value)toggleIndoor(true)
   if (viewMode.value === 'resident' && selectedResident.value === id) {
     selected.value = { title: person.label, type: person.vulnerable ? '重点关照人员' : '参演居民智能体', detail: person.behavior ?? '等待指令', residentId: person.id, x: person.x, y: person.y }
     return
@@ -751,9 +823,14 @@ function focusResident(id: string): void {
 }
 function pointRobotAtSelection(): void {
   if (!props.interactive || selected.value?.x === undefined || selected.value?.y === undefined) return
-  const object = props.simulation?.world?.objects.find(o => o.name === selected.value?.title)
-  emit('previewAction', { kind: 'robot', x: object?.entry.x ?? selected.value.x, y: object?.entry.y ?? selected.value.y, target: selected.value.title })
+  const room=selected.value.fireRoom
+  const object=props.simulation?.world?.objects.find(o=>room?o.id===visibleIndoorBuilding.value:o.name===selected.value?.title)
+  const x=object?.entry.x??selected.value.x,y=object?.entry.y??selected.value.y
+  const target=room&&object?object.name+'入口 · '+selected.value.title:selected.value.title
+  if(room)focusPoint(x,y)
+  emit('previewAction',{kind:'robot',x,y,target})
 }
+
 function selectResidents(ids: string[]): void { selectedResidents.value=ids; toolMode.value='residents'; if(controls)controls.enabled=false; if(ids.some(id=>props.simulation?.residents.find(p=>p.id===id)?.indoor_stage!=='outdoor')&&!indoorView.value)showIndoor(); if(controls)controls.enabled=false; updateEntities() }
 function selectCurrentResident(): void {
   const id = selected.value?.residentId ?? activeResident.value?.id
@@ -762,7 +839,7 @@ function selectCurrentResident(): void {
   selectedResidents.value = [id]; toolMode.value = 'residents'; controls.enabled = false
   emit('selection', selectedResidents.value); updateEntities()
 }
-defineExpose({ focusPoint, focusResident, showIndoor, selectResidents, focusIndoorFloor })
+defineExpose({ focusPoint, focusResident, showIndoor, selectResidents, focusIndoorFloor, focusKitchen })
 
 function animate(time = 0): void {
   animationFrame = requestAnimationFrame(animate)
@@ -779,8 +856,9 @@ function animate(time = 0): void {
   if (!activelyAnimating && !renderDirty) return
   const fireScale = .8 + (props.simulation?.fire.intensity ?? 20) / 115
   if(activelyAnimating)visualSeconds+=delta
+  const effectTime=effectClock.at(props.elapsedSeconds,activelyAnimating&&!reducedMotion&&props.effectsEnabled!==false,performance.now())
   const wind = props.simulation?.world?.parameters?.wind_direction ?? '微风'
-  fireEffects?.update(reducedMotion ? 0 : visualSeconds, showFireSource.value ? props.simulation?.fire.intensity ?? 0 : 0, props.simulation?.fire.smoke_radius ?? 8, wind, camera, qualityFactor,Boolean(props.simulation?.environment.indoor))
+  fireEffects?.update(effectTime, showFireSource.value ? props.simulation?.fire.intensity ?? 0 : 0, props.simulation?.fire.smoke_radius ?? 8, wind, camera, qualityFactor,Boolean(props.simulation?.environment.indoor),indoorFlameBounds.value)
   if(fireLight)fireLight.visible=showFireSource.value
   if(fireCore)fireCore.visible=showFireSource.value
   for(const mesh of [...residentMeshes.values(),...helperMeshes.values()]) {
@@ -805,8 +883,6 @@ function animate(time = 0): void {
     const density = Number(heat.userData.density ?? 0)
     const heatMaterial = heat.material as THREE.MeshBasicMaterial
     heatMaterial.opacity = .14 + density * .006 + (reducedMotion ? 0 : Math.sin(time * .004 + density) * .06)
-    const pulse = 1 + (reducedMotion ? 0 : Math.sin(time * .004 + density) * density * .0016)
-    heat.scale.set(pulse, 1, pulse)
   }
   for (const helper of helperMeshes.values()) {
     const pulse = helper.userData.meetingPulse as THREE.Mesh | undefined
@@ -825,6 +901,7 @@ function animate(time = 0): void {
     const width=Math.min(7,Math.max(2,distance*.09));child.scale.set(width,width*72/384,1)
     child.visible=viewMode.value!=='resident' && distance>12 && !indoorView.value
   }
+  if(indoorFireVisuals?.group.visible)indoorFireVisuals.step(effectTime,camera,qualityFactor,roomInspection.value,delta,activelyAnimating&&!reducedMotion&&props.effectsEnabled!==false)
   renderer.render(scene, camera)
   frameCount++
   if(time-sampleStarted>=1000) {
@@ -924,15 +1001,22 @@ function updateEntities(): void {
     const origin = anchor ?? props.simulation.world.fire_origin
     if (fireEffects) {
       fireEffects.group.position.copy(worldPoint(origin.x, origin.y, origin.height))
-      fireEffects.group.scale.setScalar(props.simulation.environment.indoor ? .32 : 1)
+      fireEffects.group.scale.setScalar(1)
       // Historical scenes retain their original room-centre flame offset.
       if (props.simulation.environment.indoor && !anchor) fireEffects.group.position.y += .8
       fireEffects.group.visible = showFireSource.value
     }
-    if (fireLight) fireLight.position.copy(worldPoint(origin.x, origin.y,origin.height)).add(new THREE.Vector3(0,2,0))
+    if (fireLight) {
+      fireLight.position.copy(worldPoint(origin.x,origin.y,origin.height)).add(new THREE.Vector3(0,props.simulation.environment.indoor ? .5 : 2,0))
+      const indoor=props.simulation.environment.indoor,room=indoor?.zones.find(zone=>zone.id===indoor.source_zone_id)
+      fireLight.distance=room?Math.max(1.5,Math.min(room.width,room.depth)*1.2):34
+      fireLight.decay=room?2:1.4
+    }
     if(indoorFireVisuals&&props.simulation.environment.indoor){indoorFireVisuals.group.visible=indoorView.value&&visibleIndoorBuilding.value===props.simulation.environment.indoor.building_id;if(indoorFireVisuals.group.visible)indoorFireVisuals.update(props.simulation.environment.indoor,visibleIndoorFloor.value)}
     if (fireCore) {
-      fireCore.position.copy(worldPoint(origin.x, origin.y,origin.height)).add(new THREE.Vector3(0,1.5,0))
+      const bounds=indoorFlameBounds.value
+      fireCore.scale.set(bounds?bounds.width/3:1,bounds?bounds.height/3:1,bounds?bounds.depth/3:1)
+      fireCore.position.copy(worldPoint(origin.x,origin.y,origin.height)).add(new THREE.Vector3(0,bounds?bounds.height/2:1.5,0))
       fireCore.userData.selection.objectId = props.simulation.world.fire_source?.location.object_id ?? props.simulation.world.objects.find(object => object.type === 'charging_shed' && object.x === origin.x && object.y === origin.y)?.id
     }
     for (const [id, marker] of fireSourceMarkers) {
@@ -941,10 +1025,12 @@ function updateEntities(): void {
     }
   }
   if (scene && props.simulation) {
-    if (!vehicleVisuals) { vehicleVisuals = new VehicleVisuals(object => interactiveMeshes.push(object), () => { renderDirty = true }); scene.add(vehicleVisuals.layer) }
+    if (!vehicleVisuals) { vehicleVisuals = new VehicleVisuals(object => interactiveMeshes.push(object), () => { vehicleModelFailures.value=vehicleVisuals?.failedCount??0;vehicleModelLoading.value=vehicleVisuals?.loadingCount??0;renderDirty=true }); scene.add(vehicleVisuals.layer) }
     vehicleVisuals.update(props.simulation.vehicles ?? [], props.elapsedSeconds, props.status === 'running')
+    vehicleVisuals.layer.visible=!indoorView.value
     if (!rescueVisuals) { rescueVisuals = new RescueVisuals(object => interactiveMeshes.push(object)); scene.add(rescueVisuals.layer) }
     rescueVisuals.update(props.simulation.vehicles ?? [], props.simulation.residents, props.elapsedSeconds, props.status === 'running')
+    rescueVisuals.layer.visible=!indoorView.value
     if (selected.value?.vehicleId) {
       const vehicle = props.simulation.vehicles?.find(item => item.id === selected.value?.vehicleId)
       if (vehicle) Object.assign(selected.value, { x: vehicle.x, y: vehicle.y, detail: vehicle.service ? `${vehicle.service.label} · 剩余 ${vehicle.service.remaining_seconds} 秒。${vehicle.service.reason}` : `${vehicle.reason}${vehicle.passenger ? ` 车内人员：${vehicle.passenger.label}。` : ''}${vehicle.remaining_seconds === null ? '' : ` 剩余 ${vehicle.remaining_seconds} 秒。`}` })
@@ -965,7 +1051,7 @@ function updateEntities(): void {
   }
   if (props.elapsedSeconds < lastEntitySeconds) {
     // A replay seek starts a new visible history; never draw trails from the future.
-    actorMotion.clear(); residentTrails.clear(); residentTrailLines.clear()
+    actorMotion.clear();indoorFireVisuals?.settleTransitions(); residentTrails.clear(); residentTrailLines.clear()
     disposeLayer(residentTrailLayer)
   }
   lastEntitySeconds = props.elapsedSeconds
@@ -1029,7 +1115,10 @@ function updateEntities(): void {
   const visibleStaff = new Set(displayedHelpers.value.map(helperIdentity))
   for (const [id, mesh] of helperMeshes) if (!visibleStaff.has(id)) mesh.visible = false
   for (const [id, line] of helperLinkLines) if (!visibleStaff.has(id)) line.visible = false
-  if (robotGroup) robotGroup.visible = Boolean(props.robot)
+  if (robotGroup) {
+    robotGroup.visible=Boolean(props.robot)&&!indoorView.value
+    if(props.robot&&!robotGroup.userData.assetModelStatus)void actorAssets.robot(robotGroup)
+  }
   if (!props.robot && selected.value?.action === 'robot') selected.value = null
   if (props.robot && robotGroup) {
     const next=worldPoint(props.robot.x, props.robot.y)
@@ -1064,7 +1153,7 @@ function updateEntities(): void {
         }
       }
       mesh.visible = mesh.visible && !(viewMode.value === 'resident' && activeResident.value?.id === resident.id)
-      mesh.visible = mesh.visible && !['loading', 'onboard', 'handing_over'].includes(resident.medical_transfer?.phase ?? '')
+      mesh.visible = mesh.visible && !['loading', 'boarding', 'onboard', 'handing_over'].includes(resident.medical_transfer?.phase ?? '')
       if(indoorView.value)mesh.visible=mesh.visible&&indoorActorVisible(resident)
       updateResidentTrail(resident, mesh.position)
     }
@@ -1158,6 +1247,7 @@ function rebuildRoute(): void {
 function setView(mode: typeof viewMode.value): void {
   // Pin the person being followed. Otherwise the moving-person fallback changes
   // targets (or disappears) at arrival, hiding the result of the user's decision.
+  if(indoorView.value&&(mode==='robot'||mode==='rescue'||mode==='resident'&&activeResident.value?.indoor_stage==='outdoor'))toggleIndoor(true)
   if (mode === 'resident') selectedResident.value = activeResident.value?.id ?? props.simulation?.residents[0]?.id ?? ''
   if(mode==='resident' && activeResident.value?.indoor_stage && activeResident.value.indoor_stage!=='outdoor' && !indoorView.value)showIndoor()
   viewMode.value = mode; controls.enabled = mode === 'director'
@@ -1191,6 +1281,12 @@ function onPointerMove(event: PointerEvent): void {
 }
 function cancelMarquee(): void { marquee.value=null }
 
+function isVisibleTarget(object:THREE.Object3D):boolean {
+  if(object===fireCore&&props.simulation?.environment.indoor)return false
+  let ancestor:THREE.Object3D|null=object
+  while(ancestor){if(!ancestor.visible)return false;ancestor=ancestor.parent}
+  return true
+}
 function onPointerUp(event: PointerEvent): void {
   if (!renderer || isDraggingEvent.value) return
   const box=marquee.value;marquee.value=null
@@ -1204,12 +1300,8 @@ function onPointerUp(event: PointerEvent): void {
   const bounds = renderer.domElement.getBoundingClientRect(); pointer.x = ((event.clientX - bounds.left) / bounds.width) * 2 - 1; pointer.y = -((event.clientY - bounds.top) / bounds.height) * 2 + 1
   raycaster.setFromCamera(pointer, camera)
   const hits = raycaster.intersectObjects(interactiveMeshes, true)
-  // Hidden LODs and indoor residents remain registered, but must not steal a click.
-  const visibleHits = hits.filter(candidate => {
-    let object: THREE.Object3D | null = candidate.object
-    while (object) { if (!object.visible) return false; object = object.parent }
-    return true
-  })
+  // Hidden LODs, floors and indoor residents must not intercept a spatial action.
+  const visibleHits = hits.filter(candidate => isVisibleTarget(candidate.object))
   const hit = visibleHits[0]
   if(props.roomSelection){const room=visibleHits.find(candidate=>candidate.object.userData.selection?.fireRoom)?.object.userData.selection?.fireRoom;if(room)emit('fireRoomPick',room);else flashNotice('请选择当前楼层的厨房台面，或使用右侧房间列表。');return}
   if (props.fireSourceSelection?.enabled) {
@@ -1222,7 +1314,7 @@ function onPointerUp(event: PointerEvent): void {
   if (hit?.object.userData.selection?.action === 'indoor-device') { emit('inspectDevice', hit.object.userData.selection.deviceId); return }
   if (props.interactive === false) return
    const roadHit = hit?.object.userData.selection?.roadEdgeId ? hit : undefined
-  const groundHit = raycaster.intersectObject(groundPlane)[0]
+  const groundHit = groundPlane.visible?raycaster.intersectObject(groundPlane)[0]:undefined
   const selection = (hit?.object.userData.crowd?.selection(hit.instanceId) ?? hit?.object.userData.selection) as typeof selected.value
   const roadSelection = roadHit?.object.userData.selection as typeof selected.value
   const point = groundHit?.point
@@ -1256,6 +1348,7 @@ function flashNotice(message: string): void { interactionNotice.value = message;
 function setTool(tool: typeof toolMode.value): void {
   emit('cancelAction')
   toolMode.value = tool
+  if(indoorView.value&&(tool==='robot'||tool==='block')){toggleIndoor(true);setView('director')}
   if (tool !== 'residents') selectedResidents.value = []
   controls.enabled = tool === 'inspect' && viewMode.value === 'director'
   flashNotice({ inspect: '浏览模式：点击对象查看服务端实时状态', block: '封锁工具：请点击有颜色的真实道路路段', robot: '指派工具：点击目标，A* 将按风险和封锁状态规划', residents: '居民工具：连续多选后下达分流或护送指令' }[tool])
@@ -1284,14 +1377,14 @@ function dropEvent(event: DragEvent): void {
   const type = event.dataTransfer?.getData('application/x-drill-event')
   if (!['channel_blocked', 'hydrant_failure', 'resident_missing'].includes(type ?? '') || !renderer) return
   const bounds = renderer.domElement.getBoundingClientRect(); pointer.x = ((event.clientX - bounds.left) / bounds.width) * 2 - 1; pointer.y = -((event.clientY - bounds.top) / bounds.height) * 2 + 1; raycaster.setFromCamera(pointer, camera)
-  const targetHits = raycaster.intersectObjects(interactiveMeshes, true)
+  const targetHits = raycaster.intersectObjects(interactiveMeshes, true).filter(hit=>isVisibleTarget(hit.object))
   const targetHit = targetHits[0]
   const roadHit = targetHit?.object.userData.selection?.roadEdgeId ? targetHit : undefined
-  const groundHit = raycaster.intersectObject(groundPlane)[0]
+  const groundHit = groundPlane.visible?raycaster.intersectObject(groundPlane)[0]:undefined
   const point = groundHit?.point
-  const x = point ? Math.max(0, Math.min(100, point.x + 50)) : undefined
-  const y = point ? Math.max(0, Math.min(100, point.z + 50)) : undefined
   const selection = targetHit?.object.userData.selection
+  const x = selection?.x ?? (point ? Math.max(0,Math.min(100,point.x+50)):undefined)
+  const y = selection?.y ?? (point ? Math.max(0,Math.min(100,point.z+50)):undefined)
   const roadSelection = roadHit?.object.userData.selection
   const target = type === 'channel_blocked' ? roadSelection?.title ?? '' : selection?.title ?? ''
   const valid = type === 'channel_blocked' ? Boolean(roadSelection?.roadEdgeId) : type === 'hydrant_failure' ? /消火栓/.test(target) : /居民|人员|3 号楼/.test(target)
@@ -1333,7 +1426,7 @@ function selectAccessibleObject(event: Event): void {
   if (key === 'south-exit') { selected.value = { title: '南门出口', type: '安全出口', detail: '初始通行受限，可注入通道堵塞', action: 'channel_blocked', x: 50, y: 100 }; return }
   if (key.startsWith('road:')) {
     const edge = props.simulation?.road_network?.edges.find((item) => item.id === key.slice(5))
-    if (edge) selected.value = { title: edge.name, type: '真实道路路段', detail: roadDetail(edge), action: edge.status === 'blocked' ? undefined : 'channel_blocked', roadEdgeId: edge.id, x: (edge.start.x + edge.end.x) / 2, y: (edge.start.y + edge.end.y) / 2 }
+    if (edge) {focusPoint((edge.start.x+edge.end.x)/2,(edge.start.y+edge.end.y)/2);selected.value = { title: edge.name, type: '真实道路路段', detail: roadDetail(edge), action: edge.status === 'blocked' ? undefined : 'channel_blocked', roadEdgeId: edge.id, x: (edge.start.x + edge.end.x) / 2, y: (edge.start.y + edge.end.y) / 2 }}
     return
   }
   const resident = props.simulation?.residents.find((item) => item.id === key)
@@ -1369,17 +1462,22 @@ function onContextLost(event: Event): void {
   clearTimeout(contextRestoreTimer)
   contextRestoreTimer = setTimeout(() => { if (!destroyed) renderer?.forceContextRestore() }, 350)
 }
-function onContextRestored(): void { recoveringContext.value = false; renderError.value = ''; resize(); updateEntities(); renderDirty = true }
+function onContextRestored(): void { recoveringContext.value = false; renderError.value = ''; refreshEnvironment(); resize(); updateEntities(); renderDirty = true }
 
 // Live messages replace the affected state branches; avoid traversing every route
 // and frozen model twice for each population tick.
 watch(() => [props.robot, props.simulation, props.highContrast, props.status, props.elapsedSeconds], () => { void nextTick(updateEntities) })
 watch(() => props.fireSourceSelection, () => updateEntities(), { deep: true })
+watch(()=>props.simulation?.environment.indoor?.source_zone_id,()=>{if(roomInspection.value&&scene)focusKitchen()})
 watch(()=>props.indoorFloor,value=>{if(value!==undefined&&scene)focusIndoorFloor(value)})
 let syncingResidentView = false
-watch(()=>[viewMode.value,activeResident.value?.id,activeResident.value?.current_floor,activeResident.value?.building_id],()=>{
+watch(()=>[viewMode.value,activeResident.value?.id,activeResident.value?.current_floor,activeResident.value?.building_id,activeResident.value?.indoor_stage],()=>{
   const person=activeResident.value
-  if(!scene||viewMode.value!=='resident'||!person||person.indoor_stage==='outdoor')return
+  if(!scene||viewMode.value!=='resident'||!person)return
+  if(person.indoor_stage==='outdoor'){
+    if(indoorView.value){toggleIndoor(true);viewMode.value='resident';controls.enabled=false}
+    return
+  }
   const floor=Math.max(1,Math.ceil((person.current_floor??person.floor??1)-.00001))
   if(!indoorView.value||floor!==visibleIndoorFloor.value||person.building_id!==visibleIndoorBuilding.value){
     if (syncingResidentView) return
@@ -1396,7 +1494,7 @@ watch(() => props.events?.[0]?.sequence, () => {
   if (!event || !scene) return
   directorCue.value = event.message
   const target = event.payload?.x !== undefined && event.payload?.y !== undefined ? worldPoint(event.payload.x, event.payload.y) : null
-  if (target && !props.compact && props.cameraEnabled !== false) { targetLookAt.copy(target); targetCameraPosition.copy(target).add(new THREE.Vector3(18, 24, 22)); renderDirty = true }
+  if (target && !props.compact && !indoorView.value && props.cameraEnabled !== false) { targetLookAt.copy(target); targetCameraPosition.copy(target).add(new THREE.Vector3(18, 24, 22)); renderDirty = true }
   window.setTimeout(() => { if (directorCue.value === event.message) directorCue.value = '' }, 4200)
 })
 onMounted(() => {
@@ -1407,6 +1505,7 @@ onMounted(() => {
 })
 onBeforeUnmount(() => {
   indoorFireVisuals?.dispose()
+  studioEnvironment?.dispose(); studioEnvironment=undefined;communityContext.clear();stairSurfaces.length=0
   vehicleVisuals?.dispose(); vehicleVisuals = null
   rescueVisuals?.dispose(); rescueVisuals = null
   destroyed = true
@@ -1482,9 +1581,10 @@ watch(() => [props.routePreview, props.robotRoutePreview], () => updateEntities(
       </div>
 
       <div v-if="!compact" ref="sceneUtilities" class="scene-utilities" role="group" aria-label="现场显示与车辆工具">
-        <label v-if="displayToolsOpen" class="scene-quality">画面品质<select v-model="quality" aria-label="三维画质"><option value="high">精细</option><option value="medium">均衡</option><option value="low">流畅</option></select><small role="status" :title="actorAssetLabel">{{ actorAssetStatus === 'loading' ? '模型加载中' : actorAssetStatus === 'fallback' ? '轻量模型' : status === 'running' && fps ? fps + ' fps' : '静止省电' }}</small></label>
+        <label v-if="displayToolsOpen" class="scene-quality">画面品质<select v-model="quality" aria-label="三维画质"><option value="high">精细</option><option value="medium">均衡</option><option value="low">流畅</option></select><small role="status" :title="actorAssetLabel">{{ modelResourceStatus === 'loading' ? '模型加载中' : modelResourceStatus === 'fallback' ? '轻量模型' : status === 'running' && fps ? fps + ' fps' : '静止省电' }}</small></label>
         <button type="button" :disabled="!indoorBuildings.length" :title="indoorBuildings.length ? '显示楼内通道、楼梯与居民位置' : '当前场次没有可观察的室内通道，请检查场景配置或新建连续空间演练'" :aria-pressed="indoorView" @click="showIndoor"><AppIcon name="building" :size="18" />{{ indoorView ? '恢复建筑外观' : '查看楼内透视' }}</button>
         <button v-if="simulation?.environment.indoor" type="button" @click="emit('inspectIndoor')"><AppIcon name="fire" :size="18"/>楼内烟气与门控</button>
+        <button v-if="simulation?.environment.indoor && indoorView" type="button" :aria-pressed="roomInspection" @click="roomInspection ? focusIndoorFloor(visibleIndoorFloor??1,visibleIndoorBuilding) : focusKitchen()"><AppIcon name="eye" :size="18"/>{{roomInspection ? '楼层全景' : '厨房近景'}}</button>
         <div v-if="indoorView && indoorBuildings.length" class="scene-floor-controls">
           <select aria-label="观察楼栋" :value="visibleIndoorBuilding" @change="focusIndoorFloor(visibleIndoorFloor??1,($event.target as HTMLSelectElement).value)"><option v-for="building in indoorBuildings" :key="building.id" :value="building.id">{{building.name}}</option></select>
           <select aria-label="透视楼层" :value="visibleIndoorFloor" @change="focusIndoorFloor(Number(($event.target as HTMLSelectElement).value),visibleIndoorBuilding)"><option v-for="floor in indoorFloors" :key="floor" :value="floor">{{floor}} 层</option></select>
@@ -1497,7 +1597,7 @@ watch(() => [props.routePreview, props.robotRoutePreview], () => updateEntities(
         <button type="button" title="机器人跟随" aria-label="机器人跟随" :data-active="viewMode === 'robot'" :aria-pressed="viewMode === 'robot'" @click="setView('robot')"><AppIcon name="robot" />机器人跟随</button>
         <button type="button" title="居民第一视角" aria-label="居民第一视角" :data-active="viewMode === 'resident'" :aria-pressed="viewMode === 'resident'" @click="setView('resident')"><AppIcon name="person" />居民第一视角</button>
         <button type="button" title="救援视角" aria-label="救援视角" :data-active="viewMode === 'rescue'" :aria-pressed="viewMode === 'rescue'" @click="setView('rescue')"><AppIcon name="rescue" />救援视角</button>
-        <button v-if="actorAssetStatus === 'fallback' || retryingModels" type="button" class="twin-model-retry" :disabled="retryingModels" aria-label="重试人物与机器人精细模型" @click="retryActorModels"><AppIcon name="refresh" /><span>{{ retryingModels ? '正在重试模型' : '重试精细模型' }}</span></button>
+        <button v-if="modelResourceStatus === 'fallback' || retryingModels" type="button" class="twin-model-retry" :disabled="retryingModels" aria-label="重试人物机器人与车辆精细模型" @click="retryActorModels"><AppIcon name="refresh" /><span>{{ retryingModels ? '正在重试模型' : '重试精细模型' }}</span></button>
       </nav>
 
       <label v-if="!compact && viewMode !== 'resident' && !inspectorOpen" class="twin-object-nav">对象导航<select aria-label="选择沙盘对象" @change="selectAccessibleObject"><option value="">选择建筑、设施或人员</option><option v-for="item in accessibleObjects" :key="item.key" :value="item.key">{{ item.label }}</option></select></label>
@@ -1588,7 +1688,7 @@ watch(() => [props.routePreview, props.robotRoutePreview], () => updateEntities(
         <button v-else-if="selected.action && interactive" type="button" @click="runSelectedAction">在此注入事件</button>
         <button v-if="selected.roadEdgeId && simulation?.road_network?.edges.find(e => e.id === selected?.roadEdgeId)?.status === 'blocked' && interactive" type="button" @click="emit('reopenRoad', selected.roadEdgeId)">解除此路段封锁</button>
         <button v-if="selected.residentId && interactive" type="button" @click="selectCurrentResident">指挥此居民</button>
-        <button v-else-if="selected.action !== 'robot' && selected.x !== undefined && interactive" type="button" @click="pointRobotAtSelection">派机器人到此处</button>
+        <button v-else-if="selected.action !== 'robot' && selected.x !== undefined && interactive" type="button" @click="pointRobotAtSelection">{{selected.fireRoom?'派机器人到楼栋入口':'派机器人到此处'}}</button>
         <button class="twin-inspector__assistant" type="button" @click="askAboutSelection"><AppIcon name="brain" :size="17" />问 AI 分析此对象</button>
         <p v-if="interactionNotice" role="status">{{ interactionNotice }}</p>
       </aside>

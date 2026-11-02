@@ -44,3 +44,15 @@ def test_door_occupancy_agrees_for_manual_agent_and_projection():
     helper.update(state='completed')
     assert not occupied(data, door)
     assert project_door_safety(indoor, layout, [resident], [helper])['doors'][0]['can_close']
+
+
+def test_new_kitchens_reserve_the_same_corridor_width_as_the_walking_graph():
+    from app.services.indoor_layout import kitchen_rooms, CORRIDOR_CLEAR_WIDTH
+    for depth in (8, 10):
+        building = dict(x=30, y=26, width=8.5, depth=depth)
+        for room in kitchen_rooms(building).values():
+            front = room['y'] + room['depth']/2
+            back = room['y'] - room['depth']/2
+            assert front <= building['y']-CORRIDOR_CLEAR_WIDTH/2-.10+1e-8
+            assert back >= building['y']-depth/2+.10-1e-8
+            assert room['depth'] >= 1.12

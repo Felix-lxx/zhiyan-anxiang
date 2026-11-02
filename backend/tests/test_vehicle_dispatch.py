@@ -3,8 +3,71 @@ from types import SimpleNamespace
 import json
 
 from app.services.vehicle_dispatch import fleet, plan_vehicle, vehicle_runtime
+from app.services.mobility_geometry import half_length
+from app.services.vehicle_trajectory import rounded_trajectory
 from app.services.realtime import snapshot_patch
 from test_exercise_world import exercise
+
+
+def test_authoritative_turn_uses_curve_only_when_clear():
+    points = [{'x': 0., 'y': 0., 'edge_id': None},
+              {'x': 10., 'y': 0., 'edge_id': 'ab'},
+              {'x': 10., 'y': 10., 'edge_id': 'bc'}]
+    actor = {'kind': 'ambulance', 'minimum_width': 2.8}
+    edges = {'ab': {'width_meters': 4}, 'bc': {'width_meters': 4}}
+    rounded = rounded_trajectory(points, actor, edges, [])
+    assert len(rounded) > len(points)
+    assert rounded[0] == points[0] and rounded[-1] == points[-1]
+    assert any(8 < p['x'] < 10 and 0 < p['y'] < 2 for p in rounded)
+    # A curve that fails its envelope check must fall back to the caller's
+    # already planned polyline; this helper cannot invent a new detour.
+    obstacle = {'x': 9.4, 'y': 1.0, 'width': .2, 'depth': .2}
+    assert rounded_trajectory(points, actor, edges, [obstacle]) == points
+
+
+def test_turn_search_uses_feasible_detour_instead_of_rejecting_shortest_path():
+    nodes = [{"id": key, "name": key, "x": x, "y": y} for key, x, y in
+             [("a", 0, 0), ("b", 10, 0), ("c", 10, 10), ("d", -10, -10), ("e", 10, -10)]]
+    edges = [{"id": a + b, "start_node_id": a, "end_node_id": b, "status": "open", "width_meters": 4}
+             for a, b in [("a", "b"), ("b", "c"), ("a", "d"), ("d", "e"), ("e", "b")]]
+    # The building is clear of both straight segments but inside b's turning
+    # envelope. Entering b from e is straight on to c; entering from a is not.
+    network = {"nodes": nodes, "edges": edges,
+               "obstacles": [{"x": 12.7, "y": -2.7, "width": .2, "depth": .2}]}
+    actor = {"x": 0, "y": 0, "kind": "firetruck", "speed": 2.4, "minimum_width": 3.5}
+    plan = plan_vehicle(network, actor, "c")
+    assert plan["can_apply"], plan["notice"]
+    assert plan["route_edge_ids"] == ["ad", "de", "eb", "bc"]
+    only_short = {**network, "edges": edges[:2]}
+    assert not plan_vehicle(only_short, actor, "c")["can_apply"]
+
+
+def test_stretcher_geometry_is_not_a_fire_engine_and_checks_obstacles():
+    network = {"nodes": [{"id": "a", "x": 0, "y": 0}, {"id": "b", "x": 6, "y": 0}],
+               "edges": [{"id": "ab", "start_node_id": "a", "end_node_id": "b", "status": "open", "width_meters": .8}],
+               "obstacles": [{"x": 8.6, "y": 0, "width": .2, "depth": .2}]}
+    actor = {"x": 0, "y": 0, "kind": "stretcher", "minimum_width": .8, "speed": .8}
+    assert half_length(actor) == 2.0
+    assert plan_vehicle(network, actor, "b")["can_apply"]
+    blocked = deepcopy(network); blocked["obstacles"][0]["x"] = 4
+    assert not plan_vehicle(blocked, actor, "b")["can_apply"]
+
+
+def test_vehicle_heading_is_preserved_in_arrival_stop_and_history():
+    import math
+    world = {"road_network": {"nodes": [{"id": "a", "name": "入口", "x": 0, "y": 0, "is_exit": True},
+                                          {"id": "b", "name": "目标", "x": 12, "y": 0}],
+                              "edges": [{"id": "ab", "start_node_id": "a", "end_node_id": "b", "status": "open", "width_meters": 4}]}}
+    vehicle = fleet(world)[0]
+    assert vehicle["heading_radians"] == -math.pi / 2
+    plan = plan_vehicle(world["road_network"], vehicle, "b")
+    event = SimpleNamespace(id="trip", sequence=1, elapsed_seconds=0, event_type="vehicle.dispatched", payload={**plan, "vehicle_id": vehicle["id"]})
+    arrived = vehicle_runtime(world, [event], 10)[0]
+    assert arrived["state"] == "arrived" and arrived["heading_radians"] == -math.pi / 2
+    cancelled = SimpleNamespace(id="stop", sequence=2, elapsed_seconds=2, event_type="vehicle.cancelled", payload={"vehicle_id": vehicle["id"], "mission_id": "trip"})
+    stopped = vehicle_runtime(world, [event, cancelled], 10)[0]
+    assert stopped["state"] == "idle" and stopped["heading_radians"] == -math.pi / 2
+    assert stopped["x"] == vehicle_runtime(world, [event], 2)[0]["x"]
 
 
 def test_vehicle_segment_stop_resume_and_width():

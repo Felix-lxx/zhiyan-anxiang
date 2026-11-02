@@ -18,13 +18,15 @@ export function createPerson(id: string, vulnerable = false, helper = false): TH
   const head=part(torso,new THREE.SphereGeometry(.14,12,10),skin,0,.69,0);head.scale.set(.88,1.15,.92)
   part(torso,new THREE.SphereGeometry(.145,10,8,0,Math.PI*2,0,Math.PI*.45),new THREE.MeshStandardMaterial({color:vulnerable?0xbcbeb4:0x303129,roughness:1}),0,.72,0)
   const limbs: THREE.Group[]=[]
+  const feet: Array<{ shoe: THREE.Mesh; leg: THREE.Group }> = []
   for(const side of [-1,1]) {
     const arm=new THREE.Group();arm.position.set(side*.235,.37,0);torso.add(arm)
     part(arm,new THREE.CapsuleGeometry(.065,.3,3,6),shirt,0,-.2,0)
     part(arm,new THREE.CapsuleGeometry(.052,.13,3,6),skin,0,-.46,-.03);limbs.push(arm)
     const leg=new THREE.Group();leg.position.set(side*.105,.82,0);group.add(leg)
     part(leg,new THREE.CapsuleGeometry(.078,.58,3,6),trousers,0,-.34,0)
-    part(leg,new THREE.BoxGeometry(.16,.095,.28),shoes,0,-.77,-.065);limbs.push(leg)
+    const shoe = part(leg,new THREE.BoxGeometry(.16,.095,.28),shoes,0,-.77,-.065)
+    feet.push({shoe,leg});limbs.push(leg)
   }
   if(helper) {
     const reflect=new THREE.MeshStandardMaterial({color:0xe8e3b8,roughness:.65})
@@ -44,6 +46,7 @@ export function createPerson(id: string, vulnerable = false, helper = false): TH
   const ring=part(group,new THREE.RingGeometry(.29,.35,24),new THREE.MeshBasicMaterial({color:helper?0x77b7ff:vulnerable?0xefc66f:0x76c4af,transparent:true,opacity:.6,side:THREE.DoubleSide,depthWrite:false}),0,.025,0)
   ring.rotation.x=-Math.PI/2;group.userData.ring=ring
   group.userData.limbs=limbs;group.userData.phase=seed*.63;group.userData.vulnerable=vulnerable;group.userData.helper=helper
+  group.userData.feet=feet
   const detail=new THREE.Group()
   for(const child of [...group.children])if(child!==ring)detail.add(child)
   const distant=new THREE.Group()
@@ -69,6 +72,13 @@ export function posePerson(group: THREE.Group, moving: boolean, seconds: number,
   const torso=group.userData.torso as THREE.Group
   torso.rotation.x=exposed?-.22:group.userData.vulnerable?-.08:0
   if(exposed)limbs[2]!.rotation.x=-1.25
+  // Correct the box sole at heel strike without bobbing the authoritative root.
+  // Algebraic support avoids rebuilding a world bounding box per crowd member.
+  for (const {shoe,leg} of group.userData.feet ?? []) {
+    const cosine=Math.cos(leg.rotation.x),sine=Math.sin(leg.rotation.x)
+    const bottom=.82-.77*cosine+.065*sine-(.0475*Math.abs(cosine)+.14*Math.abs(sine))
+    shoe.position.y=-.77+Math.max(0,-bottom)/Math.max(.2,cosine)
+  }
 }
 
 export function createPatrolRobot(): THREE.Group {
@@ -92,6 +102,9 @@ export function createPatrolRobot(): THREE.Group {
   const beacon=part(group,new THREE.CylinderGeometry(.055,.055,.08,12),new THREE.MeshStandardMaterial({color:0xf4c360,emissive:0xff9b24,emissiveIntensity:1.6}),.25,.96,.28)
   for(const x of [-.28,.28])part(group,new THREE.BoxGeometry(.12,.055,.03),new THREE.MeshStandardMaterial({color:0xffefd4,emissive:0xffe2a7,emissiveIntensity:1.8}),x,.58,-.59)
   for(let i=0;i<5;i++)part(group,new THREE.BoxGeometry(.025,.18,.012),metal,(i-2)*.05,.65,.57)
+  const body=new THREE.Group();body.name='compact-robot-fallback'
+  for(const child of [...group.children])body.add(child)
+  body.scale.set(.60,.75,.82);group.add(body)
   group.userData.wheels=wheels;group.userData.beacon=beacon
   return group
 }

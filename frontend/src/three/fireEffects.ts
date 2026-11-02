@@ -1,5 +1,7 @@
 import * as THREE from 'three'
 
+export interface IndoorFlameBounds {width:number;depth:number;height:number}
+
 /** Camera-facing instanced particles: two draw calls, simulation-clock driven, deterministic on replay. */
 export class FireEffects {
   readonly group=new THREE.Group()
@@ -29,21 +31,34 @@ export class FireEffects {
     this.smoke=new THREE.InstancedMesh(geometry,makeMaterial(false),88)
     for(const mesh of [this.flame,this.smoke]) { mesh.frustumCulled=false;mesh.instanceMatrix.setUsage(THREE.DynamicDrawUsage); for(let i=0;i<mesh.count;i++)mesh.setColorAt(i,new THREE.Color(1,1,1)); this.group.add(mesh) }
   }
-  update(seconds:number,intensity:number,radius:number,wind:string,camera:THREE.Camera,quality:number,indoor=false) {
+  update(seconds:number,intensity:number,radius:number,wind:string,camera:THREE.Camera,quality:number,indoor=false,bounds:IndoorFlameBounds={width:.5,depth:.5,height:1.2}) {
     const strength=THREE.MathUtils.clamp(intensity/100,0,1)
     this.group.visible=strength>0
     const direction=new THREE.Vector3(wind.includes('东')?-1:wind.includes('西')?1:.2,0,wind.includes('北')?1:wind.includes('南')?-1:.1).normalize()
+    const facing=camera.getWorldDirection(new THREE.Vector3())
+    const indoorFacing=new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0,1,0),Math.atan2(facing.x,facing.z))
     for(const [mesh,isFlame,max] of [[this.flame,true,64],[this.smoke,false,88]] as const) {
       mesh.visible=isFlame||!indoor
-      mesh.count=Math.round(max*quality)
+      mesh.count=Math.max(1,Math.min(max,Math.round(max*quality)))
       for(let i=0;i<mesh.count;i++) {
         const phase=(seconds*(isFlame?.4:.095)+i*.61803398875)%1
         const angle=i*2.39996, spread=isFlame?1.25:1.5+phase*Math.min(7,radius*.12)
         const drift=isFlame?phase*.3:phase*phase*(3+radius*.18)
-        this.transform.position.set(Math.sin(angle)*spread+direction.x*drift,(isFlame?.45:3)+phase*(isFlame?2+strength*4:12+strength*9),Math.cos(angle)*spread+direction.z*drift)
-        this.transform.quaternion.copy(camera.quaternion)
-        const size=isFlame?(1-phase)*(.8+strength*2):1.4+phase*(3+radius*.08)
-        this.transform.scale.set(size,isFlame?size*1.8:size,1);this.transform.updateMatrix();mesh.setMatrixAt(i,this.transform.matrix)
+        if(indoor&&isFlame){
+          const half=Math.max(.025,Math.min(bounds.width,bounds.depth)/2)
+          const size=half*(.35+.5*(1-phase))
+          const height=Math.max(.08,Math.min(bounds.height-.025,1.25))*(.2+.8*strength)*(1-phase*.65)
+          const spread=Math.max(0,half-size/2)*.8
+          this.transform.position.set(Math.sin(angle)*spread,height/2+.012+phase*Math.max(0,bounds.height-height-.025)*.4,Math.cos(angle)*spread)
+          this.transform.quaternion.copy(indoorFacing)
+          this.transform.scale.set(size,height,1)
+        }else{
+          this.transform.position.set(Math.sin(angle)*spread+direction.x*drift,(isFlame?.45:3)+phase*(isFlame?2+strength*4:12+strength*9),Math.cos(angle)*spread+direction.z*drift)
+          this.transform.quaternion.copy(camera.quaternion)
+          const size=isFlame?(1-phase)*(.8+strength*2):1.4+phase*(3+radius*.08)
+          this.transform.scale.set(size,isFlame?size*1.8:size,1)
+        }
+        this.transform.updateMatrix();mesh.setMatrixAt(i,this.transform.matrix)
         if(isFlame)this.color.setRGB(2.4, .12+(1-phase)*.65, .012+(1-phase)*.035)
         else this.color.setRGB(.035+phase*.065,.041+phase*.065,.043+phase*.065)
         mesh.setColorAt(i,this.color)

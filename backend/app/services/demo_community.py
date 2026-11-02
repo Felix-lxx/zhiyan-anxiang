@@ -18,6 +18,70 @@ from app.services.communities import get_community_or_none
 
 DEMO_COMMUNITY_NAME = "安巷社区 · 夜间充电棚火灾主案例"
 DEMO_KITCHEN_PROPERTIES = {'width': 8.5, 'depth': 8, 'indoor_layout_version': 3}
+DEMO_RESIDENTIAL_PROPERTIES = {'width': 8.5, 'depth': 8}
+DEMO_HOUSE_RELOCATIONS = {
+    '2 号楼': ({'x': 46, 'y': 24}, {'x': 46, 'y': 22}),
+    '3 号楼': ({'x': 58, 'y': 48}, {'x': 62, 'y': 31}),
+    '5 号楼': ({'x': 72, 'y': 70}, {'x': 78, 'y': 72}),
+}
+DEMO_BUILDING_STOCK = {
+    '1 号楼': {'floors': 6, 'resident_groups': '普通居民'},
+    '2 号楼': {'floors': 6, 'resident_groups': '普通居民'},
+    '3 号楼': {'floors': 6, 'resident_groups': '含 2 名独居老人、1 名行动不便人员'},
+    '4 号楼': {'floors': 5},
+    '5 号楼': {'floors': 5},
+}
+DEMO_BUILDING_ORIGINS = {
+    '1 号楼': {'x': 26, 'y': 26},
+    '2 号楼': {'x': 46, 'y': 24},
+    '3 号楼': {'x': 58, 'y': 48},
+    '4 号楼': {'x': 34, 'y': 68},
+    '5 号楼': {'x': 72, 'y': 70},
+}
+
+
+def repair_builtin_demo_buildings(session: Session, community: Community) -> bool:
+    """Upgrade only untouched draft demo objects; published versions and frozen drills stay intact."""
+    version = session.scalar(select(CommunityVersion).where(
+        CommunityVersion.community_id == community.id,
+        CommunityVersion.status == CommunityVersionStatus.DRAFT,
+    ).order_by(CommunityVersion.version_number.desc()))
+    if version is None:
+        return False
+    changed = False
+    for house in session.scalars(select(MapObject).where(
+        MapObject.community_version_id == version.id,
+        MapObject.object_type == MapObjectType.BUILDING,
+    )):
+        stock = DEMO_BUILDING_STOCK.get(house.name)
+        if stock is None or not isinstance(house.properties, dict):
+            continue
+        expected = DEMO_KITCHEN_PROPERTIES if house.name == '1 号楼' else DEMO_RESIDENTIAL_PROPERTIES
+        allowed = set(stock) | set(expected)
+        if (set(house.properties) - allowed or
+                any(house.properties.get(key) != value for key, value in stock.items()) or
+                any(key in house.properties and house.properties[key] != value for key, value in expected.items())):
+            continue
+        original = DEMO_BUILDING_ORIGINS[house.name]
+        relocated = DEMO_HOUSE_RELOCATIONS.get(house.name, (original, original))[1]
+        if house.geometry not in (original, relocated):
+            continue
+        if house.properties != {**stock, **expected}:
+            house.properties = {**stock, **expected}
+            changed = True
+        if house.geometry != relocated:
+            house.geometry = dict(relocated)
+            changed = True
+    if changed:
+        session.commit()
+    return changed
+
+
+def repair_all_builtin_demo_communities(session: Session) -> int:
+    repaired = 0
+    for community in list(session.scalars(select(Community).where(Community.name == DEMO_COMMUNITY_NAME))):
+        repaired += int(repair_builtin_demo_buildings(session, community))
+    return repaired
 
 
 def get_or_create_demo_community(session: Session, owner_username: str) -> tuple[Community, bool]:
@@ -29,15 +93,7 @@ def get_or_create_demo_community(session: Session, owner_username: str) -> tuple
         .where(Community.owner.has(username=owner_username), Community.name == DEMO_COMMUNITY_NAME)
     )
     if existing is not None:
-        # Only repair the unconfigured built-in house. Explicit user dimensions
-        # and every already frozen drill world remain untouched.
-        house = session.scalar(select(MapObject).join(CommunityVersion).where(
-            CommunityVersion.community_id == existing.id,
-            MapObject.object_type == MapObjectType.BUILDING, MapObject.name == '1 号楼'
-        ).order_by(CommunityVersion.version_number.desc()))
-        if house is not None and not ({'width', 'depth'} & house.properties.keys()):
-            house.properties = {**house.properties, **DEMO_KITCHEN_PROPERTIES}
-            session.commit()
+        repair_builtin_demo_buildings(session, existing)
         return get_community_or_none(session, existing.id), False  # type: ignore[return-value]
 
     owner = ensure_development_user(session, owner_username)
@@ -62,10 +118,10 @@ def get_or_create_demo_community(session: Session, owner_username: str) -> tuple
 
     objects = [
         (MapObjectType.BUILDING, "1 号楼", 26, 26, {"floors": 6, "resident_groups": "普通居民", **DEMO_KITCHEN_PROPERTIES}),
-        (MapObjectType.BUILDING, "2 号楼", 46, 24, {"floors": 6, "resident_groups": "普通居民"}),
-        (MapObjectType.BUILDING, "3 号楼", 58, 48, {"floors": 6, "resident_groups": "含 2 名独居老人、1 名行动不便人员"}),
-        (MapObjectType.BUILDING, "4 号楼", 34, 68, {"floors": 5}),
-        (MapObjectType.BUILDING, "5 号楼", 72, 70, {"floors": 5}),
+        (MapObjectType.BUILDING, "2 号楼", 46, 22, {"floors": 6, "resident_groups": "普通居民", **DEMO_RESIDENTIAL_PROPERTIES}),
+        (MapObjectType.BUILDING, "3 号楼", 62, 31, {"floors": 6, "resident_groups": "含 2 名独居老人、1 名行动不便人员", **DEMO_RESIDENTIAL_PROPERTIES}),
+        (MapObjectType.BUILDING, "4 号楼", 34, 68, {"floors": 5, **DEMO_RESIDENTIAL_PROPERTIES}),
+        (MapObjectType.BUILDING, "5 号楼", 78, 72, {"floors": 5, **DEMO_RESIDENTIAL_PROPERTIES}),
         (MapObjectType.EXIT, "北门疏散出口", 12, 12, {"status": "available"}),
         (MapObjectType.EXIT, "南门疏散出口", 84, 88, {"status": "available"}),
         (MapObjectType.CHARGING_SHED, "3 号楼旁集中充电棚", 66, 43, {"fire_source_candidate": True, "time": "20:15"}),

@@ -7,6 +7,8 @@ from copy import deepcopy
 import heapq
 import math
 from app.services.navigation_geometry import clear_segment
+from app.services.mobility_geometry import half_length, heading_between
+from app.services.vehicle_trajectory import rounded_trajectory
 
 
 def fleet(world: dict | None) -> list[dict]:
@@ -20,7 +22,14 @@ def fleet(world: dict | None) -> list[dict]:
         ("ambulance-1", "救护车 A-01", "ambulance", 2.8, 2.8),
     ]):
         origin = exits[min(index, len(exits) - 1)]
+        adjacent = sorted((e for e in (world or {}).get("road_network", {}).get("edges", [])
+                           if origin["id"] in (e["start_node_id"], e["end_node_id"])
+                           and e.get("status") != "blocked"), key=lambda e: e["id"])
+        next_id = next((e["end_node_id"] if e["start_node_id"] == origin["id"] else e["start_node_id"]
+                        for e in adjacent), None)
+        inward = next((n for n in nodes if n["id"] == next_id), origin)
         vehicles.append({"id": key, "name": name, "kind": kind, "minimum_width": width, "speed": speed,
+                         "heading_radians": heading_between(origin, inward) or 0.,
                          "x": origin["x"], "y": origin["y"], "state": "idle", "reason": f"在{origin['name']}待命，选择道路节点安排到场。",
                          "target_node_id": None, "target_name": "", "mission_id": None, "current_edge_id": None,
                          "route_points": [], "route_edge_ids": [], "progress": 0, "remaining_seconds": None, "missions": []})
@@ -37,6 +46,22 @@ def plan_vehicle(network: dict, vehicle: dict, target_id: str) -> dict:
         return {**result, "notice": "目标节点不属于本场冻结路网。"}
     def distance(a, b):
         return math.hypot(a["x"] - b["x"], a["y"] - b["y"])
+    body_half_length = half_length(vehicle)
+    obstacles = network.get("obstacles", [])
+    turn_radius = math.hypot(body_half_length, vehicle["minimum_width"] / 2) + .3
+
+    def turn_allowed(a, b, c):
+        first, second = heading_between(a, b), heading_between(b, c)
+        if first is None or second is None or math.cos(second - first) >= .995:
+            return True
+        return clear_segment((b["x"], b["y"]), (b["x"], b["y"]), obstacles, turn_radius)
+
+    def departure_allowed(target):
+        heading = vehicle.get("heading_radians")
+        direction = heading_between(start, target)
+        return (heading is None or direction is None or math.cos(direction - heading) >= .995
+                or clear_segment((start["x"], start["y"]), (start["x"], start["y"]), obstacles, turn_radius))
+
     def allowed(edge):
         a, b = nodes.get(edge["start_node_id"]), nodes.get(edge["end_node_id"])
         if a is None or b is None or edge["status"] == "blocked" or edge["width_meters"] < vehicle["minimum_width"]:
@@ -44,10 +69,9 @@ def plan_vehicle(network: dict, vehicle: dict, target_id: str) -> dict:
         length = max(.0001, distance(a, b))
         # Extend the swept centerline by the authored half-length. Width alone
         # misses a fire engine's nose/rear overhang near the end of a segment.
-        half_length = 3.1 if vehicle.get("kind", "firetruck") == "firetruck" else 2.6
-        dx, dy = (b["x"]-a["x"])/length*half_length, (b["y"]-a["y"])/length*half_length
+        dx, dy = (b["x"]-a["x"])/length*body_half_length, (b["y"]-a["y"])/length*body_half_length
         return clear_segment((a["x"]-dx, a["y"]-dy), (b["x"]+dx, b["y"]+dy),
-                             network.get("obstacles", []), vehicle["minimum_width"]/2)
+                             obstacles, vehicle["minimum_width"]/2)
     graph = {key: [] for key in nodes}
     for edge in edges.values():
         a, b = edge["start_node_id"], edge["end_node_id"]
@@ -64,38 +88,48 @@ def plan_vehicle(network: dict, vehicle: dict, target_id: str) -> dict:
         if not current or not allowed(current):
             return {**result, "notice": "车辆所在路段受阻，保持原位；恢复该路段后可重新规划。"}
         seeds = [(key, distance(start, nodes[key]), current["id"]) for key in [current["start_node_id"], current["end_node_id"]] if key in nodes]
+    # A node reached from different roads has different legal outgoing turns.
+    # Keep the incoming node in the search state rather than rejecting the
+    # shortest route afterwards and overlooking a feasible detour.
     costs, previous, frontier = {}, {}, []
     for key, cost, edge_id in seeds:
-        costs[key] = cost; previous[key] = (None, edge_id)
-        heapq.heappush(frontier, (cost, key))
+        if not departure_allowed(nodes[key]):
+            continue
+        state = ("", key)
+        costs[state] = cost; previous[state] = (None, edge_id)
+        heapq.heappush(frontier, (cost, state))
+    final = None
     while frontier:
-        cost, key = heapq.heappop(frontier)
-        if cost > costs[key]:
+        cost, state = heapq.heappop(frontier)
+        incoming, key = state
+        if cost > costs[state]:
             continue
         if key == target_id:
+            final = state
             break
         for neighbor, weight, edge_id in graph[key]:
-            if cost + weight < costs.get(neighbor, math.inf):
-                costs[neighbor] = cost + weight; previous[neighbor] = (key, edge_id)
-                heapq.heappush(frontier, (cost + weight, neighbor))
-    if target_id not in previous:
-        return {**result, "notice": f"没有同时满足 {vehicle['minimum_width']} 米通行宽度、楼体净距与道路状态的路线，请检查地图或改选目标。"}
-    chain, key = [], target_id
-    while key is not None:
-        parent, edge_id = previous[key]
+            if neighbor == incoming or not turn_allowed(nodes[incoming] if incoming else start, nodes[key], nodes[neighbor]):
+                continue
+            if not incoming and distance(start, nodes[key]) < .03 and not departure_allowed(nodes[neighbor]):
+                continue
+            following = (key, neighbor)
+            if cost + weight < costs.get(following, math.inf):
+                costs[following] = cost + weight; previous[following] = (state, edge_id)
+                heapq.heappush(frontier, (cost + weight, following))
+    if final is None:
+        return {**result, "notice": f"没有同时满足 {vehicle['minimum_width']} 米通行宽度、车身转角净距与道路状态的路线，请检查地图或改选目标。"}
+    chain, state = [], final
+    while state is not None:
+        parent, edge_id = previous[state]
+        key = state[1]
         chain.append({"x": nodes[key]["x"], "y": nodes[key]["y"], "node_id": key, "edge_id": edge_id})
-        key = parent
+        state = parent
     points = [start]
     for point in reversed(chain):
         if distance(points[-1], point) > .001:
             points.append(point)
     route_edges = list(dict.fromkeys(point["edge_id"] for point in points[1:] if point.get("edge_id")))
-    turn_radius = math.hypot(3.1 if vehicle.get("kind", "firetruck") == "firetruck" else 2.6, vehicle["minimum_width"]/2) + .3
-    for a, b, c in zip(points, points[1:], points[2:]):
-        first, second = distance(a, b), distance(b, c)
-        cosine = ((b["x"]-a["x"])*(c["x"]-b["x"])+(b["y"]-a["y"])*(c["y"]-b["y"]))/max(.0001, first*second)
-        if cosine < .995 and not clear_segment((b["x"], b["y"]), (b["x"], b["y"]), network.get("obstacles", []), turn_radius):
-            return {**result, "notice": f"{nodes.get(b.get('node_id'), {}).get('name', '道路转角')}周边楼体净距不足以容纳车身转向，请改选目标或调整道路。"}
+    points = rounded_trajectory(points, vehicle, edges, obstacles)
     length = sum(distance(a, b) for a, b in zip(points, points[1:]))
     risk = max((edges[key].get("risk_score", 0) for key in route_edges), default=0)
     traffic = max((edges[key].get("density_percent", 0) for key in route_edges), default=0)
@@ -118,6 +152,9 @@ def _advance(vehicle: dict, at: int):
         if remaining <= length or index == len(lengths) - 1:
             ratio = min(1., remaining / max(.0001, length))
             vehicle.update(x=round(a["x"] + (b["x"] - a["x"]) * ratio, 4), y=round(a["y"] + (b["y"] - a["y"]) * ratio, 4), current_edge_id=b.get("edge_id"))
+            heading = heading_between(a, b)
+            if heading is not None:
+                vehicle["heading_radians"] = heading
             break
         remaining -= length
     vehicle.update(progress=round(progress, 4), remaining_seconds=max(0, math.ceil(duration - (at - vehicle["starts_at_seconds"]))))

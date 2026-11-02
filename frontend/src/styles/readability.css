@@ -64,7 +64,7 @@ html .operations-center .atlas-replay__world>nav span { padding:10px 12px; }
 html .operations-center .atlas-replay__world>footer { flex-wrap:wrap; flex-shrink:0; padding:16px; gap:8px 16px; }
 html .operations-center .atlas-replay__events>header { flex-wrap:wrap; }
 html .operations-center .atlas-replay__events li div { min-width:0; overflow-wrap:anywhere; }
-html .operations-center .atlas-replay button { min-height:44px; }
+html .operations-center .atlas-replay button { min-height:44px; font-size:14px; }
 html .operations-center .atlas-replay__evidence>header button { min-width:44px; min-height:44px; }
 html .operations-center .atlas-replay__timeline { flex-shrink:0; }
 

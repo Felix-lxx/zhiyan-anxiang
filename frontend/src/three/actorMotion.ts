@@ -96,11 +96,13 @@ export class ActorMotion {
     const track = this.tracks.get(object)
     if (!track) return 0
     if (!animate) { object.position.copy(track.target); track.path = []; return 0 }
+    object.userData.groundSlope=0
     let budget = track.speed * delta, travelled = 0
     while (budget > 0 && track.cursor < track.path.length) {
       const target = track.path[track.cursor]!, direction = target.clone().sub(object.position), distance = direction.length()
       const step = Math.min(distance, budget)
       if (distance > .00001) {
+        object.userData.groundSlope=Math.atan2(direction.y,Math.hypot(direction.x,direction.z))
         object.position.addScaledVector(direction, step / distance)
         if (direction.x ** 2 + direction.z ** 2 > .000001) {
           const yaw = Math.atan2(-direction.x, -direction.z)
@@ -113,6 +115,8 @@ export class ActorMotion {
     }
     return travelled
   }
+
+  forget(object: THREE.Object3D) { this.tracks.delete(object) }
 
   clear() { this.tracks.clear() }
 }

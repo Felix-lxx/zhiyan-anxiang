@@ -55,7 +55,7 @@ export class CrowdRenderer {
     }
     const detailed = new Set(this.detailSlots.filter(s => s.actor).map(s => s.actor))
     for (const slot of this.detailSlots) if (slot.actor) {
-      for (const key of ['exposed', 'crowded', 'behaviorState', 'vulnerable', 'assisted']) slot.model.userData[key] = slot.actor.userData[key]
+      for (const key of ['exposed', 'crowded', 'behaviorState', 'vulnerable', 'assisted', 'groundSlope']) slot.model.userData[key] = slot.actor.userData[key]
       animate(slot.model, slot.actor)
     }
     for (let i = 0; i < this.actors.length; i++) {

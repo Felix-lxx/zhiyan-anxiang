@@ -52,6 +52,8 @@ def rescue_projection(world, events, elapsed, vehicles, simulation):
         if not end: vehicle["service"] = action
         if data["action"] == "load" and status != "cancelled":
             phase = "onboard" if status == "completed" else "pickup" if elapsed - event.elapsed_seconds < data.get("approach_seconds", 0) else "loading"
+            if status == 'executing' and data.get('loading_position') and elapsed >= event.elapsed_seconds+duration-8:
+                phase='boarding'
             if status == "executing":
                 action["reason"] = "担架组正前往集合点接人" if phase == "pickup" else "正在车边完成装载交接" if elapsed >= action["ends_at_seconds"] - 8 else "担架组正沿集合通道返回救护车"
             transfers[data["resident_id"]] = {"phase": phase, "vehicle_id": vehicle["id"],
@@ -77,6 +79,11 @@ def rescue_projection(world, events, elapsed, vehicles, simulation):
             approach = action.get("approach_seconds", 0)
             person.update(point_on_route(action["pickup_points"], min(1., max(0., (elapsed - action["starts_at_seconds"] - approach) / max(1, action["duration_seconds"] - approach - 8)))))
             person.update(route_points=action["pickup_points"], behavior="担架组沿集合通道接近救护车，上车后再安排出口", last_location="集合点至救护车接运通道")
+        elif transfer['phase'] == 'boarding':
+            action=transfer['action'];stage=action['loading_position']
+            progress=min(1.,max(0.,(elapsed-action['ends_at_seconds']+8)/8))
+            person.update(point_on_route([stage,action['boarding_position']],progress))
+            person.update(height=progress*.14,behavior='担架底架收折，沿装载方向进入救护车',last_location='救护车装载交接区')
         elif transfer["phase"] == "onboard":
             person.update(x=vehicle["x"], y=vehicle["y"], height=0, route_points=vehicle["route_points"], behavior="已在救护车内，等待出口医疗移交", last_location=vehicle["name"])
         elif transfer["phase"] == "handing_over":
@@ -146,9 +153,27 @@ def action_plan(world, state, vehicle, action, resident_id=None):
     if not target: return denied("请将救护车停到道路节点再接运。")
     # Use only assembly connectors, never send the stretcher through a building
     # or across a live carriageway to reach a distant ambulance.
-    network = {"nodes": graph["nodes"], "edges": [e for e in graph["edges"] if e["kind"] == "assembly"]}
-    route = plan_vehicle(network, {**person, "minimum_width": .4, "speed": .8, "current_edge_id": None}, target["id"])
-    if not route["can_apply"]: return denied("救护车不在该集合点对应出口，请先驶至同侧出口节点。")
-    return {**base, "can_apply": True, "duration_seconds": route["planned_duration_seconds"] * 2 + 8, "approach_seconds": route["planned_duration_seconds"],
-            "resident_id": person["id"], "resident_label": person["label"], "pickup_node_id": target["id"], "pickup_points": route["route_points"],
+    network = {"nodes": graph["nodes"], "edges": [e for e in graph["edges"] if e["kind"] == "assembly"],
+               "obstacles": [o for o in world["objects"] if o["type"] == "building"]}
+    route = plan_vehicle(network, {**person, "kind": "stretcher", "minimum_width": .8,
+                                   "speed": .8, "current_edge_id": None}, target["id"])
+    if not route["can_apply"]:
+        return denied("集合点至车辆的接运通道不可达，请检查同侧停靠节点、通道宽度与转角。" + route["notice"])
+    points=route['route_points']
+    if len(points)<2:return denied('集合通道没有足够的担架装载空间。')
+    last=points[-2];dx,dy=last['x']-vehicle['x'],last['y']-vehicle['y'];length=math.hypot(dx,dy)
+    heading=vehicle.get('heading_radians',0.)
+    lateral=abs((dx*math.cos(heading)-dy*math.sin(heading))/max(length,.0001))
+    longitudinal=abs((dx*math.sin(heading)+dy*math.cos(heading))/max(length,.0001))
+    body_exit=min(1.15/max(lateral,.0001),2.6/max(longitudinal,.0001))
+    setback=body_exit+2.15
+    # Remain on the already validated assembly polyline. No diagonal shortcut
+    # to the vehicle or offset into an unvalidated building/traffic corridor.
+    if length<=setback+.01:return denied('车辆附近的集合通道不足以容纳担架组，请调整停靠位置或集合点接入距离。')
+    stage={**points[-1],'x':vehicle['x']+dx/length*setback,'y':vehicle['y']+dy/length*setback}
+    points=[*points[:-1],stage]
+    travel=max(1,math.ceil(sum(math.dist((a['x'],a['y']),(b['x'],b['y'])) for a,b in zip(points,points[1:]))/.8))
+    return {**base, "can_apply": True, "duration_seconds": travel * 2 + 8, "approach_seconds": travel,
+            'loading_position':stage,'boarding_position':{'x':vehicle['x'],'y':vehicle['y']},
+            "resident_id": person["id"], "resident_label": person["label"], "pickup_node_id": target["id"], "pickup_points": points,
             "notice": "担架组沿集合通道到车边，再完成 8 秒装载；之后安排驶往出口并移交。"}

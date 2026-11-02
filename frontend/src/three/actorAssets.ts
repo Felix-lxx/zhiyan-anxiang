@@ -1,4 +1,5 @@
 import * as THREE from 'three'
+import { plantFoot, type LegChain } from './footPlacement'
 import type { GLTF } from 'three/examples/jsm/loaders/GLTFLoader.js'
 import { clone as cloneSkeleton } from 'three/examples/jsm/utils/SkeletonUtils.js'
 import { RoundedBoxGeometry } from 'three/examples/jsm/geometries/RoundedBoxGeometry.js'
@@ -8,6 +9,7 @@ type PersonRig = {
   walk: THREE.AnimationAction; run?: THREE.AnimationAction; action: THREE.AnimationAction; speed: number;
   arm?: THREE.Object3D; armPose?: THREE.Quaternion;
   forearm?: THREE.Object3D; forearmPose?: THREE.Quaternion;
+  legs:Array<LegChain & {sole:number;poses:THREE.Quaternion[];shoe?:THREE.Object3D;shoePosition?:THREE.Vector3}>;
 }
 type RobotRig = {
   model: THREE.Group; wheels: THREE.Object3D[]; head: THREE.Group; lidar: THREE.Mesh;
@@ -35,7 +37,7 @@ export class ActorAssets {
   private attaching = new Set<THREE.Group>()
   private quality: 'high' | 'medium' | 'low' = 'high'
 
-  constructor(private changed: (status: ActorAssetStatus) => void = () => {}) {}
+  constructor(private changed: (status: ActorAssetStatus) => void = () => {}, private ground?: (x:number,z:number,reference:number)=>number) {}
 
   private track(object: THREE.Object3D) {
     object.traverse(child => {
@@ -140,7 +142,22 @@ export class ActorAssets {
       mixer.update(0)
       const arm = body.getObjectByName('UpperArmR') ?? body.getObjectByName('UpperArm_R') ?? body.getObjectByName('UpperArm.R')
       const forearm = body.getObjectByName('LowerArmR')
-      this.people.set(root, { model, mixer, idle, walk, run, action: idle, speed: 0, arm, forearm })
+      model.updateWorldMatrix(true,true)
+      const legs:PersonRig['legs']=[]
+      for(const side of ['L','R']){
+        const hip=body.getObjectByName('UpperLeg'+side),knee=body.getObjectByName('LowerLeg'+side),shoe=body.getObjectByName('Foot'+side)
+        if(!hip||!knee||!shoe)continue
+        // Kenney's shoe bones are independent of the deforming leg chains.
+        // Solve the actual lower-leg tip, then translate the shoe by its result.
+        let parent:THREE.Object3D|null=shoe
+        while(parent&&parent!==knee)parent=parent.parent
+        const foot=parent===knee?shoe:knee.getObjectByName('LowerLeg'+side+'_end')
+        if(!foot)continue
+        legs.push({hip,knee,foot,sole:THREE.MathUtils.clamp(shoe.getWorldPosition(new THREE.Vector3()).y,.025,.16),
+          poses:[hip.quaternion.clone(),knee.quaternion.clone(),foot.quaternion.clone()],
+          ...(foot!==shoe?{shoe,shoePosition:shoe.position.clone()}:{})})
+      }
+      this.people.set(root, { model, mixer, idle, walk, run, action: idle, speed: 0, arm, forearm, legs })
       this.mountPerson(root, model)
       this.track(model); root.userData.assetModelStatus = 'ready'
       this.changed(this.pending ? 'loading' : this.failed ? 'fallback' : 'ready')
@@ -172,10 +189,14 @@ export class ActorAssets {
     if (!root.visible || !rig.model.visible) return false
     if (rig.arm && rig.armPose) rig.arm.quaternion.copy(rig.armPose)
     if (rig.forearm && rig.forearmPose) rig.forearm.quaternion.copy(rig.forearmPose)
+    for(const leg of rig.legs){
+      [leg.hip,leg.knee,leg.foot].forEach((bone,i)=>bone.quaternion.copy(leg.poses[i]!))
+      if(leg.shoe&&leg.shoePosition)leg.shoe.position.copy(leg.shoePosition)
+    }
     const measuredSpeed = active && delta > 0 ? Math.min(3, distance / delta) : 0
     rig.speed = active ? THREE.MathUtils.damp(rig.speed, measuredSpeed, 12, delta) : 0
     const moving = measuredSpeed > .025 && rig.speed > .065
-    const running = !root.userData.vulnerable && !root.userData.crowded && !root.userData.exposed && rig.speed > (rig.action === rig.run ? 1.45 : 1.75)
+    const running = Math.abs(root.userData.groundSlope??0)<.12 && !root.userData.vulnerable && !root.userData.crowded && !root.userData.exposed && rig.speed > (rig.action === rig.run ? 1.45 : 1.75)
     const to = moving ? running && rig.run ? rig.run : rig.walk : rig.idle
     if (to !== rig.action) {
       const from = rig.action
@@ -186,7 +207,7 @@ export class ActorAssets {
     rig.run?.setEffectiveTimeScale(THREE.MathUtils.clamp(rig.speed / 2.4, .6, 1.4))
     // Simulation pause / reduced motion freezes both idle breathing and locomotion.
     rig.mixer.update(active ? delta : 0)
-    rig.model.rotation.x = root.userData.exposed ? -.1 : root.userData.vulnerable ? -.045 : 0
+    rig.model.rotation.x = (root.userData.exposed ? -.1 : root.userData.vulnerable ? -.045 : 0)-THREE.MathUtils.clamp((root.userData.groundSlope??0)*.08,-.05,.05)
     if (rig.arm) {
       rig.armPose = rig.arm.quaternion.clone()
       if (root.userData.exposed) rig.arm.rotateX(-.65)
@@ -195,6 +216,25 @@ export class ActorAssets {
     if (rig.forearm) {
       rig.forearmPose = rig.forearm.quaternion.clone()
       if (root.userData.exposed) rig.forearm.rotateX(-.85)
+    }
+    for(const leg of rig.legs){
+      [leg.hip,leg.knee,leg.foot].forEach((bone,i)=>leg.poses[i]!.copy(bone.quaternion))
+      if(leg.shoe&&leg.shoePosition)leg.shoePosition.copy(leg.shoe.position)
+    }
+    if(this.ground&&rig.legs.length){
+      rig.model.updateWorldMatrix(true,true)
+      const reference=root.getWorldPosition(new THREE.Vector3()).y
+      for(const leg of rig.legs){
+        const tip=leg.foot.getWorldPosition(new THREE.Vector3())
+        const sole=(leg.shoe??leg.foot).getWorldPosition(new THREE.Vector3())
+        const support=this.ground(sole.x,sole.z,reference)+leg.sole+tip.y-sole.y
+        if(plantFoot(leg,support)&&leg.shoe){
+          const shift=leg.foot.getWorldPosition(new THREE.Vector3()).sub(tip)
+          const world=sole.add(shift)
+          leg.shoe.position.copy(leg.shoe.parent?leg.shoe.parent.worldToLocal(world):world)
+          leg.shoe.updateWorldMatrix(false,true)
+        }
+      }
     }
     return true
   }
@@ -299,7 +339,7 @@ export class ActorAssets {
     })
     const scanning = ['sensing', 'inspecting', 'scanning', 'verifying'].includes(state)
     if (active && scanning) { rig.lidar.rotation.y += delta * 7; rig.head.rotation.y = Math.sin(seconds * .7) * .45 }
-    else rig.head.rotation.y = 0
+    else if(active)rig.head.rotation.y=THREE.MathUtils.damp(rig.head.rotation.y,0,10,delta)
     const blocked = ['blocked', 'failed', 'low_battery'].includes(state)
     rig.lamps.color.setHex(blocked ? 0xe9ae4e : 0x91dfc3)
     rig.lamps.emissive.setHex(blocked ? 0xd88522 : 0x55d5af)

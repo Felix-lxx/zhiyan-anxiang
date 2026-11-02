@@ -32,6 +32,7 @@ try {
     return route.fulfill({ json:[] })
   })
   await page.goto((process.env.QA_BASE_URL || 'http://127.0.0.1:5173') + '/projects?section=account')
+  await page.getByRole('button', { name:'登录与安全', exact:true }).click()
   const section = page.getByRole('region', { name:'登录与权限', exact:true })
   await section.getByText('8 个活动会话', { exact:true }).waitFor()
   for (const width of [1920,1440,1024,390]) {

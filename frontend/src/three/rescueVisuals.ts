@@ -1,13 +1,16 @@
 import * as THREE from 'three'
 import type { Vehicle } from '../domain/drill'
 import { ActorMotion } from './actorMotion'
-import { createPerson, posePerson } from './actors'
+import { createStretcher, poseStretcher } from './stretcherModel'
+import { routeHeading } from './routeHeading'
+import { VisualClock } from './visualClock'
+import { VEHICLE_GROUND_Y } from './roadSurface'
 
 export interface RescueResident {
   id: string; label: string; x: number; y: number; behavior?: string
-  medical_transfer?: { phase: 'pickup' | 'loading' | 'onboard' | 'handing_over' | 'delivered'; vehicle_id: string }
+  medical_transfer?: { phase: 'pickup' | 'loading' | 'boarding' | 'onboard' | 'handing_over' | 'delivered'; vehicle_id: string }
 }
-const point = (p: { x: number; y: number }, height = .08) => new THREE.Vector3(p.x - 50, height, p.y - 50)
+const point = (p: { x: number; y: number }, height = VEHICLE_GROUND_Y) => new THREE.Vector3(p.x - 50, height, p.y - 50)
 
 /** Small, reusable scene effects driven exclusively by confirmed rescue actions. */
 export class RescueVisuals {
@@ -16,9 +19,13 @@ export class RescueVisuals {
   private stretchers = new Map<string, THREE.Group>()
   private motion = new ActorMotion()
   private transform = new THREE.Object3D()
+  private elapsed = 0
+  private clock = new VisualClock()
   constructor(private register: (object: THREE.Object3D) => void) {}
 
   update(vehicles: Vehicle[], residents: RescueResident[], elapsed: number, running: boolean) {
+    this.elapsed = elapsed
+    this.clock.at(elapsed, running, performance.now())
     for (const item of this.water.values()) item.root.visible = false
     for (const root of this.stretchers.values()) root.visible = false
     for (const vehicle of vehicles) {
@@ -45,11 +52,15 @@ export class RescueVisuals {
       const routePoints = action.action === 'load' ? action.pickup_points : action.position ? [{ x: vehicle.x, y: vehicle.y }, action.position] : []
       if (!person || !routePoints?.length) continue
       let root = this.stretchers.get(vehicle.id)
-      if (!root) { root = this.createStretcher(); this.stretchers.set(vehicle.id, root); this.layer.add(root); this.register(root) }
+      if (!root) { root = createStretcher(); this.stretchers.set(vehicle.id, root); this.layer.add(root); this.register(root) }
+      const newAction = root.userData.actionId !== action.action_id
+      if (newAction) this.motion.forget(root)
+      root.userData.actionId = action.action_id
       root.visible = true
       const approaching = person.medical_transfer?.phase === 'pickup'
       root.userData.patient.visible = !approaching
-      let position = point(person), route = routePoints.map(p => point(p))
+      const boarding=person.medical_transfer?.phase==='boarding'&&action.loading_position&&action.boarding_position
+      let position = point(boarding?action.loading_position!:person), route = routePoints.map(p => point(p))
       if (approaching) {
         route = [...route].reverse()
         const distance = route.slice(1).reduce((sum, p, i) => sum + p.distanceTo(route[i]!), 0)
@@ -62,15 +73,32 @@ export class RescueVisuals {
         }
       }
       this.motion.accept(root, position, route, elapsed, running)
-      root.traverse(object => { object.userData.selection = { title: `${person.label} · 担架接运`, type: '人员接运', detail: person.behavior, residentId: person.id, x: person.x, y: person.y } })
+      if (newAction || !running) {
+        const heading = routeHeading(position, route)
+        if (heading !== undefined) root.rotation.y = heading
+      }
+      const carriage=root.userData.carriage as THREE.Group
+      carriage.position.set(0,0,0)
+      if(boarding){
+        root.rotation.y=routeHeading(position,route)??root.rotation.y
+        const fraction=THREE.MathUtils.clamp((elapsed-action.ends_at_seconds+8)/8,0,1)
+        root.updateMatrixWorld(true)
+        carriage.position.copy(root.worldToLocal(point(person)));carriage.position.y=fraction*.14
+        root.userData.boarding=fraction
+      }else root.userData.boarding=0
+      root.traverse(object => { object.userData.selection = { title: `${person.label} · 担架接运`, type: '人员接运', detail: action.reason, residentId: person.id, x: position.x + 50, y: position.z + 50 } })
+    }
+    for (const [id, item] of this.water) {
+      if (!item.root.visible) { this.release(item.root); this.water.delete(id) }
     }
   }
 
-  step(delta: number, running: boolean, seconds: number, effects: boolean) {
+  step(delta: number, running: boolean, _seconds: number, effects: boolean) {
+    const time = this.clock.at(this.elapsed, running, performance.now())
     for (const item of this.water.values()) {
       if (!item.root.visible) continue
       for (let i = 0; i < item.drops.count; i++) {
-        const t = (i / item.drops.count + (running && effects ? seconds * .7 : 0)) % 1
+        const t = (i / item.drops.count + (effects ? time * .7 : 0)) % 1
         this.transform.position.copy(item.curve.getPoint(t)); this.transform.updateMatrix()
         item.drops.setMatrixAt(i, this.transform.matrix)
       }
@@ -78,33 +106,8 @@ export class RescueVisuals {
     }
     for (const root of this.stretchers.values()) if (root.visible) {
       const travelled = this.motion.step(root, delta, running)
-      for (const helper of root.userData.helpers as THREE.Group[]) posePerson(helper, travelled > .001 && effects, seconds, false, false)
+      poseStretcher(root, travelled, time, effects)
     }
-  }
-
-  private createStretcher() {
-    const root = new THREE.Group()
-    const box = (w: number, h: number, d: number, color: number, x: number, y: number, z: number) => {
-      const mesh = new THREE.Mesh(new THREE.BoxGeometry(w, h, d), new THREE.MeshStandardMaterial({ color, roughness: .7 }))
-      mesh.position.set(x, y, z); mesh.castShadow = true; root.add(mesh); return mesh
-    }
-    box(.75, .12, 1.9, 0x416f70, 0, .72, 0)
-    for (const side of [-1, 1]) {
-      box(.05, .05, 2.5, 0xb4c3c7, side * .43, .65, 0)
-      for (const end of [-1, 1]) {
-        box(.04, .5, .04, 0xb4c3c7, side * .32, .38, end * .65)
-        const wheel = new THREE.Mesh(new THREE.CylinderGeometry(.14, .14, .09, 8), new THREE.MeshStandardMaterial({ color: 0x2c393d }))
-        wheel.rotation.z = Math.PI / 2; wheel.position.set(side * .32, .14, end * .65); root.add(wheel)
-      }
-    }
-    const patient = new THREE.Group()
-    const blanket = new THREE.Mesh(new THREE.CapsuleGeometry(.25, .95, 4, 8), new THREE.MeshStandardMaterial({ color: 0xb99771, roughness: .9 }))
-    blanket.rotation.x = Math.PI / 2; blanket.position.set(0, .98, .1)
-    const head = new THREE.Mesh(new THREE.SphereGeometry(.18, 10, 8), new THREE.MeshStandardMaterial({ color: 0xd8ad8e }))
-    head.position.set(0, .98, -.7); patient.add(blanket, head); root.add(patient)
-    const helpers = [-1, 1].map((side, i) => { const helper = createPerson(`stretcher-helper-${i}`, false, true); helper.position.set(0, 0, side * 1.45); root.add(helper); return helper })
-    root.userData.patient = patient; root.userData.helpers = helpers
-    return root
   }
 
   private release(root: THREE.Object3D) {

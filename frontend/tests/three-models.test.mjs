@@ -9,18 +9,26 @@ import * as THREE from 'three'
 // Compile pure rendering factories without a browser or generated source files.
 const require = createRequire(import.meta.url)
 const threeUrl = pathToFileURL(require.resolve('three').replace(/three\.cjs$/, 'three.module.js')).href
-async function load(name) {
-  const source = await readFile(new URL('../src/three/' + name + '.ts', import.meta.url), 'utf8')
-  const { outputText } = ts.transpileModule(source, { compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.ESNext } })
-  return import('data:text/javascript;base64,' + Buffer.from(outputText.replace(/from ['"]three['"]/g, `from '${threeUrl}'`)).toString('base64'))
+const moduleUrls=new Map()
+async function moduleUrl(name){
+  if(moduleUrls.has(name))return moduleUrls.get(name)
+  const pending=(async()=>{
+    const source=await readFile(new URL('../src/three/'+name+'.ts',import.meta.url),'utf8')
+    let code=ts.transpileModule(source,{compilerOptions:{target:ts.ScriptTarget.ES2022,module:ts.ModuleKind.ESNext}}).outputText
+    code=code.replace(/from ['"]three['"]/g,`from '${threeUrl}'`).replace(/from ['"](three\/examples\/[^'"]+)['"]/g,(_,path)=>`from '${pathToFileURL(require.resolve(path)).href}'`)
+    for(const match of [...code.matchAll(/from ['"]\.\/([^'"]+)['"]/g)])code=code.replace(match[0],`from '${await moduleUrl(match[1])}'`)
+    return 'data:text/javascript;base64,'+Buffer.from(code).toString('base64')
+  })()
+  moduleUrls.set(name,pending);return pending
 }
+async function load(name){return import(await moduleUrl(name))}
 const { displayHeight } = await load('sceneMaterials')
 const { createPerson, posePerson, createPatrolRobot } = await load('actors')
 const { RoadVisuals } = await load('roadVisuals')
 const { CrowdRenderer } = await load('crowdRenderer')
 const { presentHelpers, meetingRoute } = await load('helperPresentation')
 const { createRouteGuide } = await load('routeGuide')
-const { cutFloor, stairOpenings, furnitureFits, floorContainsHeight, doorPortal, doorWallPanels, fireSourceCamera } = await load('indoorGeometry')
+const { cutFloor, stairOpenings, furnitureFits, floorContainsHeight, doorPortal, doorWallPanels, fireSourceCamera, kitchenCamera } = await load('indoorGeometry')
 
 test('fire selection camera keeps every candidate footprint inside wide and narrow viewports', () => {
   const objects = [{x:-20,y:-15,width:10,depth:6},{x:20,y:15,width:10,depth:6}]
@@ -300,4 +308,344 @@ test('fire and smoke are deterministic, bounded, quality-scaled and extinguish a
   effects.group.children.forEach(mesh=>assert.ok(Array.from(mesh.instanceMatrix.array).every(Number.isFinite)))
   effects.update(18,0,12,'东风',camera,1)
   assert.equal(effects.group.visible,false)
+})
+
+const {createKitchenAssembly}=await load('kitchenAssembly')
+const {IndoorSmoke}=await load('indoorSmoke')
+const {kitchenWindowWall}=await load('interiorArchitecture')
+
+test('detailed kitchen keeps equipment within the frozen footprint and stove at its fire anchor',()=>{
+  for(const [width,depth] of [[2.296,.64],[4.756,.8]]){
+    const stoveX=width*.375, kitchen=createKitchenAssembly({width,depth,worktopHeight:.92,stoveX})
+    const bounds=new THREE.Box3().setFromObject(kitchen)
+    assert.ok(bounds.min.x>=-width/2-.001 && bounds.max.x<=width/2+.001,'No fittings may extend into an adjacent walking envelope')
+    assert.ok(bounds.min.z>=-depth/2-.001 && bounds.max.z<=depth/2+.001)
+    assert.ok(bounds.min.y>=-1e-6 && bounds.max.y<=2.1, JSON.stringify({min:bounds.min.toArray(),max:bounds.max.toArray()}))
+    assert.ok(Math.abs(kitchen.getObjectByName('cooktop-glass').position.x-stoveX)<1e-8)
+    const opening=new THREE.Vector3(-width/8,.92,0)
+    const ray=new THREE.Raycaster(opening.clone().add(new THREE.Vector3(0,.5,0)),new THREE.Vector3(0,-1,0),0,.8)
+    kitchen.updateMatrixWorld(true)
+    const hits=ray.intersectObject(kitchen,true)
+    assert.ok(hits.some(hit=>hit.object.name==='sink-basin'),'Sink opening must expose a recessed basin')
+    assert.ok(hits[0].point.y<.82,'Static batching must not fill the sink cavity')
+    assert.ok(!hits.some(hit=>hit.object.name.startsWith('sink-rim')),'Sink hole must remain physically open')
+    const frontRay=new THREE.Raycaster(new THREE.Vector3(stoveX,.92*.45,depth),new THREE.Vector3(0,0,-1))
+    assert.equal(frontRay.intersectObject(kitchen,true)[0].object.name,'oven-glass','A solid cabinet front must not hide the oven')
+  }
+})
+
+test('kitchen window is an opening in the wall, not glazing over an opaque box',()=>{
+  const wall=kitchenWindowWall(2.8,3.2,{surface:()=>new THREE.MeshStandardMaterial()})
+  wall.updateMatrixWorld(true)
+  const ray=new THREE.Raycaster(new THREE.Vector3(-2.8*.103+.1,1.6,0),new THREE.Vector3(0,0,-1))
+  const hits=ray.intersectObject(wall,true)
+  assert.ok(hits.some(hit=>hit.object.name==='window-glass'))
+  assert.ok(!hits.some(hit=>hit.object.name.startsWith('window-wall')))
+})
+
+test('room camera includes equipment height on desktop and phone without cutting the room corners',()=>{
+  const room={x:4,y:3,width:2.8,depth:3.2,height:6.58}
+  for(const aspect of [2,.46]){
+    const frame=kitchenCamera(room,aspect),camera=new THREE.PerspectiveCamera(48,aspect,.1,400)
+    camera.position.copy(frame.position);camera.lookAt(frame.target);camera.updateMatrixWorld(true)
+    for(const x of [-1.4,1.4])for(const y of [0,2.7])for(const z of [-1.6,1.6]){
+      const p=new THREE.Vector3(room.x+x,room.height+y,room.y+z).project(camera)
+      assert.ok(Math.abs(p.x)<1 && Math.abs(p.y)<1)
+    }
+  }
+})
+
+test('smoke visual stays inside each zone and reduces instances in low quality',()=>{
+  const smoke=new IndoorSmoke(1.2,3.2,17)
+  smoke.update(.7,130);assert.equal(smoke.mesh.visible,true)
+  for(const quality of [1,.45]){
+    smoke.step(40,quality);assert.equal(smoke.mesh.count,quality===1?32:12)
+    for(let i=0;i<smoke.mesh.count;i++){
+      const matrix=new THREE.Matrix4(),position=new THREE.Vector3(),rotation=new THREE.Quaternion(),scale=new THREE.Vector3()
+      smoke.mesh.getMatrixAt(i,matrix);matrix.decompose(position,rotation,scale)
+      assert.ok(Math.abs(position.x)+scale.x<=.6+.00001 && Math.abs(position.z)+scale.z<=1.6+.00001)
+    }
+  }
+  smoke.update(0,25);assert.equal(smoke.mesh.visible,false)
+})
+
+const {stairSurface,stairHeight,createStairFlight}=await load('stairFlight')
+const {plantFoot}=await load('footPlacement')
+const {VisualClock}=await load('visualClock')
+
+test('stair meshes, downward flights and foot support share the same solid tread heights',()=>{
+  const low=new THREE.Vector3(1,.18,2),high=new THREE.Vector3(1,3.38,6)
+  const surface=stairSurface(high,low,1.2),flight=createStairFlight(surface)
+  flight.group.updateMatrixWorld(true)
+  for(const t of [.07,.33,.79]){
+    const z=2+t*4,expected=stairHeight(surface,1,z,.18+t*3.2)
+    const ray=new THREE.Raycaster(new THREE.Vector3(1,5,z),new THREE.Vector3(0,-1,0))
+    const hit=ray.intersectObject(flight.group,true).find(hit=>hit.object.name==='solid-stair-treads')
+    assert.ok(hit&&Math.abs(hit.point.y-expected)<1e-5)
+  }
+  assert.equal(stairHeight(surface,1,6,3.38),3.38)
+  assert.equal(stairHeight(surface,3,4,1.78),undefined,'A foot outside the actual flight must not snap to a stair')
+  assert.equal(stairHeight(surface,1,4,8),undefined,'Another floor is not the walking surface')
+})
+
+test('foot placement preserves the authoritative root and leg lengths while clearing a tread',()=>{
+  const root=new THREE.Group();root.position.set(3,0,5);root.rotation.y=.7
+  const hip=new THREE.Bone(),knee=new THREE.Bone(),foot=new THREE.Bone()
+  hip.position.y=1;knee.position.set(0,-.4,.15);foot.position.set(0,-.45,-.15)
+  root.add(hip);hip.add(knee);knee.add(foot);root.updateMatrixWorld(true)
+  const position=root.position.clone(),upper=hip.getWorldPosition(new THREE.Vector3()).distanceTo(knee.getWorldPosition(new THREE.Vector3())),lower=knee.getWorldPosition(new THREE.Vector3()).distanceTo(foot.getWorldPosition(new THREE.Vector3()))
+  const rotation=foot.getWorldQuaternion(new THREE.Quaternion())
+  assert.equal(plantFoot({hip,knee,foot},.26),true)
+  assert.ok(Math.abs(foot.getWorldPosition(new THREE.Vector3()).y-.26)<1e-5)
+  assert.ok(root.position.equals(position))
+  assert.ok(Math.abs(upper-hip.getWorldPosition(new THREE.Vector3()).distanceTo(knee.getWorldPosition(new THREE.Vector3())))<1e-5)
+  assert.ok(Math.abs(lower-knee.getWorldPosition(new THREE.Vector3()).distanceTo(foot.getWorldPosition(new THREE.Vector3())))<1e-5)
+  assert.ok(Math.abs(rotation.dot(foot.getWorldQuaternion(new THREE.Quaternion())))>1-1e-6)
+})
+
+test('indoor flames stay above the burner and below the ceiling from tilted cameras',()=>{
+  const effects=new FireEffects(),camera=new THREE.PerspectiveCamera()
+  camera.position.set(2,5,3);camera.lookAt(0,0,0);camera.updateMatrixWorld(true)
+  const bounds={width:.5,depth:.65,height:.8},matrix=new THREE.Matrix4()
+  for(const seconds of [0,4.2,31]){
+    effects.update(seconds,100,8,'微风',camera,1,true,bounds)
+    const flame=effects.group.children[0]
+    assert.equal(effects.group.children[1].visible,false)
+    for(let i=0;i<flame.count;i++){
+      flame.getMatrixAt(i,matrix)
+      for(const x of [-.5,.5])for(const y of [-.5,.5]){
+        const corner=new THREE.Vector3(x,y,0).applyMatrix4(matrix)
+        assert.ok(Math.abs(corner.x)<=bounds.width/2+1e-6&&Math.abs(corner.z)<=bounds.depth/2+1e-6)
+        assert.ok(corner.y>=0&&corner.y<=bounds.height+1e-6)
+      }
+    }
+  }
+})
+
+test('smoke remains beneath the ceiling and replay effects use exact historical time',()=>{
+  const smoke=new IndoorSmoke(2.8,3.2,7),matrix=new THREE.Matrix4()
+  for(const density of [.01,.5,1]){
+    smoke.update(density,45);smoke.step(80)
+    for(let i=0;i<smoke.mesh.count;i++){
+      smoke.mesh.getMatrixAt(i,matrix)
+      const p=new THREE.Vector3(),s=new THREE.Vector3();matrix.decompose(p,new THREE.Quaternion(),s)
+      assert.ok(p.y+s.y<=2.42+1e-6&&p.y-s.y>=1.1)
+    }
+  }
+  const clock=new VisualClock()
+  assert.equal(clock.at(5,true,1000),5);assert.equal(clock.at(5,true,1200),5.2)
+  assert.equal(clock.at(5,true,6000),5.5);assert.equal(clock.at(5,false,6100),5)
+  assert.equal(clock.at(2,false,6200),2)
+})
+
+test('fallback robot keeps a compact footprint when detailed assets are unavailable',()=>{
+  const bounds=new THREE.Box3().setFromObject(createPatrolRobot()),size=bounds.getSize(new THREE.Vector3())
+  assert.ok(size.x<=.72&&size.z<=1.08&&size.y<=1.2)
+})
+
+const {ResidentialDoor}=await load('residentialDoor')
+const {createStreet}=await load('communityModels')
+const {ROAD_SURFACE_Y}=await load('roadSurface')
+const {fitVehicleModel,poseVehicleWheels,poseAmbulanceRearDoors}=await load('vehicleModel')
+const {createGasValve}=await load('gasValve')
+const {createStretcher,poseStretcher}=await load('stretcherModel')
+const {routeHeading}=await load('routeHeading')
+const {RescueVisuals}=await load('rescueVisuals')
+const {roadJunctions,createJunctionPatch,alignRoadTexture}=await load('roadJunctions')
+
+test('shared road endpoints fill outer turn gaps without inventing crossing nodes',()=>{
+  const road=(id,start,end)=>({id,start,end,width_meters:4,status:'open',risk_score:0,name:id})
+  const a=road('west',{x:40,y:50},{x:50,y:50}),b=road('south',{x:50,y:50},{x:50,y:60})
+  const {patches,cuts}=roadJunctions([a,b])
+  assert.equal(patches.length,1)
+  const patch=createJunctionPatch(patches[0],new THREE.MeshBasicMaterial())
+  patch.updateMatrixWorld(true)
+  const ray=new THREE.Raycaster(new THREE.Vector3(.7,2,-.7),new THREE.Vector3(0,-1,0))
+  assert.ok(ray.intersectObject(patch).length>0,'The outer elbow gap must have an actual upward-facing surface')
+  assert.ok(cuts.get('west').end>=2&&cuts.get('south').start>=2)
+  assert.equal(roadJunctions([a,road('cross',{x:45,y:40},{x:45,y:60})]).patches.length,0)
+  assert.equal(roadJunctions([{...a,end:{...a.end,id:'upper'}},{...b,start:{...b.start,id:'lower'}}]).patches.length,0,'Distinct frozen nodes at one coordinate must not be joined visually')
+})
+
+test('asphalt UVs agree at the same world point across rotated road pieces',()=>{
+  const a=new THREE.Mesh(new THREE.PlaneGeometry(4,10)),b=new THREE.Mesh(new THREE.PlaneGeometry(10,4))
+  a.rotation.x=b.rotation.x=-Math.PI/2;b.rotation.z=Math.PI/2
+  a.position.set(3,.008,5);b.position.copy(a.position)
+  for(const mesh of [a,b]){
+    alignRoadTexture(mesh)
+    const p=new THREE.Vector3().fromBufferAttribute(mesh.geometry.attributes.position,0).applyMatrix4(mesh.matrixWorld)
+    const uv=mesh.geometry.attributes.uv
+    assert.ok(Math.abs(uv.getX(0)-p.x/3)<1e-6&&Math.abs(uv.getY(0)-p.z/3)<1e-6)
+  }
+})
+
+test('acute junctions reserve curb clearance and narrow alleys have no centre line',()=>{
+  const edges=[{id:'a',start:{x:40,y:50},end:{x:50,y:50},width_meters:4},
+    {id:'b',start:{x:50,y:50},end:{x:40,y:51},width_meters:4}]
+  const cuts=roadJunctions(edges).cuts
+  assert.ok(cuts.get('a').end>10,'A very acute junction must not retain a curb across the other road')
+  const street=createStreet(10,1.2,undefined,{start:2,end:2})
+  const marking=street.children.find(o=>o.isInstancedMesh&&o.geometry.parameters.depth===1.5)
+  assert.equal(marking.count,0)
+  const roads=new RoadVisuals()
+  roads.update([{...edges[0],end:edges[0].start,status:'open',risk_score:0,name:'empty'}],()=> '')
+  assert.equal(roads.meshes.size,0)
+  roads.dispose()
+})
+
+test('detailed doors seal the transom and park both handles outside the frozen aperture',()=>{
+  const door=new ResidentialDoor(.9,.28,.1)
+  door.setOpen(false);door.frame.updateMatrixWorld(true)
+  const header=new THREE.Raycaster(new THREE.Vector3(0,2.33,1),new THREE.Vector3(0,0,-1))
+  assert.ok(header.intersectObject(door.frame,true).length>0,'A closed compartment must not have an unmodelled hole above its frame')
+  door.setOpen(true);door.frame.updateMatrixWorld(true)
+  assert.ok(new THREE.Box3().setFromObject(door.leaf).max.x<-.45)
+  const opening=new THREE.Raycaster(new THREE.Vector3(0,1,1),new THREE.Vector3(0,0,-1))
+  assert.equal(opening.intersectObject(door.frame,true).length,0,'The declared doorway width must stay clear')
+  door.setOpen(false);door.step(.1,true);assert.ok(door.leaf.rotation.y>0&&door.leaf.rotation.y<Math.PI/2)
+  door.step(0,false);assert.equal(door.leaf.rotation.y,0,'Paused/history frames settle directly to authority')
+  door.setOpen(true);assert.equal(door.leaf.rotation.y,Math.PI/2,'An accepted opening must not obstruct a person already allowed through')
+})
+
+test('narrow streets and risk geometry preserve the configured physical width',()=>{
+  const street=createStreet(12,1.2)
+  const bounds=new THREE.Box3().setFromObject(street)
+  assert.ok(bounds.max.x-bounds.min.x<=1.2+1e-6)
+  const surface=street.children[0]
+  assert.ok(Math.abs(surface.position.y+surface.geometry.parameters.height/2-ROAD_SURFACE_Y)<1e-6)
+  const roads=new RoadVisuals()
+  roads.update([{id:'narrow',name:'窄巷',start:{x:0,y:0},end:{x:0,y:12},width_meters:1.2,status:'open',risk_score:0}],()=> '')
+  assert.ok(roads.meshes.get('narrow').geometry.parameters.width<=1.2)
+  assert.ok(roads.meshes.get('narrow').position.y<.05,'Risk projections must not float at ankle height')
+  roads.dispose()
+})
+
+test('vehicle fitting faces the authored front toward motion and wheels do not change the root',()=>{
+  const model=new THREE.Group();model.position.set(3,0,8)
+  const body=new THREE.Mesh(new THREE.BoxGeometry(1.2,1,3));body.position.y=.8;model.add(body)
+  for(const front of [true,false])for(const side of [-1,1]){
+    const wheel=new THREE.Mesh(new THREE.BoxGeometry(.1,.6,.6));wheel.name='wheel-'+(front?'front':'back')+'-'+side
+    wheel.position.set(side*.55,.3,front?.9:-.9);model.add(wheel)
+  }
+  const wheels=fitVehicleModel(model,6.2,2.45),bounds=new THREE.Box3().setFromObject(model),size=bounds.getSize(new THREE.Vector3())
+  assert.ok(size.z<=6.2+1e-6&&size.x<=2.45+1e-6&&Math.abs(bounds.min.y)<1e-6)
+  assert.ok(Math.abs(bounds.getCenter(new THREE.Vector3()).x)<1e-6&&Math.abs(bounds.getCenter(new THREE.Vector3()).z)<1e-6)
+  const front=wheels.find(w=>w.front).object.getWorldPosition(new THREE.Vector3()),back=wheels.find(w=>!w.front).object.getWorldPosition(new THREE.Vector3())
+  assert.ok(front.z<back.z,'The vehicle must drive forwards, not tail first')
+  const rootRotation=model.quaternion.clone(),position=model.position.clone()
+  poseVehicleWheels(wheels,.8,.2)
+  assert.ok(wheels.every(w=>w.object.userData.wheelRoll>0))
+  assert.ok(model.position.equals(position)&&model.quaternion.equals(rootRotation))
+  assert.throws(()=>fitVehicleModel(new THREE.Group(),6.2,2.45),/有效三维尺寸/)
+})
+
+test('packaged ambulance rear leaves open from their own hinges during boarding',async()=>{
+  const glb=await readFile(new URL('../public/assets/kenney-car-kit/ambulance.glb',import.meta.url))
+  const scene=JSON.parse(glb.subarray(20,20+glb.readUInt32LE(12)).toString('utf8'))
+  const rear=scene.nodes.filter(node=>node.name==='door-left'||node.name==='door-right')
+  assert.equal(rear.length,2,'The delivered ambulance asset must have two separate rear leaves')
+  const model=new THREE.Group()
+  for(const node of rear){const leaf=new THREE.Group();leaf.name=node.name;model.add(leaf)}
+  assert.ok(poseAmbulanceRearDoors(model,1))
+  assert.ok(model.getObjectByName('door-left').rotation.y<0)
+  assert.ok(model.getObjectByName('door-right').rotation.y>0)
+  poseAmbulanceRearDoors(model,0)
+  assert.ok(Math.abs(model.getObjectByName('door-left').rotation.y)<1e-8)
+  assert.ok(Math.abs(model.getObjectByName('door-right').rotation.y)<1e-8)
+})
+
+test('gas hardware stays inside the counter depth and stops below the hood',()=>{
+  for(const depth of [.224,.64,.8]){
+    const valve=createGasValve(depth),bounds=new THREE.Box3().setFromObject(valve.group)
+    assert.ok(bounds.min.z>=-depth/2-1e-6&&bounds.max.z<=depth/2+1e-6)
+    assert.ok(bounds.max.y<.36,'A pipe must not continue into the hood above the valve')
+    assert.equal(valve.handle.name,'gas-isolation-lever')
+  }
+})
+
+test('stretcher crew, gait and equipment fit the route profile without moving its root',()=>{
+  const root=createStretcher();root.position.y=.014
+  const position=root.position.clone(),rotation=root.quaternion.clone()
+  for(const seconds of [0,.2,.6,1,3]){
+    poseStretcher(root,.08,seconds,true)
+    const bounds=new THREE.Box3().setFromObject(root)
+    assert.ok(bounds.min.x>=-.4&&bounds.max.x<=.4,'Equipment must fit an 0.8 m assembly connector')
+    assert.ok(bounds.min.z>=-2&&bounds.max.z<=2,'Walking feet are part of the crew envelope')
+    // A rotated wheel's bounding box encloses empty corners below its circular
+    // tread. Inspect actual surface vertices rather than that loose box.
+    let ground=Infinity
+    root.traverse(object=>{
+      const vertices=object.geometry?.attributes.position
+      if(vertices)for(let index=0;index<vertices.count;index++)ground=Math.min(ground,new THREE.Vector3().fromBufferAttribute(vertices,index).applyMatrix4(object.matrixWorld).y)
+    })
+    assert.ok(ground>=-1e-6,`Castors and rescuers stand on the same ground: ${ground}`)
+    assert.ok(root.position.equals(position)&&root.quaternion.equals(rotation))
+    for(const helper of root.userData.helpers){
+      assert.equal(helper.userData.limbs[0].rotation.x,helper.userData.stretcherEnd*.5)
+      assert.equal(helper.userData.limbs[2].rotation.x,helper.userData.stretcherEnd*.5)
+    }
+  }
+  assert.ok(root.userData.wheels.every(wheel=>wheel.userData.roll!==0))
+  for(const name of ['restraint-strap','strap-buckle','raised-side-rail','pillow'])assert.ok(root.getObjectByName(name))
+})
+
+test('historical heading follows the confirmed segment and ignores disconnected routes',()=>{
+  const route=[new THREE.Vector3(0,0,0),new THREE.Vector3(10,0,0),new THREE.Vector3(10,0,10)]
+  assert.equal(routeHeading(new THREE.Vector3(5,0,0),route),-Math.PI/2)
+  assert.equal(routeHeading(new THREE.Vector3(10,0,5),route),-Math.PI)
+  assert.equal(routeHeading(new THREE.Vector3(8,0,6),route),undefined)
+  assert.equal(routeHeading(new THREE.Vector3(),[new THREE.Vector3(),new THREE.Vector3()]),undefined)
+})
+
+test('pickup crew meets the waiting resident and historical views use the actual crew position',()=>{
+  const visuals=new RescueVisuals(()=>{})
+  const action={action_id:'pickup-1',action:'load',resident_id:'r1',starts_at_seconds:0,approach_seconds:4,duration_seconds:16,remaining_seconds:14,
+    pickup_points:[{x:28,y:25},{x:25,y:25}],reason:'担架组正前往集合点接人'}
+  const vehicle={id:'a1',x:25,y:25,service:action}
+  const resident={id:'r1',label:'居民1',x:28,y:25,medical_transfer:{phase:'pickup',vehicle_id:'a1'}}
+  visuals.update([vehicle],[resident],2,false)
+  const root=visuals.layer.getObjectByName('medical-stretcher-team')
+  assert.ok(Math.abs(root.position.x+23.5)<1e-6)
+  assert.equal(root.rotation.y,-Math.PI/2)
+  assert.equal(root.userData.patient.visible,false,'The waiting resident is not simultaneously shown on an empty approaching stretcher')
+  assert.equal(root.userData.selection.x,26.5,'Inspecting the crew must locate the crew, not its future destination')
+  visuals.update([{...vehicle,service:{...action,action_id:'pickup-2'}}],[{...resident,x:27,medical_transfer:{phase:'loading',vehicle_id:'a1'}}],6,false)
+  assert.equal(root.userData.patient.visible,true)
+  assert.equal(root.position.x,-23)
+  visuals.update([{...vehicle,service:null}],[resident],16,false)
+  assert.equal(root.visible,false)
+  visuals.dispose()
+})
+
+test('confirmed boarding folds the carriage while helpers remain beside the vehicle',()=>{
+  const visuals=new RescueVisuals(()=>{})
+  const action={action_id:'boarding-1',action:'load',resident_id:'r1',starts_at_seconds:0,approach_seconds:4,
+    duration_seconds:16,ends_at_seconds:16,remaining_seconds:4,
+    pickup_points:[{x:30,y:25},{x:28,y:25}],loading_position:{x:28,y:25},boarding_position:{x:25,y:25},reason:'车边装载'}
+  const vehicle={id:'a1',x:25,y:25,service:action}
+  const resident={id:'r1',label:'居民1',x:26.5,y:25,medical_transfer:{phase:'boarding',vehicle_id:'a1'}}
+  visuals.update([vehicle],[resident],12,false)
+  const root=visuals.layer.getObjectByName('medical-stretcher-team')
+  assert.equal(root.userData.boarding,.5)
+  assert.ok(root.userData.carriage.position.length()>1)
+  assert.ok(root.userData.helpers.every(helper=>helper.parent===root))
+  visuals.step(.016,false,12,true)
+  const leg=root.getObjectByName('folding-leg')
+  assert.ok(leg.scale.y<1,'The confirmed boarding phase must physically fold the stretcher legs')
+  visuals.dispose()
+})
+
+test('water effects freeze at historical drill time and stopped actions release their meshes',()=>{
+  const visuals=new RescueVisuals(()=>{}),action={action_id:'spray-1',action:'spray',remaining_seconds:30,target:{x:40,y:25},water_source:{x:24,y:25}}
+  visuals.update([{id:'f1',x:25,y:25,service:action}],[],12,false)
+  visuals.step(.016,false,200,true)
+  const drops=visuals.layer.children[0].children.find(object=>object.isInstancedMesh),matrix=new THREE.Matrix4()
+  drops.getMatrixAt(0,matrix);const frozen=matrix.clone()
+  visuals.step(.016,false,1000,true);drops.getMatrixAt(0,matrix)
+  assert.ok(matrix.equals(frozen),'Paused water must not advance with wall time or reset to its start')
+  let disposed=false;drops.geometry.addEventListener('dispose',()=>{disposed=true})
+  visuals.update([{id:'f1',x:25,y:25,service:null}],[],13,false)
+  assert.equal(visuals.layer.children.length,0)
+  assert.equal(disposed,true)
+  visuals.dispose()
 })

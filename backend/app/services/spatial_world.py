@@ -5,7 +5,7 @@ No surveyed building or life-safety accuracy is implied by this example layout.
 from copy import deepcopy
 import math
 from app.services.navigation_geometry import building_obstacles, outdoor_connector
-from app.services.indoor_layout import kitchen_rooms
+from app.services.indoor_layout import kitchen_rooms, CORRIDOR_CLEAR_WIDTH
 
 
 def add_spatial_layout(world: dict, home: dict) -> dict:
@@ -77,7 +77,7 @@ def add_spatial_layout(world: dict, home: dict) -> dict:
         for floor in range(1, floors+1):
             landing = node(f"{prefix}:stair:{floor}", f"{name} · {floor}层楼梯", x-w*.3, y+(.2*d if floor % 2 else -.2*d), floor_height(floor), "stairs", floor)
             hall = node(f"{prefix}:hall:{floor}", f"{name} · {floor}层走廊", x, y, floor_height(floor), "corridor", floor)
-            link(hall, landing, "corridor", 1.5)
+            link(hall, landing, "corridor", CORRIDOR_CLEAR_WIDTH)
             link(landing, f"{prefix}:stair:{floor-1}", "stairs", stair_width)
             if room_geometry:
                 for side in ('east', 'west'):
@@ -88,7 +88,7 @@ def add_spatial_layout(world: dict, home: dict) -> dict:
                     portal = node(f'{room_id}:entry', f'{name} · {floor}层厨房门前走廊', geometry['x'], y, floor_height(floor), 'corridor', floor)
                     nodes[-1].update(width=.9, depth=max(.3, d*.1))
                     link(room_id, portal, 'room', .9)
-                    link(portal, hall, 'corridor', 1.5)
+                    link(portal, hall, 'corridor', CORRIDOR_CLEAR_WIDTH)
         room_occupants = {}
         for index, person in enumerate(p for p in world["residents"] if p.get("building_id") == active_building):
             floor = max(1, min(floors, person["floor"]))
@@ -107,7 +107,7 @@ def add_spatial_layout(world: dict, home: dict) -> dict:
             px, py = x + w*(.12+.2*((index//floors) % 3)/2), y + (1 if index % 2 else -1)*d*.32
             room = node(f"room:{person['id']}", f"{name} · {floor}层 {person['label']} 房间", px, py, floor_height(floor), "room", floor)
             link(room, f"{prefix}:hall:{floor}", "room", .9)
-            person.update(floor=floor, current_floor=float(floor), x=px, y=py, height=floor_height(floor), start_node_id=room)
+            person.update(floor=floor, current_floor=float(floor), x=px, y=py, height=floor_height(floor), start_node_id=room, start_zone_id=room)
     active_building = None
     entries = {b.get("id"): b.get("entry") for b in buildings}
     for task in world.get("tasks", []):

@@ -28,6 +28,13 @@ def create_lifespan(settings: Settings):
             yield
             return
 
+        # Upgrade only pristine built-in draft maps so existing installs gain
+        # usable kitchen geometry without altering user edits or frozen drills.
+        from app.core.database import SessionLocal
+        from app.services.demo_community import repair_all_builtin_demo_communities
+        with SessionLocal() as session:
+            repair_all_builtin_demo_communities(session)
+
         from app.services.agent_workflow import serve as serve_agent
         from app.services.engine_scheduler import serve as serve_engine
 

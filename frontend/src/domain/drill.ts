@@ -75,6 +75,7 @@ export interface SpatialPreview {
 
 export interface Vehicle {
   id: string; name: string; kind: 'firetruck' | 'ambulance'; x: number; y: number
+  heading_radians?: number
   state: 'idle' | 'moving' | 'blocked' | 'arrived' | 'yielding'; reason: string
   minimum_width: number; target_name: string; target_node_id: string | null
   mission_id: string | null; current_edge_id: string | null
@@ -92,6 +93,7 @@ export interface RescueAction {
   duration_seconds: number; remaining_seconds: number; starts_at_seconds: number; ends_at_seconds: number
   resident_id?: string; resident_label?: string; pickup_points?: Array<{ x: number; y: number }>
   approach_seconds?: number
+  loading_position?: {x:number;y:number}; boarding_position?: {x:number;y:number}
   position?: { x: number; y: number }
   target?: { x: number; y: number }; water_source?: { id: string; name: string; x: number; y: number }
 }

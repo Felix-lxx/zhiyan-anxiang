@@ -1,10 +1,11 @@
 import * as THREE from 'three'
+import { ROAD_RISK_Y, roadWidth } from './roadSurface'
 
 export interface VisualRoad {
   id: string
   name: string
-  start: { x: number; y: number }
-  end: { x: number; y: number }
+  start: { x: number; y: number; id?:string }
+  end: { x: number; y: number; id?:string }
   width_meters: number
   status: 'open' | 'restricted' | 'blocked'
   risk_score: number
@@ -20,6 +21,7 @@ export class RoadVisuals {
   private topology = ''
 
   update(edges: VisualRoad[], detail: (edge: VisualRoad) => string): boolean {
+    edges=edges.filter(edge=>[edge.start.x,edge.start.y,edge.end.x,edge.end.y].every(Number.isFinite)&&Math.hypot(edge.end.x-edge.start.x,edge.end.y-edge.start.y)>.001)
     const topology = JSON.stringify(edges.map(edge => [edge.id, edge.start.x, edge.start.y, edge.end.x, edge.end.y, edge.width_meters]))
     const rebuilt = topology !== this.topology
     if (rebuilt) {
@@ -27,11 +29,12 @@ export class RoadVisuals {
       this.topology = topology
       if (edges.length) {
         this.heat = new THREE.InstancedMesh(
-          new THREE.BoxGeometry(1, .05, 1),
+          new THREE.BoxGeometry(1, .004, 1),
           new THREE.MeshBasicMaterial({ transparent: true, opacity: .36, depthWrite: false, blending: THREE.AdditiveBlending }),
           edges.length,
         )
         this.heat.frustumCulled = false
+        this.heat.renderOrder=9
         this.group.add(this.heat)
       }
     }
@@ -45,14 +48,15 @@ export class RoadVisuals {
       let mesh = this.meshes.get(edge.id)
       if (!mesh) {
         const length = Math.hypot(edge.end.x - edge.start.x, edge.end.y - edge.start.y)
-        const width = Math.max(1.8, edge.width_meters * .72)
-        mesh = new THREE.Mesh(new THREE.BoxGeometry(width, .16, length), new THREE.MeshStandardMaterial({ roughness: .76, metalness: .08, transparent: true, depthWrite: false }))
-        mesh.position.set((edge.start.x + edge.end.x) / 2 - 50, .22, (edge.start.y + edge.end.y) / 2 - 50)
+        const width = roadWidth(edge.width_meters) * .92
+        mesh = new THREE.Mesh(new THREE.BoxGeometry(width, .008, length), new THREE.MeshStandardMaterial({ roughness: .76, metalness: .08, transparent: true, depthWrite: false }))
+        mesh.position.set((edge.start.x + edge.end.x) / 2 - 50, ROAD_RISK_Y, (edge.start.y + edge.end.y) / 2 - 50)
         mesh.rotation.y = Math.atan2(edge.end.x - edge.start.x, edge.end.y - edge.start.y)
         mesh.receiveShadow = true
+        mesh.renderOrder=10+index
         this.meshes.set(edge.id, mesh)
         this.group.add(mesh)
-        transform.position.copy(mesh.position); transform.position.y = .36
+        transform.position.copy(mesh.position); transform.position.y = ROAD_RISK_Y+.006
         transform.rotation.copy(mesh.rotation); transform.scale.set(width * .28, 1, Math.max(.2, length * .96)); transform.updateMatrix()
         this.heat?.setMatrixAt(index, transform.matrix)
       }

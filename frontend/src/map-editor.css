@@ -495,6 +495,42 @@
 .map-editor .map-object-form :is(input, textarea, select) { min-height: 44px; }
 .map-editor .map-marker { box-shadow: 0 8px 18px rgb(21 45 39 / 14%); }
 @media (max-width: 900px) {
+  .map-editor .map-workbench { grid-template-columns: minmax(0, 1fr); }
   .map-editor .map-stage { min-height: 34rem; }
   .map-editor .map-inspector { position: static; max-height: none; }
+}
+
+/* Keep the final responsive rules after the desktop board definition. */
+.map-editor :is(.map-heading__note,.map-stage__caption,.map-check-button,.text-action,.map-layer-tabs button,.map-toolrail button,.map-toolrail select) { font-size:14px; }
+.map-editor .map-marker { font-size:14px; }
+.map-editor .map-marker :is(span,small),.map-editor .road-node { font-size:14px; }
+.map-editor .map-diagnostic-pin { font-size:14px; }
+@media (max-width: 620px) {
+  .map-editor .workspace-content { width:calc(100% - 24px); }
+  .map-editor .map-stage__topline { flex-wrap:wrap; gap:8px; }
+  .map-editor .map-toolrail { display:flex; flex-wrap:wrap; gap:8px; }
+  .map-editor .map-toolrail :is(button,select) { min-height:44px; max-width:100%; }
+  .map-editor .map-toolrail select { flex:1 1 150px; min-width:0; }
+  .map-editor .map-canvas { min-height:520px; }
+  .map-editor .map-inspector { width:100%; box-sizing:border-box; }
+  .map-editor .map-layer-tabs { display:flex; flex-wrap:wrap; }
+  .map-editor .map-marker,
+  .map-editor .road-node {
+    display:grid;
+    place-items:center;
+    width:44px;
+    height:44px;
+    max-width:none;
+    padding:0;
+    border-radius:50%;
+    text-align:center;
+  }
+  .map-editor .map-marker :is(span,strong),
+  .map-editor .road-node :is(span,strong) { display:none; }
+  .map-editor .map-marker::after,
+  .map-editor .road-node::after {
+    content:attr(data-short);
+    font-size:14px;
+    font-weight:700;
+  }
 }

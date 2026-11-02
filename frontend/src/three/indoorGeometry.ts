@@ -109,3 +109,18 @@ export function floorContainsHeight(height: number, floorHeight: number, below: 
   // Include the complete downward stair flight; no disappearance halfway down.
   return height >= below - .05 && height <= floorHeight + .05
 }
+
+/** A room inspection camera fits real equipment height, including narrow canvases. */
+export function kitchenCamera(room: FloorRect & {height:number}, aspect:number) {
+  const target=new THREE.Vector3(room.x,room.height+1.05,room.y)
+  const direction=new THREE.Vector3(8,9,13).normalize()
+  const right=new THREE.Vector3(direction.z,0,-direction.x).normalize()
+  const up=new THREE.Vector3().crossVectors(direction,right).normalize()
+  const tangent=Math.tan(24*Math.PI/180)
+  let distance=3.5
+  for(const x of [-room.width/2,room.width/2])for(const y of [-1.05,1.65])for(const z of [-room.depth/2,room.depth/2]){
+    const corner=new THREE.Vector3(x,y,z)
+    distance=Math.max(distance,corner.dot(direction)+1.1*Math.max(Math.abs(corner.dot(right))/(tangent*Math.max(.1,aspect)),Math.abs(corner.dot(up))/tangent))
+  }
+  return {target,position:target.clone().addScaledVector(direction,distance)}
+}
