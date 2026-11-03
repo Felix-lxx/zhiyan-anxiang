@@ -229,6 +229,8 @@ docs/
 
 ## 验证与持续集成
 
+2026-11-03 发布检查：后端全量 246 项、前端 62 项、类型检查与生产构建通过，`pip check` 未发现依赖冲突。页面、语音协议及真实 API 的验证范围见[最新升级记录](docs/2026-11-03-经验适用性与语音现场升级.md)。
+
 ```powershell
 # 后端：在 backend 目录执行
 $env:DATABASE_URL='sqlite+pysqlite:///./zhiyan-test.db'
