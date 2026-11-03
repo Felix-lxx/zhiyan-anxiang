@@ -52,6 +52,7 @@ class ChatRequest(BaseModel):
     history: list[Turn] = Field(default_factory=list, max_length=12)
     at_seconds: int | None = Field(default=None, ge=0)
     use_model: bool = False
+    semantic_retrieval: bool = False
     selection_context: SelectionContext | None = None
 
     @field_validator("history")
@@ -91,9 +92,42 @@ def chat(drill_id: str, payload: ChatRequest, identity: AuthenticatedIdentity = 
     if len(question) < 10 and any(w in question for w in ("为什么", "怎么办", "然后呢", "继续")):
         previous = next((t.content for t in reversed(payload.history) if t.role == "user"), "")
         question = previous + "；" + question
+    from app.services.agent_assistant import add_plan_context
+    plan_explanation = add_plan_context(session, data, context, identity.username, question)
     answer, actions = offline_reply(question, context)
+    if plan_explanation:
+        answer = plan_explanation if answer.startswith('当前是离线场景解读') else plan_explanation + '\n\n' + answer
+        plan_action = next((action for action in actions if action['kind'] == 'plan'), None)
+        if plan_action is None:
+            plan_action = {'kind': 'plan', 'label': '核对目标计划与修订'}
+            actions.insert(0, plan_action)
+        plan_action['plan_id'] = context['agent_plans'][0]['id']
+    from app.services.knowledge import retrieve
+    from app.services.knowledge_applicability import situation
+    parameters = data['simulation'].get('world', {}).get('parameters', {})
+    scenario = 'kitchen_fire' if parameters.get('fire_source_type') == 'kitchen' else 'charging_shed'
+    knowledge = retrieve(session, identity.username, question, community_id=scene.community_id,
+                         scenario=scenario, drill_id=drill.id, semantic=payload.semantic_retrieval, situation=situation(data))
+    session.commit()
+    context['knowledge'] = knowledge
+    for hit in knowledge['hits']:
+        context['sources'].append({'id': hit['id'], 'title': hit['title'], 'detail': hit['content'],
+            'kind': 'knowledge', 'version': hit['version'], 'anchor': hit['anchor'],
+            'source_url': hit['source_url'], 'publisher': hit['publisher'],
+            'category': hit['category'], 'content_hash': hit['content_hash']})
+        context['sources'][-1].update(document_id=hit['document_id'], version_id=hit['version_id'])
+        if hit.get('applicability'):
+            context['sources'][-1]['applicability'] = hit['applicability']
+    if knowledge['hits']:
+        answer += '\n\n相关资料（与当前现场事实分别核对）：\n' + '\n'.join(
+            f"[{hit['id']}] {hit['title']}：{hit['content'][:200]}" +
+            (f"（{hit['applicability']['label']}：{hit['applicability']['notice']}）" if hit.get('applicability') else '')
+            for hit in knowledge['hits'][:2])
+    else:
+        answer += '\n\n本次未检索到适用的发布资料；可在“知识与预案”中补充社区资料。'
     settings = get_settings()
     status = provider_status(settings)
+    offline_answer = answer
     mode, notice = "offline", "离线规则解读，未调用大模型。"
     if payload.use_model and status["configured"]:
         with _guard:
@@ -106,8 +140,14 @@ def chat(drill_id: str, payload: ChatRequest, identity: AuthenticatedIdentity = 
                 raise HTTPException(429, "模型服务繁忙，请稍后重试或使用离线解读。")
             try:
                 answer = call_model(settings, payload.message, [t.model_dump() for t in payload.history], context)
+                import re
+                cited = set(re.findall(r'\[[SK]\d+\]', answer))
+                known = {f"[{source['id']}]" for source in context['sources']}
+                if cited - known:
+                    raise ValueError('模型引用了本轮不存在的依据')
                 mode, notice = "model", "模型基于本轮快照生成，可能有误；请核对下方数据依据。"
             except Exception as error:
+                answer = offline_answer
                 # Never expose upstream request URLs, API keys or provider error bodies.
                 logger.warning("Scene assistant model request failed: %s", type(error).__name__)
                 notice = "模型暂不可用，已降级为离线解读。请管理员检查模型地址、密钥和服务日志。"
@@ -122,4 +162,5 @@ def chat(drill_id: str, payload: ChatRequest, identity: AuthenticatedIdentity = 
             "answer": answer, "notice": notice, "disclaimer": DISCLAIMER,
             "context": {k: context[k] for k in ("drill_id", "scene_name", "drill_name", "at_seconds", "historical", "counts", "selection")},
             "sources": context["sources"], "actions": actions,
+            'knowledge': knowledge,
             "suggestions": ["现在下一步应该做什么？", "谁还没有到集合点？", "机器人为什么没动？", "道路拥堵应该怎么处理？", "如何从关键决定前重做？"]}

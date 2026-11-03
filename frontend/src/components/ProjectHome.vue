@@ -7,6 +7,7 @@ import CommunityPlan from './CommunityPlan.vue'
 import CommunityReadiness from './CommunityReadiness.vue'
 import TrainingHomeActions from './TrainingHomeActions.vue'
 import AccountCenter from './AccountCenter.vue'
+import KnowledgeCenter from './KnowledgeCenter.vue'
 import { accountProfile } from '../api/account'
 import { createApiClient } from '../api/client'
 import type { Community, Scene } from '../domain/models'
@@ -147,7 +148,14 @@ onMounted(load)
 <main id="main-content" class="atlas-home">
  <aside class="atlas-sidebar">
   <button class="atlas-sidebar__brand" title="智演安巷——面向老旧小区消防治理的数字孪生与智能决策平台" @click="navigate('home')"><AppIcon name="building" :size="44"/><strong>智演安巷</strong><small>消防治理智能决策平台</small></button>
-  <nav aria-label="工作空间导航"><button :aria-current="section==='home'?'page':undefined" @click="navigate('home')"><AppIcon name="compass"/>演练首页</button><button @click="prepare"><AppIcon name="tasks"/>场景准备</button><button :aria-current="section==='history'?'page':undefined" @click="navigate('history')"><AppIcon name="clock"/>复盘记录</button><button :aria-current="section==='communities'?'page':undefined" @click="navigate('communities')"><AppIcon name="building"/>社区管理</button><button :aria-current="section==='guide'?'page':undefined" @click="navigate('guide')"><AppIcon name="help"/>使用说明</button></nav>
+  <nav aria-label="工作空间导航">
+    <button :aria-current="section==='home'?'page':undefined" @click="navigate('home')"><AppIcon name="compass"/>演练首页</button>
+    <button @click="prepare"><AppIcon name="tasks"/>场景准备</button>
+    <button :aria-current="section==='history'?'page':undefined" @click="navigate('history')"><AppIcon name="clock"/>复盘记录</button>
+    <button :aria-current="section==='knowledge'?'page':undefined" @click="navigate('knowledge')"><AppIcon name="book"/>知识与预案</button>
+    <button :aria-current="section==='communities'?'page':undefined" @click="navigate('communities')"><AppIcon name="building"/>社区管理</button>
+    <button :aria-current="section==='guide'?'page':undefined" @click="navigate('guide')"><AppIcon name="help"/>使用说明</button>
+  </nav>
   <div class="atlas-sidebar__foot"><p>演练于平时<br/>平安在万家</p><button :aria-current="section==='account'?'page':undefined" @click="navigate('account')"><AppIcon name="person" :size="18"/>个人中心</button></div>
  </aside>
  <div class="atlas-home__body">
@@ -178,6 +186,7 @@ onMounted(load)
    </section>
    <div v-if="guidance&&section!=='history'" class="atlas-home__guide"><AppIcon name="help"/><p><strong>首次使用提示：</strong>建议先在「场景准备」中熟悉社区地图、人员配置和设备，再开始正式演练。</p><button @click="prepare">前往场景准备<AppIcon name="arrowRight" :size="16"/></button><button aria-label="关闭首次使用提示" @click="guidance=false"><AppIcon name="close" :size="16"/></button></div>
   </section>
+  <KnowledgeCenter v-else-if="section==='knowledge'" :api-base-url="apiBaseUrl" :access-token="accessToken"/>
   <AccountCenter v-else-if="section==='account'" :api-base-url="apiBaseUrl" :access-token="accessToken" @logout="emit('logout')"/>
   <CommunityLibrary v-else :key="section" class="atlas-library" v-bind="props" @logout="emit('logout')" @open-map="c=>emit('openMap',c)" @open-operations="c=>emit('openOperations',c)"/>
  </div>
@@ -203,8 +212,8 @@ onMounted(load)
 @media(max-width:540px){
  .atlas-home{grid-template-columns:minmax(0,1fr)}
  .atlas-sidebar{min-width:0;max-width:100%;padding-inline:8px}
- .atlas-sidebar nav{display:grid;grid-template-columns:repeat(5,minmax(0,1fr));min-width:0;gap:4px;width:100%}
- .atlas-sidebar nav button{min-width:0;padding-inline:2px;overflow-wrap:anywhere}
+ .atlas-sidebar nav{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));min-width:0;gap:4px;width:100%}
+ .atlas-sidebar nav button{min-width:0;min-height:48px;padding:8px 4px;flex-direction:row;justify-content:center;gap:6px;white-space:nowrap;font-size:14px}
  .atlas-home__bar>div{min-width:0;flex-wrap:wrap}
  .atlas-home__bar{height:auto;min-height:55px;flex-wrap:wrap;padding-block:10px}
 }

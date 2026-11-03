@@ -87,6 +87,7 @@
 .scene-assistant__compose { border-top:1px solid #335347; padding:10px 18px 14px; background:#102b27; }
 .scene-assistant__question-heading { display:flex; flex-wrap:wrap; align-items:center; justify-content:space-between; gap:4px 12px; margin-bottom:8px; font-size:var(--ui-meta-size,14px); color:#c1d4be; }
 .scene-assistant__question-heading button { border:0; padding:4px 0; min-height:36px; background:transparent; color:#d8eac9; font-size:inherit; }
+.scene-assistant__question-heading .scene-assistant__goal-handoff {min-height:44px;display:inline-flex;align-items:center;gap:6px;}
 .scene-assistant__compose form { background:#0d241f; border:1px solid #65836a; border-radius:10px; padding:10px 12px; }
 .scene-assistant textarea { display:block; width:100%; min-height:48px; height:48px; max-height:80px; resize:vertical; padding:0; background:transparent; border:0; color:#edf5e7; font:inherit; caret-color:#c2dfa6; }
 .scene-assistant textarea::placeholder { color:#abc1ac; }

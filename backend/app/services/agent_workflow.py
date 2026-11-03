@@ -25,6 +25,7 @@ from app.application.drill_commands import CommandOrigin, CommandRejected
 from app.bootstrap.commands import command_application
 from app.services import agent_claims
 from app.services.agent_task_graph import compile_graph, distinct_candidates, graph_view, validate_graph
+from app.services.agent_contract import goal_constraints, rank_candidate
 
 ACTIVE = {"awaiting_approval", "executing", "waiting", "needs_review"}
 OPERATING = {"executing", "waiting"}
@@ -70,13 +71,18 @@ def resolve_scope(data, request, interpretation):
     if not building and not request.resident_ids and re.search(r"[\d一二三四五六七八九十]+\s*号?楼", request.goal):
         raise HTTPException(422, "未能唯一定位目标楼栋，请在目标范围中明确选择建筑，避免误指派全部居民。")
     if building and building not in {b["id"] for b in buildings_for(data)}: raise HTTPException(422, "请选择本场建筑。")
-    selected = [p for p in people if (not request.resident_ids or p["id"] in request.resident_ids) and (not building or p.get("building_id") == building)]
+    constraints = goal_constraints(request)
+    preference = interpretation['exit_preference']
+    if preference in constraints['forbidden_exits']:
+        preference = 'balanced'
+    selected = [p for p in people if (not request.resident_ids or p["id"] in request.resident_ids) and (not building or p.get("building_id") == building)
+                and (not constraints['floors'] or p.get('floor') in constraints['floors'])]
     selected = [p for p in selected if p["status"] != "evacuated"]
     if not selected: raise HTTPException(409, "该范围内没有待撤离居民，请核对建筑或到集合点执行清点。")
     resident_buildings = sorted({p.get("building_id") for p in selected if p.get("building_id")})
-    return {"resident_ids": [p["id"] for p in selected], "building_id": building,
+    return {**constraints, "resident_ids": [p["id"] for p in selected], "building_id": building,
             "building_name": next((b["name"] for b in buildings_for(data) if b["id"] == building), "当前选定居民" if request.resident_ids else "全部待撤离居民"),
-            "priority_assist": request.priority_assist and interpretation["priority_assist"], "exit_preference": interpretation["exit_preference"],
+            "priority_assist": request.priority_assist and interpretation["priority_assist"], "exit_preference": preference,
             "robot_broadcast": request.robot_broadcast,
             # Keep the singular field for historical runs while new runs retain
             # every affected building. The robot compiler turns this into a
@@ -107,12 +113,18 @@ def build_candidates(session, drill, data, scope, run=None):
     support, resource_steps = robot_support(operations, session, drill, data, scope, run)
     preference = scope["exit_preference"]
     alternatives = allocate_exits(routes, population, data["simulation"].get("spatial_network", {}).get("edges", []), ids, preference)
+    forbidden = set(scope.get('forbidden_exits', []))
+    if forbidden:
+        allowed_exit = next(exit for exit in ('north', 'south') if exit not in forbidden)
+        alternatives = [({pid: allowed_exit for pid in ids}, {**alternatives[0][1],
+            'rule': 'path', 'description': '严格避开禁用出口；仅使用允许出口并重新核对可达性。'})]
     from app.services.agent_containment import source_door, occupied
     door = source_door(data)
     if door and door['state'] != 'closed':
         # Compare a different environmental action, even when both exit policies
         # resolve to the same route. Occupancy is checked again during execution.
-        alternatives.append((deepcopy(alternatives[1][0]), {**deepcopy(alternatives[1][1]),
+        base = alternatives[min(1, len(alternatives) - 1)]
+        alternatives.append((deepcopy(base[0]), {**deepcopy(base[1]),
             'rule': 'containment', 'description': '居民先撤离起火房间，安全条件满足后关闭房门，限制烟气向走廊交换。',
             'door_id': door['id']}))
     results = []
@@ -199,7 +211,7 @@ def build_candidates(session, drill, data, scope, run=None):
     # decisions.  More alternatives increase review time without improving
     # the plan: keep the best forecast and one materially different fallback;
     # equivalent rules remain visible in ``equivalent_rules``.
-    candidates = distinct_candidates(sorted(results, key=lambda p: (not p["can_apply"], p["metrics"]["exposed"], -p["metrics"]["arrived"], p["metrics"]["queue_seconds"])))
+    candidates = distinct_candidates(sorted(results, key=lambda p: rank_candidate(p, scope.get('objective', 'balanced'))))
     if len(candidates) <= 2:
         return candidates
     # A containment proposal is a different physical action, not a cosmetic
@@ -245,12 +257,15 @@ def relevant_changes(session, run, after):
             affected = event.payload.get("resident_id") in ids if event.event_type == "inject.resident_missing" else event.payload.get("blocked_edge_id") in used_edges
             if affected:
                 found.append(("needs_review", "路网或目标人员状态变化，请重新比较未完成部分。"))
-        elif event.event_type == 'indoor.door_changed' and event.id not in own_events and not run.steps:
-            found.append(('needs_review', '室内房门已变化，通行与烟气条件需要重新比较。'))
+        elif event.event_type == 'indoor.door_changed' and event.id not in own_events:
+            door_id = event.payload.get('door_id')
+            if door_id in used_edges or any(step.get('arguments', {}).get('door_id') == door_id for step in run.steps):
+                found.append(('needs_review', '目标路线或门控任务涉及的房门已变化，通行与烟气条件需要重新比较。'))
     return found
 
 
 def run_payload(session, run, data):
+    from app.services.agent_impact import impact_view
     ids = set(run.scope["resident_ids"])
     people = [p for p in data["simulation"]["residents"] if p["id"] in ids]
     history = list(session.scalars(select(AgentRunEvent).where(AgentRunEvent.run_id == run.id).order_by(AgentRunEvent.created_at.desc()).limit(16)))
@@ -278,11 +293,15 @@ def run_payload(session, run, data):
             "approval_guard": approval_guard,
             "updated_at_us": int((run.updated_at if run.updated_at.tzinfo else run.updated_at.replace(tzinfo=UTC)).timestamp() * 1_000_000),
             "created_at_us": int((run.created_at if run.created_at.tzinfo else run.created_at.replace(tzinfo=UTC)).timestamp() * 1_000_000),
-            "approved_revision": run.approved_revision, "selected_candidate": run.selected_candidate, "scope": run.scope,
+            "approved_revision": run.approved_revision, "selected_candidate": run.selected_candidate, "scope": {k:v for k,v in run.scope.items() if k not in {'knowledge', 'planning', 'revision_context'}},
             "candidates": run.candidates if run.status in {"awaiting_approval", "needs_review"} else [], "steps": execution["steps"],
             "execution": {key: value for key, value in execution.items() if key != "steps"},
             "planner": run.planner, "planner_notice": run.planner_notice,
-            "summary": {"total": len(people), "arrived": sum(p["status"] == "evacuated" for p in people),
+            'knowledge': run.scope.get('knowledge'),
+            'planning': run.scope.get('planning'),
+            'impact': impact_view(session, run, data),
+            'revision_context': run.scope.get('revision_context'),
+            "summary": {"total": len(people), "priority": sum(bool(p.get('vulnerable')) for p in people), "arrived": sum(p["status"] == "evacuated" for p in people),
                         "counted": sum(bool(p.get("counted")) for p in people), "assisted": sum(bool(p.get("assisted")) for p in people),
                         "exposed": sum(p.get("smoke_exposure", 0) > 5 for p in people)},
             "history": [{"id": e.id, "kind": e.kind, "message": e.message, "at_seconds": e.elapsed_seconds} for e in history],

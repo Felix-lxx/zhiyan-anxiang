@@ -1,8 +1,9 @@
 <script setup lang="ts">
 import { computed, ref, watch } from 'vue'
 import type { AgentOutcome } from '../domain/agent'
-const props=defineProps<{ outcomes:AgentOutcome[];elapsed:number }>()
-const emit=defineEmits<{ replay:[at:number] }>()
+import OutcomeExperienceAction from './OutcomeExperienceAction.vue'
+const props=defineProps<{ outcomes:AgentOutcome[];elapsed:number;apiBaseUrl?:string;accessToken?:string;runId?:string }>()
+const emit=defineEmits<{ replay:[at:number];knowledge:[id:string] }>()
 const revision=ref<number>()
 watch(()=>props.outcomes[0]?.revision,value=>{revision.value=value},{immediate:true})
 const item=computed(()=>props.outcomes.find(row=>row.revision===revision.value)??props.outcomes[0])
@@ -38,6 +39,7 @@ const signed=(value:number)=>value>0?`+${value}`:`${value}`
       </details>
       <p v-else class="agent-outcome__meta">观察期间未记录外部调度或环境变更。</p>
       <button type="button" class="agent-outcome__replay" @click="emit('replay',item.result.observed_at)">回看 {{clock(item.result.observed_at)}} 三维现场</button>
+      <OutcomeExperienceAction v-if="apiBaseUrl&&accessToken&&runId" :api-base-url="apiBaseUrl" :access-token="accessToken" :run-id="runId" :revision="item.revision" :eligible="item.population>0&&item.result.comparable&&!item.result.early_ended&&item.result.matched===item.population" @open="id=>emit('knowledge',id)"/>
     </template>
   </section>
 </template>

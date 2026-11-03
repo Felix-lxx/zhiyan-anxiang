@@ -1,5 +1,4 @@
 """Goal proposals and explicit approvals for the existing exercise command engine."""
-from copy import deepcopy
 import hashlib
 import json
 from uuid import uuid4
@@ -12,8 +11,9 @@ from app.core.database import get_db
 from app.models.agent import AgentRun
 from app.schemas.agent import GoalCreate, PlanAction
 from app.services.agent_planner import interpret_goal
-from app.services.agent_resources import completed_broadcast
-from app.services.agent_workflow import ACTIVE, OPERATING, advance_run, approve, buildings_for, build_candidates, note, relevant_changes, resolve_scope, run_payload
+from app.services.agent_contract import goal_constraints, tool_report
+from app.services.agent_tool_planning import recommend
+from app.services.agent_workflow import ACTIVE, OPERATING, advance_run, approve, buildings_for, build_candidates, note, resolve_scope, run_payload
 
 router = APIRouter(tags=["goal workflows"])
 
@@ -63,11 +63,37 @@ def create_run(drill_id: str, payload: GoalCreate, identity: AuthenticatedIdenti
     if drill.status not in {"running", "paused", "ready"}: raise HTTPException(409, "本场已结束，请新开一轮再制定计划。")
     if not any(word in payload.goal for word in ("疏散", "撤离", "分流", "护送")):
         raise HTTPException(422, "当前目标计划支持居民疏散、分流和重点护送；其他问题请使用场景对话，车辆仍从车辆调度操作。")
+    goal_constraints(payload)
+    if not payload.use_model:
+        data = operations.snapshot(session, drill)
+        interpretation, planner, notice = interpret_goal(payload.goal, buildings_for(data), False)
+        return _create_after_interpretation(session, drill_id, payload, interpretation, planner, notice, identity)
+    pause_review(session, drill, payload.pause_for_review)
+    session.commit()
     data = operations.snapshot(session, drill)
     buildings = buildings_for(data)
     session.rollback()  # No DB locks or open read transaction while waiting for a model.
     interpretation, planner, notice = interpret_goal(payload.goal, buildings, payload.use_model)
-    return _create_after_interpretation(session, drill_id, payload, interpretation, planner, notice, identity)
+    proposal = _create_after_interpretation(session, drill_id, payload, interpretation, planner, notice, identity)
+    if not payload.use_model or proposal['status'] != 'awaiting_approval' or not proposal.get('planning'):
+        return proposal
+    session.rollback()  # Provider calls must never retain a scene or resource lock.
+    report = recommend(proposal, True)
+    return _save_recommendation(session, drill_id, proposal['id'], proposal['revision'], report, identity)
+
+
+@operations.serialized_command
+def _save_recommendation(session, drill_id, run_id, revision, report, identity):
+    drill, run = owned_run(session, drill_id, run_id, identity)
+    session.execute(select(AgentRun.id).where(AgentRun.id == run.id).with_for_update())
+    session.refresh(run)
+    if run.revision == revision and run.status == 'awaiting_approval' and drill.status != 'ended':
+        run.scope = {**run.scope, 'planning': report}
+        if report['mode'] == 'model_tools':
+            run.planner = 'model_tools'
+        note(session, run, 'planning_checked', report['notice'], operations.effective_elapsed(drill))
+        session.commit()
+    return run_payload(session, run, operations.snapshot(session, drill))
 
 
 @operations.serialized_command
@@ -90,6 +116,20 @@ def _create_after_interpretation(session, drill_id, payload, interpretation, pla
         raise HTTPException(409, '目标居民已有活动计划，请先调整或停止原计划；不同居民范围可独立编排。')
     scope["request_fingerprint"] = request_fingerprint(payload)
     candidates = build_candidates(session, drill, data, scope)
+    from app.services.knowledge import retrieve
+    from app.services.knowledge_applicability import situation
+    from app.models.domain import Scene
+    scene = session.get(Scene, drill.scene_id)
+    parameters = data['simulation'].get('world', {}).get('parameters', {})
+    scope['knowledge'] = retrieve(session, identity.username, payload.goal, community_id=scene.community_id,
+        scenario='kitchen_fire' if parameters.get('fire_source_type') == 'kitchen' else 'charging_shed', drill_id=drill.id,
+        situation=situation(data, scope))
+    scope['planning'] = tool_report(data, scope, candidates)
+    scope['planning']['knowledge_assessment'] = scope['knowledge']['assessment']
+    scope['planning']['trace'].insert(1, {'tool': 'search_knowledge', 'label': '检索适用资料',
+        'status': 'completed', 'summary': f"命中 {len(scope['knowledge']['hits'])} 条，引用内容与版本已保存"})
+    scope['planning']['trace'].insert(2, {'tool': 'assess_knowledge', 'label': '核对经验适用条件',
+        'status': 'completed', 'summary': scope['knowledge']['assessment']['notice']})
     run = AgentRun(id=str(uuid4()), drill_session_id=drill_id, request_id=payload.request_id, actor=identity.username,
                    goal=payload.goal, scope=scope, candidates=candidates, observed_sequence=data["latest_event_sequence"], planner=planner, planner_notice=notice,
                    reason="方案已计算，尚未执行；请核对范围与影响后确认。")
@@ -100,8 +140,17 @@ def _create_after_interpretation(session, drill_id, payload, interpretation, pla
 
 
 @router.post("/drills/{drill_id}/agent/runs/{run_id}/actions")
-@operations.serialized_command
 def plan_action(drill_id: str, run_id: str, payload: PlanAction, identity: AuthenticatedIdentity = Depends(get_current_identity), session: Session = Depends(get_db)):
+    proposal = _apply_plan_action(drill_id, run_id, payload, identity, session)
+    if payload.action == 'replan' and payload.use_model and proposal['status'] == 'awaiting_approval' and proposal.get('planning'):
+        session.rollback()
+        report = recommend(proposal, True)
+        return _save_recommendation(session, drill_id, run_id, proposal['revision'], report, identity)
+    return proposal
+
+
+@operations.serialized_command
+def _apply_plan_action(drill_id, run_id, payload, identity, session):
     drill, run = owned_run(session, drill_id, run_id, identity)
     session.execute(select(type(drill).id).where(type(drill).id == drill_id).with_for_update())
     session.execute(select(AgentRun.id).where(AgentRun.id == run.id).with_for_update())
@@ -130,30 +179,6 @@ def plan_action(drill_id: str, run_id: str, payload: PlanAction, identity: Authe
         if drill.status == "ended": raise HTTPException(409, "本场已结束，请新开一轮。")
         pause_review(session, drill, run.scope.get('pause_for_review'))
         data = operations.snapshot(session, drill)
-        takeover = next((reason for state, reason in relevant_changes(session, run, run.observed_sequence) if state == "taken_over"), None)
-        if takeover:
-            run.status, run.reason = "taken_over", takeover
-            note(session, run, "taken_over", takeover, data["elapsed_seconds"]); session.commit()
-            raise HTTPException(409, takeover)
-        remaining = [p["id"] for p in data["simulation"]["residents"] if p["id"] in run.scope["resident_ids"] and p["status"] != "evacuated"]
-        people = [p for p in data["simulation"]["residents"] if p["id"] in run.scope["resident_ids"]]
-        if run.scope["priority_assist"] and any(p["status"] == "evacuated" and p["vulnerable"] and not p.get("assisted") for p in people):
-            raise HTTPException(409, "已有重点人员到场但未完成计划护送，不能通过重规划抹去缺项。请核对现场，必要时停止本计划后重新制定目标。")
-        evidence = completed_broadcast(session, run) if run.scope.get("robot_broadcast") else None
-        if evidence:
-            run.scope = {**run.scope, "robot_broadcast_evidence": evidence}
-        if not remaining and (not run.scope.get("robot_broadcast") or evidence):
-            run.status = "completed" if all(p.get("counted") for p in people) else "awaiting_rollcall"
-            run.reason = "目标已到场，行动证据已满足；请完成集合清点。" if run.status == "awaiting_rollcall" else "目标行动与集合核验已完成。"
-            note(session, run, run.status, run.reason, data["elapsed_seconds"]); session.commit()
-            return run_payload(session, run, data)
-        scope = {**run.scope, "resident_ids": remaining}
-        candidates = build_candidates(session, drill, data, scope, run)
-        run.evidence = [*run.evidence, {"revision": run.revision, "steps": deepcopy(run.steps), "scope": deepcopy(run.scope),
-            "recovery": {"at_seconds": data["elapsed_seconds"], "retained_arrived": len(run.scope["resident_ids"]) - len(remaining),
-                "remaining": len(remaining), "active_escorts": sum(h["state"] != "completed" and h["resident_id"] in remaining for h in data["simulation"].get("helpers", []))}}]
-        run.candidates, run.steps = candidates, []
-        run.revision += 1; run.approved_revision = None; run.selected_candidate = None
-        run.status, run.reason, run.observed_sequence = "awaiting_approval", "未到场部分已重新预演，请确认新版本。", data["latest_event_sequence"]
-        note(session, run, "replanned", run.reason, data["elapsed_seconds"]); session.commit()
+        from app.services.agent_revision import replan
+        replan(session, drill, run, data, payload, identity)
     return run_payload(session, run, operations.snapshot(session, drill))

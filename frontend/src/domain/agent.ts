@@ -34,6 +34,10 @@ export interface AgentCoordination {
 }
 export interface AgentCaseTask { id:string;label:string;state:string;responsible_role:string;remaining_seconds:number|null;overdue:boolean;blockers:string[];verification_ready:boolean }
 export interface AgentRun {
+  impact?:AgentImpact
+  revision_context?:{from_revision:number;baseline:'approved'|'draft';at_seconds:number;impact:AgentImpact;previous_objective:string;previous_forbidden_exits:string[];new_objective?:string;new_forbidden_exits?:string[];candidates:Array<{candidate_id:string;changed_count:number;residents:Array<{resident_id:string;label:string;old_exit:string;new_exit:string;exit_changed:boolean;route_changed:boolean}>}>}|null
+  planning?:AgentPlanningReport|null
+  knowledge?: import('./knowledge').KnowledgeResult | null
   drill_status?:string
   task_graph?:{version:number;case_tasks?:AgentCaseTask[];nodes:Array<{id:string;label:string;state:string;depends_on:string[];completion_rule:string}>;human_gate:{label:string;state:string;reason:string}}
   resources?:{version:number;resident_count:number;items:Array<{key:string;name:string;kind:string;state:'owned'|'occupied'|'released';revision:number|null}>}
@@ -44,11 +48,25 @@ export interface AgentRun {
   created_at_us?:number
   approval_guard?:{can_approve:boolean;needs_replan:boolean;age_seconds:number;reason:string}|null
   id:string; goal:string; status:string; reason:string; revision:number;approved_revision:number|null;selected_candidate:string|null
-  scope:{resident_ids:string[];building_id:string|null;building_name:string;priority_assist:boolean;robot_broadcast?:boolean;completion:string}
+  scope:{resident_ids:string[];building_id:string|null;building_name:string;priority_assist:boolean;robot_broadcast?:boolean;completion:string;floors?:number[];objective?:string;forbidden_exits?:string[]}
   candidates:AgentCandidate[];steps:AgentStep[];planner:string;planner_notice:string;at_seconds:number
   summary:{total:number;arrived:number;counted:number;assisted:number;exposed:number}
   history:Array<{id:string;kind:string;message:string;at_seconds:number}>
   execution?:{at_seconds:number;event_sequence:number;staff:Array<{id:string;name:string;state:string;resident_id:string|null;responsible:string|null;completed_count:number}>;coordination?:AgentCoordination}
+}
+export interface AgentImpact {
+  observed_sequence:number;current_sequence:number;at_seconds:number;affected_count:number;step_count:number;robot_affected:boolean
+  changes_count:number;events_truncated:boolean
+  changes:Array<{id:string;sequence:number;kind:string;at_seconds:number;message:string;location?:string|null;edge_id?:string|null;resident_count:number;robot_affected:boolean}>
+  residents:Array<{id:string;label:string;blocked:boolean;location:string;reason:string}>
+  steps:Array<{id:string;label:string;kind:string;direct:boolean}>
+}
+export interface AgentPlanningReport {
+  knowledge_assessment?:import('./knowledge').KnowledgeAssessment
+  version:number;at_seconds:number;event_sequence:number;objective:string;objective_label:string
+  recommended_candidate_id:string|null;mode:'deterministic'|'model_tools';notice:string;explanation?:string;citations?:string[];ranking_method?:string
+  checks:Array<{candidate_id:string;valid:boolean;blockers:string[]}>
+  trace:Array<{tool:string;label:string;status:'completed'|'rejected';summary:string;round?:number}>
 }
 
 export interface AgentOutcome {

@@ -7,8 +7,10 @@ export class ResidentialDoor {
   readonly frame=new THREE.Group()
   readonly leaf=new THREE.Group()
   readonly clearance:THREE.Mesh<THREE.BoxGeometry,THREE.MeshBasicMaterial>
+  readonly indicator:THREE.Mesh<THREE.SphereGeometry,THREE.MeshStandardMaterial>
   private target=0
   private initialized=false
+  private occupied=false
 
   constructor(width:number,clearance:number,wallDepth:number,materials?:SceneMaterials){
     this.frame.name='residential-door';this.leaf.name='door-swing-leaf'
@@ -41,6 +43,11 @@ export class ResidentialDoor {
     this.clearance.name='door-occupancy-envelope';this.clearance.position.y=.018;this.frame.add(this.clearance)
     batchStaticParts(this.leaf)
     batchStaticParts(this.frame,new Set(['door-occupancy-envelope']))
+    // Mount outside the frozen aperture; status hardware must never narrow it.
+    box(this.frame,'door-status-housing',.07,.12,.028,-width/2-.04,1.62,.075,steel)
+    const lens=new THREE.MeshStandardMaterial({color:0x6dc6ad,emissive:0x6dc6ad,emissiveIntensity:.35,roughness:.3})
+    this.indicator=new THREE.Mesh(new THREE.SphereGeometry(.018,10,8),lens)
+    this.indicator.name='door-passage-status';this.indicator.position.set(-width/2-.04,1.62,.099);this.frame.add(this.indicator)
   }
 
   setOpen(open:boolean){
@@ -48,6 +55,14 @@ export class ResidentialDoor {
     // Opening clears the confirmed walking route immediately; never delay passage.
     if(!this.initialized||open)this.leaf.rotation.y=this.target
     this.initialized=true
+    this.updateStatus()
+  }
+  setOccupied(occupied:boolean){this.occupied=occupied;this.updateStatus()}
+  private updateStatus(){
+    const color=this.target===0?0xf06a43:this.occupied?0xe6b865:0x6dc6ad
+    this.indicator.material.color.setHex(color);this.indicator.material.emissive.setHex(color)
+    this.clearance.material.color.setHex(color);this.clearance.material.opacity=(this.occupied||this.target===0)? .28 : .08
+    this.frame.userData.passageState=this.target===0?'closed':this.occupied?'occupied':'clear'
   }
   step(delta:number,animate:boolean){
     if(!animate){this.leaf.rotation.y=this.target;return}

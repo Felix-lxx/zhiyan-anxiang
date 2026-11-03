@@ -3,9 +3,10 @@ import type { IndoorState } from '../domain/indoor'
 import { cutFloor, stairOpenings, furnitureFits, doorPortal, doorWallPanels, type Passage } from './indoorGeometry'
 import { createKitchenAssembly } from './kitchenAssembly'
 import { kitchenWindowWall } from './interiorArchitecture'
-import { createGasValve } from './gasValve'
+import { createGasValve, type GasValveVisual } from './gasValve'
 import { ResidentialDoor } from './residentialDoor'
 import { IndoorSmoke } from './indoorSmoke'
+import { IndoorZoneSign } from './indoorZoneSign'
 import { SceneMaterials } from './sceneMaterials'
 
 /** Rooms load by floor; all solids respect the frozen walking paths. */
@@ -15,10 +16,10 @@ export class IndoorFireVisuals {
   private volumes = new Map<string, IndoorSmoke>()
   private cutawayWalls:Array<{object:THREE.Object3D;center:THREE.Vector3;normalX:number;normalZ:number}> = []
   private labels = new Set<THREE.Sprite>()
+  private roomSigns = new Map<string,IndoorZoneSign>()
   private doors = new Map<string, ResidentialDoor>()
   private doorFrames = new Map<string, THREE.Group>()
-  private doorMarkers = new Map<string, THREE.Mesh<THREE.BoxGeometry, THREE.MeshBasicMaterial>>()
-  private valves = new Map<string, {group:THREE.Group;handle:THREE.Mesh<THREE.BoxGeometry,THREE.MeshStandardMaterial>}>()
+  private valves = new Map<string, GasValveVisual>()
   private materials = new SceneMaterials()
   private roomObjects = new Map<string, THREE.Group>()
   private riskMarkers = new Map<string, THREE.Mesh<THREE.RingGeometry, THREE.MeshBasicMaterial>>()
@@ -82,12 +83,9 @@ export class IndoorFireVisuals {
       const marker = new THREE.Mesh(new THREE.RingGeometry(.35, .43, 24), new THREE.MeshBasicMaterial({ color: 0xc5cbb8, side: THREE.DoubleSide }))
       marker.rotation.x = -Math.PI / 2; marker.position.y = .015; kitchen.add(marker)
       this.riskMarkers.set(zone.id, marker)
-      const canvas=document.createElement('canvas');canvas.width=256;canvas.height=64
-      const context=canvas.getContext('2d')!
-      context.fillStyle='#17352b';context.fillRect(0,0,256,64);context.fillStyle='#f4f4df';context.font='500 26px "Microsoft YaHei",sans-serif';context.textAlign='center';context.textBaseline='middle'
-      context.fillText(`${zone.floor}层 · ${zone.id.endsWith(':east')?'东侧':'西侧'}厨房`,128,32)
-      const label=new THREE.Sprite(new THREE.SpriteMaterial({map:new THREE.CanvasTexture(canvas),depthTest:true}))
-      label.position.set(0,2.65,-zone.depth*.3);label.scale.set(Math.min(1.65,zone.width*.5),Math.min(1.65,zone.width*.5)/4,1);kitchen.add(label);this.labels.add(label)
+      const sign=new IndoorZoneSign(zone.width),label=sign.sprite
+      // Keep the entire annotation above the 2.45 m wall, not intersecting it.
+      label.position.set(0,2.53+label.scale.y/2,-zone.depth*.3);kitchen.add(label);this.labels.add(label);this.roomSigns.set(zone.id,sign)
       this.register(kitchen, { title: zone.name, type: '厨房房间', detail: '房门、人员路径与分区烟气使用同一空间节点。',
         fireRoom: { floor: zone.floor, room: zone.id.endsWith(':east') ? 'east' : 'west' }, x: zone.x, y: zone.y })
       if (layout?.gas_valve && furnitureFits(counter, zone.height, this.passages)) {
@@ -120,7 +118,7 @@ export class IndoorFireVisuals {
       }
       const visual=new ResidentialDoor(width,door.portal?.clearance_radius??0,door.portal?.wall_depth??.22,this.materials)
       const frame=visual.frame;frame.position.copy(this.point(opening.x,opening.y,room.height));frame.rotation.y=opening.rotation;layer.add(frame)
-      this.doors.set(door.id,visual);this.doorMarkers.set(door.id,visual.clearance);this.doorFrames.set(door.id,frame)
+      this.doors.set(door.id,visual);this.doorFrames.set(door.id,frame)
       this.register(frame, {title:door.label,type:'可操作房门',action:'indoor-door',doorId:door.id,detail:'点击查看本扇房门、占用人员与通行条件。',x:opening.x,y:opening.y})
     }
   }
@@ -129,7 +127,9 @@ export class IndoorFireVisuals {
     const selected = floor ?? state.zones.find(zone => zone.id === state.source_zone_id)?.floor ?? 1
     if (!this.floors.has(selected)) this.buildFloor(selected)
     for (const [level, group] of this.floors) group.visible = level === selected
+    const doorsByRoom=new Map(state.doors.map(door=>[door.room_id,door]))
     for (const zone of state.zones) {
+      this.roomSigns.get(zone.id)?.update(zone,doorsByRoom.get(zone.id),zone.id===state.source_zone_id)
       this.volumes.get(zone.id)?.update(zone.smoke_density,zone.temperature)
       const marker = this.riskMarkers.get(zone.id)
       if (marker) marker.material.color.setHex(zone.id === state.source_zone_id ? 0xf06a43 : zone.smoke_density > .3 ? 0xe6b865 : 0x6dc6ad)
@@ -138,8 +138,7 @@ export class IndoorFireVisuals {
     }
     for (const door of state.doors) {
       this.doors.get(door.id)?.setOpen(door.state==='open')
-      const marker=this.doorMarkers.get(door.id)
-      if(marker)marker.material.color.setHex(door.state==='closed'?0xf06a43:door.can_close===false?0xe6b865:0x6dc6ad)
+      this.doors.get(door.id)?.setOccupied(door.can_close===false||Boolean(door.occupants?.length))
       const frame=this.doorFrames.get(door.id)
       if(frame?.userData.selection)frame.userData.selection.detail=door.state==='closed'?'房门关闭，当前通道不可通行。':door.can_close===false?`${door.occupants?.length??0} 人仍在房内或通过房门，暂不能关闭。`:'房门打开，人员可通行。点击查看门控与占用情况。'
     }
@@ -147,20 +146,20 @@ export class IndoorFireVisuals {
       const valve=this.valves.get(device.id)
       if(!valve)continue
       const closed=device.state==='closed'
-      valve.handle.rotation.z=closed?Math.PI/2:0
-      valve.handle.material.color.setHex(closed?0x6dc6ad:0xe6b865)
+      valve.setClosed(closed)
       if(valve.group.userData.selection)valve.group.userData.selection.detail=closed?'关闭 · 处置证据已核验。点击查看任务记录。':'打开 · 尚未核验关闭。点击进入处置任务。'
     }
   }
 
   step(seconds:number,camera:THREE.Camera,quality=1,detailed=false,delta=0,animate=false){
     for(const door of this.doors.values())door.step(delta,animate)
+    for(const valve of this.valves.values())valve.step(delta,animate)
     for(const label of this.labels)label.visible=!detailed
     for(const smoke of this.volumes.values())if(smoke.mesh.parent?.visible)smoke.step(seconds,quality)
     for(const wall of this.cutawayWalls)wall.object.visible=!(camera.position.y>wall.center.y+2.5&&(camera.position.x-wall.center.x)*wall.normalX+(camera.position.z-wall.center.z)*wall.normalZ>.4)
   }
 
-  settleTransitions(){for(const door of this.doors.values())door.step(0,false)}
+  settleTransitions(){for(const door of this.doors.values())door.step(0,false);for(const valve of this.valves.values())valve.step(0,false)}
 
   dispose() { this.materials.dispose() }
 }

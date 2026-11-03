@@ -1,17 +1,21 @@
 <script setup lang="ts">
 import { createApiClient } from '../api/client'
 import AgentPlanWorkspace from './AgentPlanWorkspace.vue'
+import SpeechInput from './SpeechInput.vue'
+import SpeechPlayback from './SpeechPlayback.vue'
+import KnowledgeApplicability from './KnowledgeApplicability.vue'
 import type { AgentAssignment, AgentLiveState } from '../domain/agent'
 
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import AppIcon from './AppIcon.vue'
 import '../assistant.css'
-export type AssistantAction = { kind: 'training' | 'missions' | 'events' | 'report' | 'command' | 'rollcall' | 'branch' | 'focus' | 'plan' | 'replay' | 'indoor'; label: string; resident_id?: string; door_id?:string; object_kind?:'robot'; at_seconds?:number }
+export type AssistantAction = { kind: 'training' | 'missions' | 'events' | 'report' | 'command' | 'rollcall' | 'branch' | 'focus' | 'plan' | 'replay' | 'indoor' | 'knowledge'; label: string; resident_id?: string; door_id?:string; object_kind?:'robot'; at_seconds?:number;plan_id?:string;document_id?:string;version_id?:string }
 export interface AssistantFocusContext { kind: 'resident' | 'road' | 'robot' | 'object' | 'command' | 'score' | 'replay'; id?: string; label: string; type?: string; detail?: string; x?: number; y?: number }
 interface Reply {
+  knowledge?: import('../domain/knowledge').KnowledgeResult
   mode: 'offline' | 'model'; model: string | null; answer: string; notice: string
   context: { at_seconds: number; historical: boolean; selection: AssistantFocusContext | null }
-  sources: Array<{ id: string; title: string; detail: string }>; actions: AssistantAction[]
+  sources: Array<{ id: string; title: string; detail: string; source_url?:string; publisher?:string; version?:number; anchor?:string; category?:string;document_id?:string;version_id?:string;applicability?:import('../domain/knowledge').KnowledgeApplicability }>; actions: AssistantAction[]
 }
 interface Message { role: 'user' | 'assistant'; content: string; reply?: Reply }
 const props = defineProps<{ apiBaseUrl: string; accessToken: string; drillId: string; drillName: string; open: boolean; atSeconds: number | null; liveSeconds: number; drillStatus?: string; busy?: boolean; focusContext?: AssistantFocusContext | null; agentFeed?:AgentLiveState|null;connection?:'connecting'|'live'|'stale' }>()
@@ -27,6 +31,20 @@ function previewPlan(people: AgentAssignment[]) {
 }
 function showSettings() { activeView.value = 'chat'; void toggleHelp('settings') }
 const messages = ref<Message[]>([]), question = ref(''), error = ref(''), pending = ref(false)
+const voiceBusy=ref(false)
+const goalDraft=ref<{id:number;text:string}|null>(null)
+const planFocus=ref<{id:string;request:number}|null>(null)
+const canDraftGoal=computed(()=>/疏散|撤离|分流|护送/.test(question.value)&&question.value.length<=2000)
+function draftGoal(text=question.value){
+  const value=text.trim()
+  if(pending.value||voiceBusy.value||props.atSeconds!==null||!/疏散|撤离|分流|护送/.test(value))return
+  goalDraft.value={id:Date.now(),text:value.slice(0,2000)};activeView.value='plan'
+}
+function appendTranscript(text: string) {
+  question.value = question.value.trim() ? question.value.trimEnd() + '\n' + text : text
+  if (question.value.length > 2000) error.value = '提问超过 2000 字，请编辑缩短后再发送。'
+  void nextTick(() => input.value?.focus({ preventScroll: true }))
+}
 const provider = ref<{ configured: boolean; model: string | null } | null>(null)
 const statusError = ref(''), useModel = ref(false), log = ref<HTMLElement | null>(null), input = ref<HTMLTextAreaElement | null>(null)
 const panel = ref<HTMLElement | null>(null), confirmClear = ref(false), questionsOpen = ref(false)
@@ -94,13 +112,13 @@ async function toggleHelp(kind: 'settings' | 'questions') {
 }
 async function toggleClear() { confirmClear.value = !confirmClear.value; settingsOpen.value = false; await nextTick(); log.value?.querySelector('.scene-assistant__confirm')?.scrollIntoView({ block: 'nearest' }) }
 async function revealReply() { await nextTick(); const node = log.value?.querySelector<HTMLElement>('.scene-assistant__message:last-of-type'); if (node && log.value) log.value.scrollTop += node.getBoundingClientRect().top - log.value.getBoundingClientRect().top - 12 }
-function fragments(message: Message) { return message.content.split(/(\[S\d+\])/g).map(text => ({ text, source: message.reply?.sources.some(s => `[${s.id}]` === text) ? text.slice(1, -1) : null })) }
+function fragments(message: Message) { return message.content.split(/(\[[SK]\d+\])/g).map(text => ({ text, source: message.reply?.sources.some(s => `[${s.id}]` === text) ? text.slice(1, -1) : null })) }
 function revealSource(index: number, id: string) { const section = log.value?.querySelectorAll<HTMLElement>('.scene-assistant__message')[index]; const details = section?.querySelector('details'); if (details) details.open = true; const source = section?.querySelector<HTMLElement>(`[data-source="${id}"]`); source?.scrollIntoView({ block: 'nearest', behavior: 'instant' }); source?.focus({ preventScroll: true }) }
 function trapFocus(event: KeyboardEvent) { if (!mobile.value || event.key !== 'Tab') return; const targets = [...(panel.value?.querySelectorAll<HTMLElement>('button:not(:disabled), textarea, input, summary, [tabindex="0"]') ?? [])].filter(e => e.getClientRects().length > 0); const first = targets[0], last = targets[targets.length - 1]; if (event.shiftKey && document.activeElement === first) { event.preventDefault(); last?.focus() } else if (!event.shiftKey && document.activeElement === last) { event.preventDefault(); first?.focus() } }
 function cancel() { generation++; controller?.abort(); controller = null; pending.value = false }
 function clear() { cancel(); messages.value = []; question.value = ''; error.value = ''; confirmClear.value = false; lastQuestion.value = ''; void nextTick(() => input.value?.focus()) }
 async function send(text = question.value) {
-  const content = text.trim(); if (!content || pending.value || configurationLoading.value || content.length > 2000) return
+  const content = text.trim(); if (!content || pending.value || voiceBusy.value || configurationLoading.value || content.length > 2000) return
   const requestUsesModel = useModel.value && !!provider.value?.configured
   error.value = ''; pending.value = true; question.value = ''; lastQuestion.value = content; questionsOpen.value = false; settingsOpen.value = false; confirmClear.value = false; if (mobile.value) input.value?.blur()
   if (messages.value[messages.value.length - 1]?.role === 'user') messages.value.pop()
@@ -124,8 +142,12 @@ function actionLabel(action: AssistantAction) {
   if (['command', 'rollcall', 'missions'].includes(action.kind)) return '返回实时现场 · ' + action.label
   return action.label
 }
-function navigate(action: AssistantAction) {
-  if (action.kind === 'plan') { activeView.value = 'plan'; return }
+function navigate(action: AssistantAction, goalText?:string) {
+  if (action.kind === 'plan') {
+    if(action.plan_id)planFocus.value={id:action.plan_id,request:(planFocus.value?.request||0)+1}
+    else draftGoal(goalText||lastQuestion.value)
+    activeView.value='plan'; return
+  }
   // The destination owns focus; only an ordinary close restores the opener.
   previousFocus = null
   emit('navigate', action)
@@ -161,7 +183,7 @@ onBeforeUnmount(() => { for (const [element, wasInert] of inertSiblings) element
         <span v-else>{{ configurationLoading ? '正在检查模型配置…' : statusError ? '模型配置读取失败' : '当前使用离线解读' }}</span>
         <button type="button" :aria-expanded="settingsOpen" aria-controls="scene-assistant-settings" @click="toggleHelp('settings')">模型设置<AppIcon name="chevron" :size="14" /></button>
       </div>
-      <p v-if="provider?.configured" id="scene-assistant-consent-note">{{ useModel ? '已授权发送本场摘要、当前关注对象、问题与最近对话。' : '勾选后将本场摘要、当前关注对象、问题与最近对话发送给模型。' }}</p>
+      <p v-if="provider?.configured" id="scene-assistant-consent-note">{{ useModel ? '已授权向模型发送本场摘要、当前对象、问题、最近对话及本次检索的资料片段。' : '勾选后将本场摘要、当前对象、问题、最近对话及本次检索的资料片段发送给模型。' }}</p>
       <p v-if="statusError && !settingsOpen" class="scene-assistant__connection-hint">{{ statusError }}</p>
     </section>
     <div v-if="confirmClear" class="scene-assistant__confirm" role="group" aria-label="确认清空对话"><p>清空本场对话？此操作无法撤销，不影响演练数据。</p><div><button type="button" @click="confirmClear = false">保留对话</button><button type="button" @click="clear">确认清空</button></div></div>
@@ -182,16 +204,30 @@ onBeforeUnmount(() => { for (const [element, wasInert] of inertSiblings) element
       <article v-for="(message, index) in messages" :key="index" class="scene-assistant__message" :data-role="message.role">
         <div class="scene-assistant__speaker"><strong>{{ message.role === 'user' ? '你' : '安巷教练' }}</strong><span v-if="message.reply">{{ message.reply.mode === 'model' ? message.reply.model : '离线规则' }} · {{ clock(message.reply.context.at_seconds) }}{{ message.reply.context.historical ? ' 回放' : ' 快照' }}</span></div>
         <p class="scene-assistant__text"><template v-for="(fragment, part) in fragments(message)" :key="part"><button v-if="fragment.source" type="button" class="scene-assistant__citation" :aria-label="'查看依据 ' + fragment.source" @click="revealSource(index, fragment.source)">{{ fragment.text }}</button><template v-else>{{ fragment.text }}</template></template></p>
-        <template v-if="message.reply"><p class="scene-assistant__notice">{{ message.reply.notice }}</p><details class="scene-assistant__sources"><summary>查看本轮数据依据 · {{ message.reply.sources.length }} 项</summary><dl><div v-for="source in message.reply.sources" :key="source.id" :data-source="source.id" tabindex="-1"><dt>[{{ source.id }}] {{ source.title }}</dt><dd>{{ source.detail }}</dd></div></dl></details><div v-if="message.reply.actions.length" class="scene-assistant__actions"><button v-for="action in message.reply.actions" :key="action.kind + (action.resident_id || '')" type="button" @click="navigate(action)">{{ actionLabel(action) }}<AppIcon name="arrowRight" :size="15" /></button></div></template>
+        <template v-if="message.reply">
+          <p class="scene-assistant__notice">{{ message.reply.notice }}</p>
+          <SpeechPlayback v-if="message.reply===lastReply" :text="message.content" :active="open&&activeView==='chat'&&!pending&&!voiceBusy" />
+          <p v-if="message.reply.knowledge" class="scene-assistant__notice">{{message.reply.knowledge.notice}}</p>
+          <details class="scene-assistant__sources"><summary>查看现场与知识依据 · {{ message.reply.sources.length }} 项</summary>
+            <dl><div v-for="source in message.reply.sources" :key="source.id" :data-source="source.id" tabindex="-1">
+              <dt>[{{ source.id }}] {{ source.title }}</dt><dd>{{ source.detail }}</dd>
+              <dd v-if="source.version">V{{source.version}} · {{source.anchor}} · {{source.category==='official_summary'?'官方资料摘要':source.category==='platform_guide'?'项目训练说明':'用户发布资料'}}<br/>{{source.publisher}}</dd>
+              <dd v-if="source.applicability"><KnowledgeApplicability :value="source.applicability"/></dd>
+              <dd v-if="source.document_id"><button type="button" @click="navigate({kind:'knowledge',label:'核对引用版本',document_id:source.document_id,version_id:source.version_id})">核对引用资料版本</button></dd><dd v-if="source.source_url"><a :href="source.source_url" target="_blank" rel="noopener noreferrer">打开资料来源</a></dd>
+            </div></dl>
+          </details>
+          <div v-if="message.reply.actions.length" class="scene-assistant__actions"><button v-for="action in message.reply.actions" :key="action.kind + (action.resident_id || '')" type="button" @click="navigate(action,messages[index-1]?.content)">{{ actionLabel(action) }}<AppIcon name="arrowRight" :size="15" /></button></div>
+        </template>
       </article>
       <p v-if="pending" class="scene-assistant__pending" role="status">{{ useModel ? '正在请模型解读本场快照…' : '正在读取场景依据…' }}</p>
       </div>
       <div v-if="error" class="scene-assistant__error" role="alert"><p>{{ error }}</p><button type="button" :disabled="pending" @click="send(lastQuestion)">重试本次问题</button></div>
     </div>
-    <div v-show="activeView==='plan'" class="scene-assistant__log" aria-label="目标计划工作区"><AgentPlanWorkspace :api-base-url="apiBaseUrl" :access-token="accessToken" :drill-id="drillId" :active="open&&activeView==='plan'" :historical="atSeconds!==null" :model-available="!!provider?.configured" :live-feed="agentFeed" :connection="connection" :focus-id="focusContext?.kind==='resident'?focusContext.id:undefined" @preview="previewPlan" @resident-focus="id=>navigate({kind:'focus',label:'定位目标居民',resident_id:id})" @robot="navigate({kind:'focus',object_kind:'robot',label:'定位机器人'})" @indoor="id=>navigate({kind:'indoor',door_id:id,label:'检查受阻房门'})" @missions="navigate({kind:'missions',label:'查看案例责任任务'})" @rollcall="navigate({kind:'rollcall',label:'前往集合清点'})" @replay="at=>navigate({kind:'replay',label:'回看决策结果',at_seconds:at})" /></div>
+    <div v-show="activeView==='plan'" class="scene-assistant__log" aria-label="目标计划工作区"><AgentPlanWorkspace :api-base-url="apiBaseUrl" :access-token="accessToken" :drill-id="drillId" :active="open&&activeView==='plan'" :historical="atSeconds!==null" :model-available="!!provider?.configured" :live-feed="agentFeed" :connection="connection" :goal-draft="goalDraft" :plan-focus="planFocus" :focus-id="focusContext?.kind==='resident'?focusContext.id:undefined" @preview="previewPlan" @resident-focus="id=>navigate({kind:'focus',label:'定位目标居民',resident_id:id})" @robot="navigate({kind:'focus',object_kind:'robot',label:'定位机器人'})" @indoor="id=>navigate({kind:'indoor',door_id:id,label:'检查受阻房门'})" @missions="navigate({kind:'missions',label:'查看案例责任任务'})" @rollcall="navigate({kind:'rollcall',label:'前往集合清点'})" @knowledge="(id,version)=>navigate({kind:'knowledge',label:'核对知识资料',document_id:id,version_id:version})" @replay="at=>navigate({kind:'replay',label:'回看决策结果',at_seconds:at})" /></div>
     <div v-show="activeView==='chat'" class="scene-assistant__compose">
-      <div class="scene-assistant__question-heading"><button type="button" :aria-expanded="questionsOpen || !messages.length" aria-controls="scene-assistant-questions" @click="toggleHelp('questions')">常见问题<AppIcon name="chevron" :size="14" /></button><span>{{ useModel && provider?.configured ? '本次发送给模型' : '本次为离线解读' }}</span></div>
-      <form @submit.prevent="send()"><label class="sr-only" for="scene-assistant-question">向场景助手提问</label><textarea id="scene-assistant-question" ref="input" v-model="question" rows="2" maxlength="2000" placeholder="问问当前现场，例如：谁还没有到集合点？" :disabled="pending" aria-describedby="scene-assistant-input-hint" @keydown="onKey"></textarea><div class="scene-assistant__send"><span id="scene-assistant-input-hint">{{ question.length }}/2000 · Shift+Enter 换行</span><button v-if="pending" type="button" @click="stop">停止等待</button><button v-else type="submit" :disabled="!question.trim() || configurationLoading"><AppIcon name="send" :size="16" />{{ useModel && provider?.configured ? '发送给模型' : '离线解读' }}</button></div></form>
+      <SpeechInput v-if="open && activeView==='chat'" :key="`${drillId}:${atSeconds??'live'}`" :api-base-url="apiBaseUrl" :access-token="accessToken" :disabled="pending" @activity="value=>voiceBusy=value" @transcript="appendTranscript" />
+      <div class="scene-assistant__question-heading"><button type="button" :aria-expanded="questionsOpen || !messages.length" aria-controls="scene-assistant-questions" @click="toggleHelp('questions')">常见问题<AppIcon name="chevron" :size="14" /></button><button v-if="canDraftGoal&&atSeconds===null" type="button" class="scene-assistant__goal-handoff" :disabled="voiceBusy||pending" @click="draftGoal()">转为疏散目标<AppIcon name="arrowRight" :size="16"/></button><span v-else>{{ useModel && provider?.configured ? '本次发送给模型' : '本次为离线解读' }}</span></div>
+      <form @submit.prevent="send()"><label class="sr-only" for="scene-assistant-question">向场景助手提问</label><textarea id="scene-assistant-question" ref="input" v-model="question" rows="2" maxlength="2000" placeholder="问问当前现场，例如：谁还没有到集合点？" :disabled="pending" aria-describedby="scene-assistant-input-hint" @keydown="onKey"></textarea><div class="scene-assistant__send"><span id="scene-assistant-input-hint">{{ question.length }}/2000 · Shift+Enter 换行</span><button v-if="pending" type="button" @click="stop">停止等待</button><button v-else type="submit" :disabled="!question.trim() || configurationLoading || voiceBusy"><AppIcon name="send" :size="16" />{{voiceBusy?'等待语音完成':useModel && provider?.configured ? '发送给模型' : '离线解读' }}</button></div></form>
       <p class="scene-assistant__disclaimer">训练解读，不替代真实火场专业判断。对话仅在本场页面内保留。</p>
     </div>
   </aside>

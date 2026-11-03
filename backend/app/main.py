@@ -11,6 +11,7 @@ from app.core.database import SessionLocal
 from app.core.lifespan import create_lifespan
 from app.core.origins import DEVELOPMENT_ORIGIN_PATTERN
 from app.core.security_logging import configure_security_logging
+from app.core.knowledge_limits import KnowledgeBodyLimit
 
 
 settings = get_settings()
@@ -24,15 +25,19 @@ async def security_headers_and_admission(request, call_next):
     from app.services.connection_security import rate_limit
     from app.services.command_lock import serialized_command
     path = request.url.path
-    limited = path.endswith(("/participant/resolve", "/participant-invite", "/join", "/socket-ticket", "/auth/login", "/auth/refresh"))
-    if limited and request.method != "OPTIONS":
+    knowledge_request = path.startswith(settings.api_prefix + '/knowledge/') and request.method == 'POST'
+    limited = path.endswith(("/participant/resolve", "/participant-invite", "/join", "/socket-ticket", "/auth/login", "/auth/refresh", "/speech/transcribe"))
+    if (limited or knowledge_request) and request.method != "OPTIONS":
         try:
             @serialized_command
             def check_admission():
                 with SessionLocal() as session:
                     # Do not trust arbitrary forwarded IP headers from the public client.
                     subject = request.client.host if request.client else "unknown"
-                    rate_limit(session, path.rsplit("/", 1)[-1], subject, 600 if path.endswith("/socket-ticket") else 60)
+                    limit = 600 if path.endswith('/socket-ticket') else 6 if path.endswith('/speech/transcribe') else 60
+                    if knowledge_request:
+                        limit = 20
+                    rate_limit(session, 'knowledge' if knowledge_request else path.rsplit("/", 1)[-1], subject, limit)
                     session.commit()
             await asyncio.to_thread(check_admission)
         except HTTPException as exc:
@@ -46,6 +51,7 @@ async def security_headers_and_admission(request, call_next):
 
 
 # Outermost middleware also adds CORS to admission-limit errors.
+app.add_middleware(KnowledgeBodyLimit, prefix=settings.api_prefix + '/knowledge/')
 app.add_middleware(
     CORSMiddleware,
     allow_origins=settings.cors_origin_list,

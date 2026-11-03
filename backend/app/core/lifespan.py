@@ -32,8 +32,10 @@ def create_lifespan(settings: Settings):
         # usable kitchen geometry without altering user edits or frozen drills.
         from app.core.database import SessionLocal
         from app.services.demo_community import repair_all_builtin_demo_communities
+        from app.services.knowledge import seed_knowledge
         with SessionLocal() as session:
             repair_all_builtin_demo_communities(session)
+            seed_knowledge(session)
 
         from app.services.agent_workflow import serve as serve_agent
         from app.services.engine_scheduler import serve as serve_engine

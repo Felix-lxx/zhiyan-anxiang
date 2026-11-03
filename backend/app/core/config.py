@@ -32,6 +32,13 @@ class Settings(BaseSettings):
     assistant_model: str = ""
     assistant_api_key: SecretStr = SecretStr("")
     assistant_timeout_seconds: int = Field(default=40, ge=5, le=90)
+    speech_provider: Literal['disabled', 'xfyun_iat_v1'] = 'disabled'
+    speech_app_id: str = ''
+    speech_api_key: SecretStr = SecretStr('')
+    speech_api_secret: SecretStr = SecretStr('')
+    knowledge_embedding_url: str = ''
+    knowledge_embedding_model: str = ''
+    knowledge_embedding_key: SecretStr = SecretStr('')
     participant_invite_hours: int = Field(default=8, ge=1, le=72)
 
     @model_validator(mode="after")

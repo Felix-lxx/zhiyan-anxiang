@@ -19,6 +19,8 @@ from app.api.routes import (
     road_network,
     roles,
     scenes,
+    speech,
+    knowledge,
     tasks,
 )
 
@@ -40,5 +42,7 @@ for route_module in (
     roles,
     assistant,
     agent,
+    speech,
 ):
     api_router.include_router(route_module.router)
+api_router.include_router(knowledge.router)

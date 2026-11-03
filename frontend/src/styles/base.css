@@ -4,6 +4,7 @@ h1, h2, h3 { text-wrap: balance; }
 button, a, select { touch-action: manipulation; }
 .skip-link { position: fixed; z-index: 120; top: 12px; left: 12px; translate: 0 -180%; padding: 10px 14px; border-radius: 8px; color: #fff; background: var(--action-primary); font-size: 13px; font-weight: 700; text-decoration: none; transition: translate var(--motion-fast) var(--ease-out); }
 .skip-link:focus-visible { translate: 0 0; }
+.skip-link:not(:focus-visible) { width:1px; height:1px; padding:0; overflow:hidden; clip-path:inset(50%); white-space:nowrap; }
 button, input, textarea, select { caret-color: var(--action-focus); }
 button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-visible, summary:focus-visible, [tabindex]:focus-visible { outline: 3px solid var(--action-focus); outline-offset: 3px; }
 ::selection { color: #fff; background: var(--action-primary); }

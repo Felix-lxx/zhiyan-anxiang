@@ -1,26 +1,42 @@
 <script setup lang="ts">
-import { computed, onBeforeUnmount, ref, watch } from 'vue'
+import { computed, nextTick, onBeforeUnmount, ref, watch } from 'vue'
 import { createApiClient } from '../api/client'
 import { canApplyAgentRun, type AgentAssignment, type AgentCandidate, type AgentRun, type AgentLiveState } from '../domain/agent'
 import AppIcon from './AppIcon.vue'
 import AgentOutcomeReview from './AgentOutcomeReview.vue'
+import SpeechInput from './SpeechInput.vue'
+import KnowledgeEvidence from './KnowledgeEvidence.vue'
+import AgentPlanningEvidence from './AgentPlanningEvidence.vue'
+import AgentRevisionView from './AgentRevisionView.vue'
+import SpeechPlayback from './SpeechPlayback.vue'
 
-const props = defineProps<{ apiBaseUrl:string;accessToken:string;drillId:string;active:boolean;historical:boolean;modelAvailable:boolean;focusId?:string;liveFeed?:AgentLiveState|null;connection?:'connecting'|'live'|'stale' }>()
-const emit = defineEmits<{ preview:[people:AgentAssignment[]];residentFocus:[id:string];robot:[];rollcall:[];missions:[];indoor:[doorId?:string];replay:[at:number] }>()
+const props = defineProps<{ apiBaseUrl:string;accessToken:string;drillId:string;active:boolean;historical:boolean;modelAvailable:boolean;focusId?:string;liveFeed?:AgentLiveState|null;connection?:'connecting'|'live'|'stale';goalDraft?:{id:number;text:string}|null;planFocus?:{id:string;request:number}|null }>()
+const emit = defineEmits<{ preview:[people:AgentAssignment[]];residentFocus:[id:string];robot:[];rollcall:[];missions:[];indoor:[doorId?:string];replay:[at:number];knowledge:[id:string,version?:string] }>()
 const api = createApiClient(props.apiBaseUrl, () => props.accessToken)
 const goal = ref('将目标居民分流疏散，重点人员安排护送'), building = ref(''), assist = ref(true), useModel = ref(false)
 const robotBroadcast = ref(false)
+const floorInput=ref(''), objective=ref('balanced'), forbiddenExits=ref<string[]>([]), voiceBusy=ref(false)
+const revisionObjective=ref('balanced'), revisionExits=ref<string[]>([]), revisionModel=ref(false)
 const expandedStep = ref('')
+const workspace=ref<HTMLElement|null>(null)
+async function openOutcomeEvidence() {
+  detail.value='evidence'
+  await nextTick()
+  workspace.value?.querySelector('.agent-outcome')?.scrollIntoView({block:'nearest'})
+}
 const buildings = ref<Array<{id:string;name:string}>>([]), runs = ref<AgentRun[]>([]), drillStatus = ref('')
 const loading = ref(false), busy = ref(false), error = ref(''), syncError = ref(''), chosen = ref(''), detail = ref<'plan'|'execution'|'evidence'>('plan')
 let timer:ReturnType<typeof setTimeout>|undefined, generation=0, pollEpoch=0, requestId='', disposed=false
 let readController:AbortController|null=null
 const selectedRunId = ref('')
 const composing = ref(false)
+let appliedDraft=0
+let appliedFocus=0
 const run = computed(() => runs.value.find(item=>item.id===selectedRunId.value) ?? runs.value[0])
 const streamReady=computed(()=>props.connection==='live' && props.liveFeed?.id===props.drillId)
 const syncLabel=computed(()=>drillStatus.value==='ended'?'本场结果已冻结，计划与证据保持只读':streamReady.value?'与三维现场实时联动':props.connection==='stale'?'连接恢复中，定时核对最近状态':'正在连接现场，暂用状态读取')
 const coordination = computed(() => run.value?.execution?.coordination)
+const executionSpeech=computed(()=>run.value?`${run.value.scope.building_name}，目标 ${run.value.summary.total} 人，已到场 ${run.value.summary.arrived} 人，已清点 ${run.value.summary.counted} 人。${run.value.reason}${coordination.value?.next_action.reason||''}`:'')
 const laneLabels:Record<string,string> = { observing:'持续核对',paused:'现场冻结',review:'需要复核',approval:'待人工确认',confirmed:'已确认',waiting:'等待条件',attention:'需要关注' }
 const candidate = computed(() => run.value?.candidates.find(p => p.id===chosen.value) ?? run.value?.candidates[0])
 const live = computed(() => !props.historical && ['running','paused'].includes(drillStatus.value))
@@ -44,7 +60,8 @@ function nextAction() {
   else if (action.kind==='indoor') emit('indoor',action.door_id)
   else if (action.kind==='robot') emit('robot')
   else if (action.kind==='focus' && action.resident_id) emit('residentFocus', action.resident_id)
-  else detail.value=action.kind==='review'?'plan':run.value?.status==='completed'?'evidence':'execution'
+  else if(action.kind!=='review'&&run.value?.status==='completed') void openOutcomeEvidence()
+  else detail.value=action.kind==='review'?'plan':'execution'
 }
 function focusResource(key:string) {
   if(key.startsWith('robot:')){emit('robot');return}
@@ -56,7 +73,7 @@ function setRun(value:AgentRun) {
   const changed = run.value?.id !== value.id
   runs.value = [value,...runs.value.filter(r => r.id!==value.id)]
   if(!selectedRunId.value || changed)selectedRunId.value=value.id
-  if (!value.candidates.some(p => p.id===chosen.value)) chosen.value=value.candidates[0]?.id ?? ''
+  if (changed || !value.candidates.some(p => p.id===chosen.value)) chosen.value=value.planning?.recommended_candidate_id ?? value.candidates[0]?.id ?? ''
   if (changed) detail.value=value.steps.length?'execution':'plan'
   if (!value.steps.some(step => step.id===expandedStep.value)) expandedStep.value=(value.steps.find(step=>['blocked','waiting','executing'].includes(step.status))??value.steps[0])?.id??''
 }
@@ -93,11 +110,14 @@ async function poll(epoch=pollEpoch) {
   if(epoch===pollEpoch && props.active && !props.historical && !disposed) timer=setTimeout(()=>poll(epoch),3000)
 }
 async function create() {
-  if(busy.value || props.historical || !goal.value.trim())return
+  if (goal.value.length > 2000) { error.value = '目标超过 2000 字，请编辑缩短后再生成方案。'; return }
+  if(busy.value || voiceBusy.value || props.historical || !goal.value.trim())return
+  const floors=floorInput.value.trim()?floorInput.value.split(/[\s,，、]+/).map(Number):[]
+  if(floors.some(value=>!Number.isInteger(value)||value<1||value>100)||floors.length>30){error.value='楼层请输入 1–100 的整数，多层用逗号分隔，最多 30 层。';return}
   busy.value=true;error.value='';generation++;readController?.abort();const version=generation,scope=props.drillId
   requestId ||= globalThis.crypto?.randomUUID?.() ?? `goal-${Date.now()}-${Math.random().toString(36).slice(2)}`
   try {
-    const value=await api.post<AgentRun>(`/drills/${scope}/agent/runs`,{request_id:requestId,goal:goal.value,building_id:building.value||null,resident_ids:!building.value&&props.focusId?.startsWith('resident-')?[props.focusId]:[],priority_assist:assist.value,robot_broadcast:robotBroadcast.value,pause_for_review:true,include_case_tasks:true,use_model:useModel.value&&props.modelAvailable},{signal:AbortSignal.timeout(60000)})
+    const value=await api.post<AgentRun>(`/drills/${scope}/agent/runs`,{request_id:requestId,goal:goal.value,building_id:building.value||null,resident_ids:!building.value&&props.focusId?.startsWith('resident-')?[props.focusId]:[],priority_assist:assist.value,robot_broadcast:robotBroadcast.value,pause_for_review:true,include_case_tasks:true,use_model:useModel.value&&props.modelAvailable,floors,objective:objective.value,forbidden_exits:forbiddenExits.value},{signal:AbortSignal.timeout(60000)})
     if(version!==generation||disposed)return
     setRun(value);detail.value='plan';requestId='';composing.value=false
   } catch(cause){if(version===generation)error.value=cause instanceof Error?cause.message:'方案生成失败，请重试。'}
@@ -105,9 +125,10 @@ async function create() {
 }
 async function act(action:'approve'|'stop'|'replan'|'review') {
   if(!run.value||busy.value||props.historical)return
+  if(action==='replan'&&new Set(revisionExits.value).size===2){error.value='两个出口均被禁止，请先调整约束或处理通道。';return}
   generation++;readController?.abort();const current=run.value,version=generation;busy.value=true;error.value=''
   try{
-    const value=await api.post<AgentRun>(`/drills/${props.drillId}/agent/runs/${current.id}/actions`,{action,revision:current.revision,candidate_id:action==='approve'?candidate.value?.id:null},{signal:AbortSignal.timeout(30000)})
+    const value=await api.post<AgentRun>(`/drills/${props.drillId}/agent/runs/${current.id}/actions`,{action,revision:current.revision,candidate_id:action==='approve'?candidate.value?.id:null,...(action==='replan'?{objective:revisionObjective.value,forbidden_exits:revisionExits.value,use_model:revisionModel.value&&props.modelAvailable}:{})},{signal:AbortSignal.timeout(action==='replan'?60000:30000)})
     if(version!==generation||disposed)return
     setRun(value);detail.value=action==='approve'?'execution':'plan';emit('preview',[])
   }catch(cause){if(version===generation){error.value=cause instanceof Error?cause.message:'计划操作失败';await read(false,true)}}
@@ -127,11 +148,23 @@ function showRoute(value:AgentCandidate){
   }
   emit('preview',sample)
 }
-watch([goal,building,assist,useModel,robotBroadcast,()=>props.focusId],()=>{requestId=''})
+watch([goal,building,assist,useModel,robotBroadcast,floorInput,objective,forbiddenExits,()=>props.focusId],()=>{requestId=''},{deep:true})
+watch([()=>run.value?.id,()=>run.value?.revision],()=>{
+  revisionObjective.value=run.value?.scope.objective||'balanced';revisionExits.value=[...(run.value?.scope.forbidden_exits||[])];revisionModel.value=false
+},{immediate:true})
+watch([()=>props.planFocus,runs],([focus])=>{
+  if(!focus||focus.request===appliedFocus||!runs.value.some(item=>item.id===focus.id))return
+  appliedFocus=focus.request;selectedRunId.value=focus.id;composing.value=false
+},{immediate:true})
+watch([()=>props.goalDraft,busy],([draft,isBusy])=>{
+  if(!draft||isBusy||draft.id===appliedDraft)return
+  appliedDraft=draft.id;goal.value=draft.text;composing.value=!!run.value;detail.value='plan'
+  building.value='';floorInput.value='';objective.value='balanced';forbiddenExits.value=[];assist.value=true;robotBroadcast.value=false
+},{immediate:true})
 watch([()=>props.liveFeed,streamReady,()=>props.active,()=>props.historical,busy],applyStream,{flush:'post'})
 watch(chosen,()=>emit('preview',[]),{flush:'sync'})
-watch(()=>props.drillId,()=>{runs.value=[];buildings.value=[];chosen.value='';expandedStep.value='';building.value='';requestId='';error.value='';syncError.value='';drillStatus.value=''})
-watch(selectedRunId,()=>{chosen.value=run.value?.candidates[0]?.id??'';expandedStep.value='';emit('preview',[]);detail.value=run.value?.steps.length?'execution':'plan'})
+watch(()=>props.drillId,()=>{runs.value=[];buildings.value=[];chosen.value='';expandedStep.value='';building.value='';floorInput.value='';objective.value='balanced';forbiddenExits.value=[];requestId='';error.value='';syncError.value='';drillStatus.value=''})
+watch(selectedRunId,()=>{chosen.value=run.value?.planning?.recommended_candidate_id??run.value?.candidates[0]?.id??'';expandedStep.value='';emit('preview',[]);detail.value=run.value?.steps.length?'execution':'plan'})
 watch([()=>props.active,()=>props.historical,()=>props.drillId],()=>{
   generation++;pollEpoch++;busy.value=false;loading.value=false;readController?.abort();clearTimeout(timer)
   if(props.historical)emit('preview',[])
@@ -141,7 +174,7 @@ onBeforeUnmount(()=>{disposed=true;generation++;pollEpoch++;clearTimeout(timer);
 </script>
 
 <template>
-  <section class="agent-workspace" aria-label="疏散目标计划" :aria-busy="busy||loading">
+  <section ref="workspace" class="agent-workspace" aria-label="疏散目标计划" :aria-busy="busy||loading">
     <p v-if="historical" class="agent-workspace__notice">正在查看历史现场。返回实时现场后可制定或执行目标计划，历史解读仍在对话中查看。</p>
     <template v-else>
       <div class="agent-workspace__intro"><h3>疏散协同智能体</h3><p>目标解析 → 仿真比较 → 人工确认 → 工具执行 → 结果核对。生成与重算方案会暂停现场，确认执行后继续。燃气、电源和证据核验由责任人操作。</p></div>
@@ -151,27 +184,42 @@ onBeforeUnmount(()=>{disposed=true;generation++;pollEpoch++;clearTimeout(timer);
       <button v-if="!canCreate && !loading" type="button" :disabled="busy" @click="composing=true">另建独立范围目标</button>
       <button v-if="composing" type="button" @click="composing=false">返回当前计划</button>
       <section v-if="run?.task_graph?.case_tasks?.length" class="agent-workspace__case-tasks" aria-label="案例责任任务">
-        <h4>本次案例还需要做什么</h4><p>自动行动与人工处置共同构成完成条件。</p>
+        <div class="agent-workspace__case-heading"><h4>案例处置 · {{run.task_graph.case_tasks.length}} 项</h4><button type="button" @click="emit('missions')">查看与核验</button></div>
+        <p>{{run.task_graph.case_tasks.filter(task=>task.state!=='completed').length}} 项待核验<template v-if="run.task_graph.case_tasks.some(task=>task.verification_ready)">，已有任务满足提交条件</template>。</p>
+        <details><summary>查看责任人与截止时间</summary>
         <button v-for="task in run.task_graph.case_tasks" :key="task.id" type="button" @click="emit('missions')"><strong>{{task.label}}</strong><span>{{task.state==='completed'?'已核验':task.verification_ready?'立即核验':task.overdue?'已超时，可补救':`剩余 ${task.remaining_seconds ?? '—'} 秒`}} · {{task.responsible_role}}</span><small v-if="task.state!=='completed'">{{task.blockers.join('；')}}</small></button>
+        </details>
       </section>
       <label v-if="runs.length>1" class="agent-workspace__plan-select">当前计划<select v-model="selectedRunId" :disabled="busy"><option v-for="item in runs" :key="item.id" :value="item.id">{{labels[item.status]||item.status}} · {{item.scope.building_name}} · {{item.goal}}</option></select></label>
       <form v-if="canCreate&&!loading" class="agent-workspace__form" @submit.prevent="create">
+        <SpeechInput v-if="active" :key="drillId" :api-base-url="apiBaseUrl" :access-token="accessToken" :disabled="busy" destination="目标框" @activity="value=>voiceBusy=value" @transcript="text=>goal=goal.trim() ? goal.trimEnd()+'\n'+text : text" />
         <label>演练目标<textarea v-model="goal" rows="3" maxlength="2000" :disabled="busy" placeholder="例如：将三号楼居民分流疏散，并护送重点人员" /></label>
-        <label>目标范围<select v-model="building" :disabled="busy"><option value="">{{focusId?.startsWith('resident-')?'当前选中居民':'全部待撤离居民（或按目标解析建筑）'}}</option><option v-for="item in buildings" :key="item.id" :value="item.id">{{item.name}}</option></select></label>
+        <label>目标范围<select v-model="building" aria-label="目标范围" :disabled="busy"><option value="">{{focusId?.startsWith('resident-')?'当前选中居民':'全部待撤离居民（或按目标解析建筑）'}}</option><option v-for="item in buildings" :key="item.id" :value="item.id">{{item.name}}</option></select></label>
+        <details class="agent-workspace__constraints"><summary>目标约束与优化取向</summary>
+          <div class="agent-workspace__constraint-fields"><label>居住楼层（可选）<input v-model="floorInput" :disabled="busy" placeholder="例如：3，4；留空按目标解析" maxlength="120"/></label>
+          <label>方案优化取向<select v-model="objective" aria-label="方案优化取向" :disabled="busy"><option value="balanced">风险与效率均衡</option><option value="low_exposure">优先降低暴露</option><option value="fast_arrival">优先尽快到场</option></select></label></div>
+          <fieldset :disabled="busy"><legend>禁止使用的出口</legend><label class="agent-workspace__check"><input v-model="forbiddenExits" type="checkbox" value="north"/>北侧出口</label><label class="agent-workspace__check"><input v-model="forbiddenExits" type="checkbox" value="south"/>南侧出口</label></fieldset>
+          <p class="agent-workspace__meta">按冻结的居住楼层确定人员，移动途中名单保持不变。约束参与路径和仿真计算；不可达时不自动放宽禁用条件。</p>
+        </details>
         <label class="agent-workspace__check"><input type="checkbox" v-model="assist" :disabled="busy" />重点人员安排护送</label>
         <div class="agent-workspace__resource-option">
           <label class="agent-workspace__check"><input type="checkbox" v-model="robotBroadcast" :disabled="busy" />机器人到楼门广播</label>
           <p class="agent-workspace__meta">选择单栋时直达该楼门；选择全部居民时按涉及楼栋拆成顺序任务。居民撤离并行，机器人每次真实到位后才广播。</p>
         </div>
-        <label v-if="modelAvailable" class="agent-workspace__check"><input type="checkbox" v-model="useModel" :disabled="busy" />授权模型解析目标与建筑清单</label>
+        <label v-if="modelAvailable" class="agent-workspace__check"><input type="checkbox" v-model="useModel" :disabled="busy" />授权模型读取目标、精简现场、知识片段与工具结果并推荐方案</label>
         <p class="agent-workspace__meta">{{useModel&&modelAvailable?'模型解析目标，本地校验和仿真规划。':'本地目标解析与仿真规划，不调用大模型。'}} 生成方案不会下达指令。</p>
-        <button type="submit" class="agent-workspace__primary" :disabled="busy||!goal.trim()||drillStatus==='ended'"><AppIcon name="route" :size="18" />{{busy?'正在比较方案…':'生成并比较方案'}}</button>
+        <button type="submit" class="agent-workspace__primary" :disabled="busy||voiceBusy||!goal.trim()||drillStatus==='ended'"><AppIcon name="route" :size="18" />{{busy?'正在核对依据与比较方案…':voiceBusy?'等待语音识别完成':'生成并比较方案'}}</button>
       </form>
       <p v-if="error" class="agent-workspace__error" role="alert">{{error}}</p>
       <article v-if="run" class="agent-workspace__run">
         <header><strong>{{labels[run.status]||run.status}}</strong><span>计划版本 {{run.revision}} · {{clock(run.at_seconds)}}</span></header>
-        <p class="agent-workspace__goal">{{run.goal}}</p><p>{{run.reason}}</p>
+        <p class="agent-workspace__goal"><span v-if="run.revision_context" class="agent-workspace__meta">原始目标 · </span>{{run.goal}}</p><p>{{run.reason}}</p>
+        <AgentRevisionView :run="run" :candidate-id="candidate?.id" @focus="id=>emit('residentFocus',id)" @robot="emit('robot')" @replay="seconds=>emit('replay',seconds)"/>
         <p class="agent-workspace__meta">{{run.scope.building_name}} · {{run.summary.total}} 人 · {{run.planner_notice}}</p>
+        <button v-if="run.scope.resident_ids.length" type="button" @click="emit('residentFocus',run.scope.resident_ids[0]!)"><AppIcon name="target" :size="18"/>查看目标现场</button>
+        <p v-if="run.scope.floors?.length || run.scope.forbidden_exits?.length" class="agent-workspace__meta">{{run.scope.floors?.length?`目标楼层：${run.scope.floors.join('、')}层。`:''}}{{run.scope.forbidden_exits?.length?`禁用：${run.scope.forbidden_exits.map(exit=>exit==='north'?'北侧出口':'南侧出口').join('、')}。`:''}}</p>
+        <AgentPlanningEvidence v-if="run.planning" :report="run.planning"/>
+        <details v-if="run.knowledge" class="agent-workspace__knowledge"><summary>方案参考资料 · {{run.knowledge.hits.length}} 条</summary><p>以下是制定目标时检索到的资料；路线、资源和动作可行性由仿真工具校验。</p><KnowledgeEvidence :result="run.knowledge" @open="source=>emit('knowledge',source.documentId,source.versionId)"/></details>
         <section v-if="coordination" class="agent-workspace__coordination" aria-label="智能体协同状态">
           <div class="agent-workspace__coordination-heading"><h4>当前协同</h4><span>现场 {{clock(coordination.at_seconds)}}</span></div>
           <ol class="agent-workspace__lanes">
@@ -193,12 +241,18 @@ onBeforeUnmount(()=>{disposed=true;generation++;pollEpoch++;clearTimeout(timer);
           <p class="agent-workspace__meta">不回退人员位置、不重置烟气暴露和排队记录；{{run.status==='awaiting_approval'?'新方案仍需确认。':run.status==='needs_review'?'现场再次需要复核。':'行动进度按真实回执更新。'}}到场与清点进度以上方实时数据为准。</p>
         </section>
         <section v-if="detail==='plan'" aria-label="候选分流方案">
+          <details v-if="['awaiting_approval','needs_review'].includes(run.status)" class="agent-workspace__constraints"><summary>修订取向与禁用出口</summary>
+            <label>修订优化取向<select v-model="revisionObjective" aria-label="修订优化取向" :disabled="busy"><option value="balanced">风险与效率均衡</option><option value="low_exposure">优先降低暴露</option><option value="fast_arrival">优先尽快到场</option></select></label>
+            <fieldset :disabled="busy"><legend>本次禁止使用的出口</legend><label class="agent-workspace__check"><input v-model="revisionExits" type="checkbox" value="north"/>禁止北侧出口</label><label class="agent-workspace__check"><input v-model="revisionExits" type="checkbox" value="south"/>禁止南侧出口</label></fieldset>
+            <label v-if="modelAvailable" class="agent-workspace__check"><input v-model="revisionModel" type="checkbox" :disabled="busy"/>授权模型读取本次异常、知识与候选结果，核对修订建议</label>
+            <p class="agent-workspace__meta">修改后点击“按当前现场重新比较”生成新版本。原目标人员不变，已受理的行动保留；本次约束不会随批准请求临时修改。</p>
+          </details>
           <p v-if="run.status==='needs_review'" class="agent-workspace__notice">后续自动下令已暂停；下面保留的是原方案。请先“按当前现场重新比较”，不会取消已经受理的行动。</p>
           <p v-if="run.candidates.length" class="agent-workspace__meta">同一起点按所选路线最长预计耗时进行限时预演。预估分只反映预演时域内已形成的结果，尚未完成的核验、清点与结束项不计入，最终得分以结束复盘为准。居民北侧蓝线、南侧金线，机器人为紫线。</p>
           <p v-if="run.candidates.length===1" role="status" class="agent-workspace__meta">当前条件下没有第二个不同的可执行方案；相同动作已合并。</p>
           <div class="agent-workspace__candidates">
             <article v-for="item in run.candidates" :key="item.id" :data-selected="candidate?.id===item.id">
-              <label class="agent-workspace__check"><input type="radio" :name="'candidate-'+run.id" :value="item.id" v-model="chosen" :disabled="busy" /><strong>{{item.title}}</strong></label>
+              <label class="agent-workspace__check"><input type="radio" :name="'candidate-'+run.id" :value="item.id" v-model="chosen" :disabled="busy" /><strong>{{item.title}}{{run.planning?.recommended_candidate_id===item.id?' · 当前推荐':''}}</strong></label>
               <p v-if="candidate?.id!==item.id" class="agent-workspace__meta">北 {{item.metrics.north}} · 南 {{item.metrics.south}} · 不可达 {{item.metrics.unreachable}} 人；选中查看预演。</p>
               <template v-if="candidate?.id===item.id">
               <p v-if="item.equivalent_rules?.length" class="agent-workspace__equivalent">{{item.equivalent_rules.join('、')}}产生完全相同的人员分配与机器人动作，系统已合并为一个可执行方案。</p>
@@ -242,9 +296,10 @@ onBeforeUnmount(()=>{disposed=true;generation++;pollEpoch++;clearTimeout(timer);
           <p v-if="!run.candidates.length">{{run.scope.completion}}</p>
         </section>
         <section v-else-if="detail==='execution'" aria-label="目标执行步骤">
+          <SpeechPlayback :text="executionSpeech" :active="active&&!busy&&!voiceBusy" label="朗读当前执行摘要"/>
           <section v-if="run.resources" class="agent-workspace__ownership" aria-label="资源归属"><h4>本计划资源</h4><p class="agent-workspace__meta">已登记 {{run.resources.resident_count}} 名居民；资源归属写入数据库，刷新或重启不会重复派遣。</p><ul v-if="run.resources.items.length"><li v-for="resource in run.resources.items" :key="resource.key"><strong>{{resource.name}}</strong><span>{{({owned:'本计划占用',occupied:'其他计划占用',released:'已释放'} as Record<string,string>)[resource.state]}}<template v-if="resource.revision"> · 版本 {{resource.revision}}</template></span><button v-if="resource.kind==='robot'||run.execution?.staff.some(staff=>resource.key==='staff:'+staff.id&&staff.resident_id)" type="button" @click="focusResource(resource.key)">定位现场</button></li></ul><p v-else class="agent-workspace__meta">当前没有独占资源；护送与机器人资源在批准时校验登记。</p></section>
           <p v-if="run.decision" class="agent-workspace__meta">执行依据：{{run.decision.title}} · 批准版本 {{run.decision.revision}} · {{clock(run.decision.approved_at)}} 确认。完整分流依据保留在“依据”中。</p>
-          <button v-if="run.outcomes?.length" type="button" class="agent-workspace__disclosure" @click="detail='evidence'">{{run.outcomes[0]?.result?'查看预测与实际结果差异':`查看 ${clock(run.outcomes[0]!.due_seconds)} 结果核对计划`}}<AppIcon name="arrowRight" :size="18" /></button>
+          <button v-if="run.outcomes?.length" type="button" class="agent-workspace__disclosure" @click="openOutcomeEvidence">{{run.outcomes[0]?.result?'查看预测与实际结果差异':`查看 ${clock(run.outcomes[0]!.due_seconds)} 结果核对计划`}}<AppIcon name="arrowRight" :size="18" /></button>
           <section v-if="coordination && (coordination.issues.length || coordination.bottlenecks.length)" class="agent-workspace__attention" aria-label="需要关注的现场">
             <h4>先看这些现场</h4>
             <p v-if="(coordination.issue_count??0)>coordination.issues.length" class="agent-workspace__meta">共 {{coordination.issue_count}} 项人员风险，优先列出 {{coordination.issues.length}} 项；全部目标人员持续接受监护。</p>
@@ -299,7 +354,7 @@ onBeforeUnmount(()=>{disposed=true;generation++;pollEpoch++;clearTimeout(timer);
             <p v-if="run.decision.allocation">{{run.decision.allocation.description}}</p>
             <p class="agent-workspace__meta">当时向后预演 {{run.decision.forecast_seconds}} 秒：预计到场 {{run.decision.metrics.arrived}} 人、暴露超阈值 {{run.decision.metrics.exposed}} 人、累计排队 {{run.decision.metrics.queue_seconds}} 人秒。此处保留批准时的预测，实际进展见“执行”。</p>
           </section>
-          <AgentOutcomeReview v-if="run.outcomes?.length" :outcomes="run.outcomes" :elapsed="run.at_seconds" @replay="at=>emit('replay',at)" />
+          <AgentOutcomeReview v-if="run.outcomes?.length" :outcomes="run.outcomes" :elapsed="run.at_seconds" :api-base-url="apiBaseUrl" :access-token="accessToken" :run-id="run.id" @replay="at=>emit('replay',at)" @knowledge="id=>emit('knowledge',id)" />
           <p>{{run.scope.completion}}</p><ol class="agent-workspace__evidence"><li v-for="item in run.history" :key="item.id"><time>{{clock(item.at_seconds)}}</time><p>{{item.message}}</p></li></ol>
         </section>
         <div v-if="!canCreate" class="agent-workspace__stop">
@@ -402,4 +457,12 @@ onBeforeUnmount(()=>{disposed=true;generation++;pollEpoch++;clearTimeout(timer);
 .agent-workspace__robot-live{padding-block:var(--space-4);margin-bottom:var(--space-4);border-block:1px solid var(--border-default)}
 .agent-workspace__robot-live h4{display:flex;align-items:center;gap:var(--space-2)}
 @media(max-width:480px){.agent-workspace__lanes{grid-template-columns:minmax(0,1fr);gap:var(--space-3)}.agent-workspace__attention li{align-items:flex-start;flex-wrap:wrap}.agent-workspace__attention li>div{flex-basis:100%}}
+.agent-workspace__constraints{padding-block:12px;border-block:1px solid var(--border-default);}
+.agent-workspace__case-heading{display:flex;align-items:center;justify-content:space-between;gap:8px 16px;flex-wrap:wrap;}.agent-workspace__case-heading h4{margin:0;}.agent-workspace__case-tasks summary{min-height:44px;line-height:1.7;cursor:pointer;}
+.agent-workspace__case-heading button{display:inline-flex;width:auto;min-height:44px;padding:8px 12px;flex-shrink:0;}
+.agent-workspace__constraints summary{min-height:44px;cursor:pointer;line-height:1.7;}
+.agent-workspace__constraint-fields{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:16px;}
+.agent-workspace__constraints fieldset{margin:12px 0;padding:12px;border:1px solid var(--border-default);border-radius:8px;}
+.agent-workspace__constraints legend{font-size:14px;}.agent-workspace__constraints input:not([type=checkbox]){width:100%;box-sizing:border-box;min-height:44px;padding:10px;font:inherit;background:var(--surface-panel);color:var(--text-primary);border:1px solid var(--border-default);border-radius:6px;}
+@media(max-width:540px){.agent-workspace__constraint-fields{grid-template-columns:minmax(0,1fr);}}
 </style>

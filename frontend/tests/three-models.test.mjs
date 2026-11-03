@@ -28,6 +28,17 @@ const { RoadVisuals } = await load('roadVisuals')
 const { CrowdRenderer } = await load('crowdRenderer')
 const { presentHelpers, meetingRoute } = await load('helperPresentation')
 const { createRouteGuide } = await load('routeGuide')
+const {zoneSignState}=await load('indoorZoneSign')
+test('indoor signs project confirmed smoke and door state without inventing passage availability',()=>{
+  const zone={name:'三层东侧厨房',smoke_density:.42,temperature:71.2}
+  const blocked=zoneSignState(zone,{state:'open',can_close:false},true)
+  assert.equal(blocked.environment,'烟气 42% · 71 ℃')
+  assert.equal(blocked.passage,'房门开启 · 暂不能关闭')
+  assert.ok(blocked.title.startsWith('起火房间'))
+  assert.equal(zoneSignState(zone,{state:'closed'},false).passage,'房门关闭')
+  assert.equal(zoneSignState(zone,undefined,false).passage,'房门状态未提供')
+  assert.equal(zoneSignState(zone,{state:'open'},false).passage,'房门开启 · 占用待核对')
+})
 const { cutFloor, stairOpenings, furnitureFits, floorContainsHeight, doorPortal, doorWallPanels, fireSourceCamera, kitchenCamera } = await load('indoorGeometry')
 
 test('fire selection camera keeps every candidate footprint inside wide and narrow viewports', () => {
@@ -505,6 +516,10 @@ test('detailed doors seal the transom and park both handles outside the frozen a
   door.setOpen(false);door.step(.1,true);assert.ok(door.leaf.rotation.y>0&&door.leaf.rotation.y<Math.PI/2)
   door.step(0,false);assert.equal(door.leaf.rotation.y,0,'Paused/history frames settle directly to authority')
   door.setOpen(true);assert.equal(door.leaf.rotation.y,Math.PI/2,'An accepted opening must not obstruct a person already allowed through')
+  door.setOccupied(true);assert.equal(door.frame.userData.passageState,'occupied')
+  door.frame.updateMatrixWorld(true)
+  assert.equal(opening.intersectObject(door.frame,true).length,0,'Status hardware must remain outside the real doorway')
+  door.setOccupied(false);assert.equal(door.frame.userData.passageState,'clear')
 })
 
 test('narrow streets and risk geometry preserve the configured physical width',()=>{
@@ -560,6 +575,13 @@ test('gas hardware stays inside the counter depth and stops below the hood',()=>
     assert.ok(bounds.min.z>=-depth/2-1e-6&&bounds.max.z<=depth/2+1e-6)
     assert.ok(bounds.max.y<.36,'A pipe must not continue into the hood above the valve')
     assert.equal(valve.handle.name,'gas-isolation-lever')
+    assert.equal(valve.group.children.filter(part=>part.name==='gas-pipe-clamp').length,2)
+    valve.setClosed(false);valve.setClosed(true)
+    valve.step(.1,true)
+    assert.ok(valve.handle.rotation.z>0&&valve.handle.rotation.z<Math.PI/2)
+    valve.step(0,false)
+    assert.equal(valve.handle.rotation.z,Math.PI/2)
+    assert.equal(valve.group.userData.confirmedState,'closed')
   }
 })
 

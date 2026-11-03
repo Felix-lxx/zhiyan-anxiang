@@ -12,6 +12,7 @@ from app.models.operations import DrillEvent, DrillSession
 
 
 def register_check(session, run, candidate, approved_at):
+    from app.services.simulation_checkpoints import ENGINE_REVISION
     sequence = session.scalar(select(DrillEvent.sequence).where(
         DrillEvent.drill_session_id == run.drill_session_id
     ).order_by(DrillEvent.sequence.desc()).limit(1)) or 0
@@ -24,6 +25,7 @@ def register_check(session, run, candidate, approved_at):
             "after_sequence": candidate.get("forecast_sequence", sequence),
             "resident_ids": [p["id"] for p in candidate["assignments"]],
             "command_ids": [s["command_id"] for s in run.steps],
+            'forecast_engine_revision': ENGINE_REVISION,
             "predicted": {key: candidate["metrics"][key] for key in ("arrived", "exposed", "queue_seconds")},
         },
     ))
@@ -51,7 +53,7 @@ def interventions(events, basis):
         if event.sequence <= basis["after_sequence"] or event.id in own_events:
             continue
         kind = event.event_type
-        relevant = kind.startswith(("inject.", "road.", "vehicle.", "task."))
+        relevant = kind.startswith(("inject.", "road.", "vehicle.", "task.")) or kind == 'indoor.door_changed'
         if kind == "resident.command":
             relevant = bool(ids.intersection(event.payload.get("resident_ids", [])))
         elif kind in {"robot.target_assigned", "robot.task_cancelled", "robot.broadcast_completed", "robot.replanned"}:
@@ -64,6 +66,7 @@ def interventions(events, basis):
 
 
 def settle_checks(session, run, operations):
+    from app.services.simulation_checkpoints import ENGINE_REVISION
     # The row lock also fences simultaneous schedulers on PostgreSQL. SQLite's
     # existing serialized_command gate encloses the scheduler call.
     pending = list(session.scalars(select(AgentDecisionCheck).where(
@@ -98,17 +101,20 @@ def settle_checks(session, run, operations):
         delayed = max(0, check.basis["approved_at"] - check.basis["forecast_at"])
         early = observed_at < check.due_seconds
         complete_population = matched == len(check.basis["resident_ids"])
-        comparable = not early and complete_population and delayed < check.basis["forecast_seconds"]
+        engine_changed = check.basis.get('forecast_engine_revision', ENGINE_REVISION) != ENGINE_REVISION
+        comparable = not early and complete_population and delayed < check.basis["forecast_seconds"] and not engine_changed
         check.status = "observed"
         check.result = {
             "observed_at": observed_at, "matched": matched, "early_ended": early,
             "approval_delay_seconds": delayed, "comparable": comparable,
+            'observed_engine_revision': ENGINE_REVISION,
             "actual": actual,
             "delta": {key: actual[key] - value for key, value in check.basis["predicted"].items()} if comparable else None,
             "interventions": changes, "intervention_count": count,
             "last_event_sequence": max((e.sequence for e in events), default=0),
             "notice": "场次提前结束，保留实际结果，不计算完整预测窗口差值。" if early else
                 "目标居民数据不完整，无法进行同口径比较。" if not complete_population else
+                '预测与观察使用的模型修订号不同，保留观察，需按当前模型重新预演。' if engine_changed else
                 "批准时预测窗口已结束，保留观察记录；请按当前现场重新预演。" if not comparable else
                 "同一观察时刻、同一批居民的预测与实际差值；结合确认延迟和期间变化解读。",
         }

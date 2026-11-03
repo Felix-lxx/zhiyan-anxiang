@@ -15,6 +15,20 @@ def run_schema_migrations(engine: Engine) -> None:
             "version VARCHAR(64) PRIMARY KEY, applied_at TIMESTAMP NOT NULL)"
         ))
         applied = {row[0] for row in connection.execute(text("SELECT version FROM schema_migrations"))}
+        if '20261102_knowledge_validity' not in applied and inspect(connection).has_table('knowledge_versions'):
+            columns = {c['name'] for c in inspect(connection).get_columns('knowledge_versions')}
+            if 'valid_until' not in columns:
+                kind = 'TIMESTAMP WITH TIME ZONE' if connection.dialect.name == 'postgresql' else 'TIMESTAMP'
+                connection.execute(text('ALTER TABLE knowledge_versions ADD COLUMN valid_until ' + kind))
+            connection.execute(text('INSERT INTO schema_migrations(version, applied_at) VALUES (:version, :applied_at)'),
+                {'version': '20261102_knowledge_validity', 'applied_at': datetime.now(UTC).isoformat()})
+        if '20261102_knowledge_published_version' not in applied and inspect(connection).has_table('knowledge_versions'):
+            from app.models.knowledge import KnowledgeVersion
+            for index in KnowledgeVersion.__table__.indexes:
+                if index.name == 'uq_knowledge_published_document':
+                    index.create(bind=connection, checkfirst=True)
+            connection.execute(text('INSERT INTO schema_migrations(version, applied_at) VALUES (:version, :applied_at)'),
+                {'version': '20261102_knowledge_published_version', 'applied_at': datetime.now(UTC).isoformat()})
         if '20261030_01_demo_kitchen_floor' not in applied:
             inspector = inspect(connection)
             if all(inspector.has_table(name) for name in ('communities', 'community_versions', 'map_objects')):

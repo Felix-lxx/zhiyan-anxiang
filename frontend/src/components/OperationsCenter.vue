@@ -269,12 +269,14 @@ async function loadDrills(): Promise<void> {
 }
 async function createDrill(): Promise<void> { busy.value = true; try { const drill = await api.request<Drill>(`${props.apiBaseUrl}/scenes/${selectedSceneId.value}/drills`, { method: 'POST', headers: { ...headers(), 'Content-Type': 'application/json' }, body: JSON.stringify({...form.value, name: form.value.name.trim() || `${scenes.value.find(scene=>scene.id===selectedSceneId.value)?.name ?? '社区消防'} · 新一轮演练`}) }); drills.value = [drill, ...drills.value]; selectDrill(drill) } catch (cause) { error.value = cause instanceof Error ? cause.message : '场次创建失败。' } finally { busy.value = false } }
 function selectDrill(drill: Drill): void {
+  const requestedAt=route.query.drill===drill.id&&typeof route.query.history_at==='string'?Number(route.query.history_at):NaN
+  const historyAt=Number.isFinite(requestedAt)?Math.max(0,Math.min(drill.elapsed_seconds,requestedAt)):drill.elapsed_seconds
   closeFloatingPanels(); assistantFocus.value = null; leaveReplay()
   current.value = drill; participantInvite.value = null; branchComparison.value = null
-  void router.replace({ query: { scene: selectedSceneId.value, drill: drill.id, ...(directorMode.value === 'replay' ? { mode: 'replay' } : {}) } })
+  void router.replace({ query: { scene: selectedSceneId.value, drill: drill.id, ...(directorMode.value === 'replay' ? { mode: 'replay',history_at:String(historyAt) } : {}) } })
   if (drill.status === 'ended') { desiredDrillId = drill.id; stopLive?.(); stopLive = undefined; socketState.value = 'live' }
   else connectSocket(drill.id)
-  if (directorMode.value === 'replay') void seekReplay(drill.elapsed_seconds)
+  if (directorMode.value === 'replay') void seekReplay(historyAt)
   else if (drill.journey) drawer.value = 'training'
 }
 async function loadParticipantInvite(): Promise<void> {
@@ -458,6 +460,11 @@ function askAboutCommand(command: CommandReceipt): void { openAssistant({ kind: 
 function openReplayAssistant(context?: AssistantFocusContext): void { openAssistant(context ?? { kind: 'replay', label: `历史时刻 ${formatClock(replayAt.value)}`, type: '演练复盘', detail: '当前正在查看的只读历史快照' }) }
 function closeAssistant(): void { assistantOpen.value = false; void nextTick(() => document.querySelector<HTMLButtonElement>('[data-director-action="assistant"]')?.focus()) }
 async function assistantNavigate(action: AssistantAction): Promise<void> {
+  if(action.kind==='knowledge'&&action.document_id){
+    closeFloatingPanels()
+    await router.push({name:'projects',query:{section:'knowledge',document:action.document_id,...(action.version_id?{version:action.version_id}:{})}})
+    return
+  }
   if(action.kind==='training'){openTraining();return}
   if(action.kind==='rollcall'){closeFloatingPanels();drawer.value='rollcall';return}
   const historical = directorMode.value === 'replay' || Boolean(replay.value)
