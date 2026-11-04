@@ -22,6 +22,7 @@ from app.api.routes import (
     speech,
     knowledge,
     tasks,
+    task_guidance,
 )
 
 
@@ -38,6 +39,7 @@ for route_module in (
     scenes,
     decisions,
     tasks,
+    task_guidance,
     operations,
     roles,
     assistant,

@@ -2,9 +2,7 @@
 from collections import Counter
 from datetime import UTC, datetime
 import json
-import math
 from pathlib import Path
-import re
 
 from fastapi import HTTPException
 from sqlalchemy import select, or_
@@ -14,6 +12,7 @@ from sqlalchemy.orm import Session
 from app.models.domain import Community
 from app.models.knowledge import KnowledgeDocument, KnowledgeVersion, KnowledgeChunk, KnowledgeRetrieval, KnowledgeExperience
 from app.services.knowledge_ingestion import chunks, digest
+from app.services.knowledge_ranking import rank_chunks
 
 
 def require_community(session: Session, community_id: str | None, owner: str):
@@ -64,10 +63,17 @@ def seed_knowledge(session: Session):
                     scenario=item['scenario'], source_url=item['source_url'], publisher=item['publisher'], builtin=True)
                 session.add(document)
                 session.flush()
-                version = add_version(session, document, [('编写摘要／训练说明', item['content'])], extraction='curated_summary')
+                content = item['content']
+                if item.get('scope'):
+                    # Source provenance belongs to the immutable version, so pinned
+                    # citations keep their original scope and verification date.
+                    content = (f"原资料：{item['source_title']}\n发布日期：{item['published_at']}\n"
+                               f"来源：{item['source_url']}\n资料核对日期：{item['verified_at']}\n"
+                               f"适用范围：{item['scope']}\n\n{content}")
+                version = add_version(session, document, [('编写摘要／训练说明', content)], extraction='curated_summary')
                 version.status = 'published'
                 version.reviewer = '项目内置资料整理'
-                version.reviewed_at = datetime(2026, 11, 2, tzinfo=UTC)
+                version.reviewed_at = datetime.fromisoformat(item.get('verified_at', '2026-11-02')).replace(tzinfo=UTC)
         except IntegrityError:
             # Another worker already seeded this exact immutable document ID.
             continue
@@ -98,21 +104,6 @@ def document_payload(session, document, detail=False):
     return value
 
 
-def terms(text):
-    text = text.lower()
-    tokens = re.findall(r'[a-z0-9_]+', text)
-    for phrase in re.findall(r'[\u4e00-\u9fff]+', text):
-        tokens.extend(phrase[i:i + 2] for i in range(len(phrase) - 1))
-    return Counter(tokens)
-
-
-def expand_query(query):
-    concepts = {'老人': '老年人 重点人员 护送', '残障': '行动不便 重点人员', '堵了': '堵塞 疏散通道 消防车道',
-                '充电棚': '电动自行车 充电', '烟雾': '烟气 躲火避烟', '关门': '房门 防火门 控烟',
-                '煤气': '燃气 阀门', '机器人': '广播 到位 任务', '没到': '集合清点 失联'}
-    return query + ' ' + ' '.join(value for word, value in concepts.items() if word in query)
-
-
 def retrieve(session: Session, owner: str, query: str, *, community_id=None, scenario='all',
              drill_id=None, semantic=False, limit=5, situation=None):
     require_community(session, community_id, owner)
@@ -132,29 +123,7 @@ def retrieve(session: Session, owner: str, query: str, *, community_id=None, sce
     if semantic:
         from app.services.knowledge_vectors import query_vectors
         vectors, method, notice = query_vectors(query, rows)
-    query_terms = terms(expand_query(query))
-    documents = [terms(document.title + ' ' + chunk.content) for chunk, _, document in rows]
-    frequency = Counter(term for document in documents for term in document)
-    average = sum(sum(d.values()) for d in documents) / max(1, len(documents))
-    ranked = []
-    for (chunk, version, document), words in zip(rows, documents):
-        score = 0.
-        for term in query_terms:
-            tf = words.get(term, 0)
-            if not tf:
-                continue
-            idf = math.log(1 + (len(documents) - frequency[term] + .5) / (frequency[term] + .5))
-            score += idf * tf * 2.2 / (tf + 1.2 * (.25 + .75 * sum(words.values()) / max(1, average)))
-            if term in document.title:
-                score += .6
-        vector_score = vectors.get(chunk.id, 0)
-        if score > 0 or vector_score > .5:
-            ranked.append((score, vector_score, chunk, version, document))
-    # Rank fusion keeps vector scale and keyword scale from being confused.
-    keyword_rank = {item[2].id: i + 1 for i, item in enumerate(sorted(ranked, key=lambda x: -x[0])) if item[0] > 0}
-    vector_rank = {item[2].id: i + 1 for i, item in enumerate(sorted(ranked, key=lambda x: -x[1])) if item[1] > .5}
-    ranked.sort(key=lambda x: -(1 / (60 + keyword_rank[x[2].id]) if x[2].id in keyword_rank else 0)
-                - (1 / (60 + vector_rank[x[2].id]) if x[2].id in vector_rank else 0))
+    ranked = rank_chunks(rows, query, vectors)
     # One bounded query for all source records, rather than one lookup per hit.
     experience_ids = {document.id for _, _, document in rows if document.category == 'experience'}
     sources = {}
@@ -164,14 +133,14 @@ def retrieve(session: Session, owner: str, query: str, *, community_id=None, sce
             KnowledgeExperience.document_id.in_(ordered_ids[offset:offset + 500])))})
     from app.services.knowledge_applicability import assess_experience, assessment
     hits, per_document = [], Counter()
-    for score, vector_score, chunk, version, document in ranked:
+    for score, vector_score, chunk, version, document, match in ranked:
         if per_document[document.id] >= 2:
             continue
         per_document[document.id] += 1
         hits.append({'id': f'K{len(hits) + 1}', 'document_id': document.id, 'version_id': version.id,
             'version': version.number, 'chunk_id': chunk.id, 'title': document.title, 'anchor': chunk.anchor,
             'content': chunk.content, 'content_hash': chunk.content_hash, 'source_url': document.source_url,
-            'publisher': document.publisher, 'category': document.category, 'scenario': document.scenario})
+            'publisher': document.publisher, 'category': document.category, 'scenario': document.scenario, 'match': match})
         if document.category == 'experience':
             source = sources.get(document.id)
             if source:
@@ -182,6 +151,8 @@ def retrieve(session: Session, owner: str, query: str, *, community_id=None, sce
             hits[-1]['applicability'] = assess_experience(source.basis if source else None, situation)
         if len(hits) >= limit:
             break
+    if not hits:
+        notice += ' 未找到足够匹配的已发布资料，请补充具体设备、位置或处置事项。'
     record = KnowledgeRetrieval(owner=owner, community_id=community_id, drill_id=drill_id,
         query_hash=digest(query), method=method, notice=notice, hits=hits)
     session.add(record)

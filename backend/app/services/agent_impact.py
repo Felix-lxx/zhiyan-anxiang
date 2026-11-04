@@ -23,25 +23,40 @@ def remaining_route(route, person, edges):
     return route, False
 
 
+def remaining_resident_routes(run, data):
+    """Share current-route relevance between execution guards and their UI."""
+    selected = set(run.scope.get('resident_ids', []))
+    people = {p['id']: p for p in data['simulation']['residents']
+              if p['id'] in selected and p['status'] != 'evacuated'}
+    edges = {edge['id']: edge for edge in data['simulation'].get('spatial_network', {}).get('edges', [])}
+    routes = defaultdict(set)
+    for candidate in run.candidates:
+        if run.selected_candidate and candidate['id'] != run.selected_candidate:
+            continue
+        for person in candidate.get('assignments', []):
+            if person['id'] in people:
+                route, _ = remaining_route(person.get('route_edge_ids', []), people[person['id']], edges)
+                routes[person['id']].update(route)
+    for step in run.steps:
+        for pid in step.get('resident_ids', []):
+            if pid in people and not routes[pid]:
+                route, _ = remaining_route(people[pid].get('route_edge_ids') or step.get('route_edge_ids', []), people[pid], edges)
+                routes[pid].update(route)
+    return routes
+
+
 def impact_view(session, run, data):
     from app.services.agent_resources import owned_steps
     selected = set(run.scope.get('resident_ids', []))
     people = {p['id']: p for p in data['simulation']['residents'] if p['id'] in selected}
     edges = {edge['id']: edge for edge in data['simulation'].get('spatial_network', {}).get('edges', [])}
     remaining = {pid for pid, person in people.items() if person['status'] != 'evacuated'}
-    routes = defaultdict(set)
+    routes = remaining_resident_routes(run, data)
     robot_edges = set()
     for candidate in run.candidates:
         if run.selected_candidate and candidate['id'] != run.selected_candidate:
             continue
-        for person in candidate.get('assignments', []):
-            route, _ = remaining_route(person.get('route_edge_ids', []), people.get(person['id'], {}), edges)
-            routes[person['id']].update(route)
         robot_edges.update((candidate.get('robot_support') or {}).get('route_edge_ids', []))
-    for step in run.steps:
-        for pid in step.get('resident_ids', []):
-            if not routes[pid]:
-                routes[pid].update(people.get(pid, {}).get('route_edge_ids') or step.get('route_edge_ids', []))
     command_ids = sorted({step['command_id'] for step in owned_steps(run) if step.get('command_id')})
     own_events = set()
     for offset in range(0, len(command_ids), 500):

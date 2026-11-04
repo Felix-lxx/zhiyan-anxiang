@@ -75,8 +75,18 @@ async function validateCurrent() {
   finally { validating.value = false }
 }
 function openPreparationStep(index: number) {
-  const change = () => { preparationStep.value = index; activeStep.value = index === 4 ? 'publish' : index === 3 ? 'decisions' : 'parameters'; if(index === 4) void validateCurrent() }
+  const change = () => {
+    preparationStep.value = index; activeStep.value = index === 4 ? 'publish' : index === 3 ? 'decisions' : 'parameters'
+    if(index === 4) void validateCurrent()
+    if(window.matchMedia('(max-width:650px)').matches)void revealPreparationArea('inspector')
+  }
   if(index >= 3) guardUnsaved(change); else change()
+}
+const inspectorPanel=ref<HTMLElement|null>(null), previewPanel=ref<HTMLElement|null>(null)
+async function revealPreparationArea(area:'inspector'|'preview'){
+  await nextTick()
+  const target=area==='inspector'?inspectorPanel.value:previewPanel.value
+  target?.focus({preventScroll:true});target?.scrollIntoView({block:'start',behavior:'instant'})
 }
 function openMapEditor() { guardUnsaved(() => { void router.push({name:'map', params:{communityId: props.community.id}}) }) }
 const preview = ref<Preview | null>(null)
@@ -104,7 +114,7 @@ const workflowSteps: Array<{ id: WorkflowStep; label: string; helper: string; ic
   { id: 'parameters', label: '基本参数', helper: '定义火情与资源', icon: 'fire' },
   { id: 'preview', label: '空间预览', helper: '验证风险变化', icon: 'eye' },
   { id: 'decisions', label: '决策任务', helper: '编排处置分支', icon: 'split' },
-  { id: 'publish', label: '校验发布', helper: '冻结可运行版本', icon: 'check' },
+  { id: 'publish', label: '校验发布', helper: '生成可运行版本', icon: 'check' },
 ]
 
 function latestVersion(scene: Scene) { return scene.versions[scene.versions.length - 1] ?? null }
@@ -301,16 +311,17 @@ onBeforeUnmount(() => { fireSourcesRequest++; previewRequest++; window.removeEve
 <template>
   <main id="main-content" class="atlas-preparation">
     <header class="atlas-preparation__bar"><button title="智演安巷——面向老旧小区消防治理的数字孪生与智能决策平台" @click="router.push('/projects')"><AppIcon name="building" :size="28"/><strong>智演安巷</strong><span>消防治理智能决策平台</span></button><nav><button aria-current="page">场景准备</button><button :disabled="!activeCanRun || activeScene?.status !== 'published'" @click="router.push({name:'operations',params:{communityId:community.id},query:{scene:activeScene?.id,autostart:'1'}})">演练推演</button><button @click="router.push({name:'projects',query:{section:'history'}})">过程复盘</button><button @click="openMapEditor">资源管理</button></nav><span>{{community.name.split(' · ')[0]}}</span></header>
-    <header class="atlas-preparation__heading"><h1>场景准备</h1><span class="atlas-preparation__breadcrumb">{{community.name}} / {{activeScene?.name || '创建场景'}}</span><span v-if="activeScene" class="status-badge" :data-status="activeScene.status">{{parametersDirty ? '未保存' : activeScene.status==='published'?'已发布':'草稿'}}</span><div v-if="activeScene"><button class="secondary-button" :disabled="isSaving || !validPreviewParameters()" @click="saveParameters"><AppIcon name="check" :size="17"/>{{isSaving?'保存中…':'保存草稿'}}</button><button class="primary-button" @click="openPreparationStep(4)"><AppIcon name="lock" :size="17"/>冻结场景</button></div></header>
+    <header class="atlas-preparation__heading"><h1>场景准备</h1><span class="atlas-preparation__breadcrumb">{{community.name}} / {{activeScene?.name || '创建场景'}}</span><span v-if="activeScene" class="status-badge" :data-status="activeScene.status">{{parametersDirty ? '未保存' : activeScene.status==='published'?'已发布':'草稿'}}</span><div v-if="activeScene"><button class="secondary-button" :disabled="isSaving || !validPreviewParameters()" @click="saveParameters"><AppIcon name="check" :size="17"/>{{isSaving?'保存中…':'保存草稿'}}</button><button class="primary-button" @click="openPreparationStep(4)"><AppIcon name="inspect" :size="17"/>发布检查</button></div></header>
     <p v-if="error" class="message message--error" role="alert">{{error}}</p><p v-if="notice" class="atlas-preparation__notice" role="status">{{notice}}</p>
     <section v-if="!activeScene" class="atlas-scene-empty"><h2>{{isLoading?'正在读取场景…':'创建演练场景'}}</h2><form v-if="!isLoading" @submit.prevent="createScene"><ScenarioCasePicker v-model="selectedTemplateId" :templates="templates"/><label for="scenario-name">场景名称<input id="scenario-name" v-model="name" required minlength="2" maxlength="120" placeholder="例如：安巷社区消防演练"/></label><button class="primary-button" :disabled="isSaving || !selectedTemplate?.capabilities.can_create || !canCreateOnMap">{{isSaving?'正在创建…':'创建场景草稿'}}</button><button type="button" class="secondary-button" @click="openMapEditor">编辑社区底图</button><button v-if="scenes.length" type="button" class="secondary-button" @click="selectScene(scenes[0]!)">返回已有场景</button><p v-if="!canCreateOnMap">请先在社区底图添加{{selectedTemplate?.code==='kitchen_fire'?'住宅楼':'充电棚'}}。</p></form></section>
     <section v-else class="atlas-preparation__workspace">
       <nav class="atlas-preparation__steps" aria-label="场景配置步骤"><button v-for="(step,i) in preparationSteps" :key="step[0]" :aria-current="preparationStep===i?'step':undefined" @click="openPreparationStep(i)"><b>{{i+1}}</b><span><strong>{{step[0]}}</strong><small>{{step[1]}}</small></span></button><label>当前场景<select :value="selectedSceneId" @change="selectScene(scenes.find(s=>s.id===($event.target as HTMLSelectElement).value)!)"><option v-for="s in scenes" :key="s.id" :value="s.id">{{s.name}}</option></select></label><button type="button" class="atlas-preparation__new-scene" @click="startNewScene"><AppIcon name="plus" :size="18"/>新建场景</button></nav>
-      <div class="atlas-preparation__canvas">
+      <div ref="previewPanel" class="atlas-preparation__canvas" tabindex="-1" aria-label="三维场景预览">
         <SceneLivePreview :simulation="preview?.simulation ?? null" :loading="isPreviewing || loadingFireSources" :error="previewError" :minute="previewMinute" :draft="previewIsDraft" :fire-level="preview?.fire_level" :smoke-level="preview?.smoke_level" :risk-level="preview?.risk_level" :fire-source-selection="fireSourceSelection" :selected-source-name="selectedSourceName" :room-selection="isKitchen && preparationStep===2 && !isSaving" @fire-source-pick="selectFireSource" @fire-room-pick="selectFireRoom"/>
         <div class="atlas-preparation__preview-time"><AppIcon name="clock" :size="17"/><label for="preview-minute">推演时刻 {{previewMinute}} 分钟</label><input id="preview-minute" v-model.number="previewMinute" type="range" min="0" max="10" @input="handlePreviewMinuteChange"/><button :disabled="isPreviewing" aria-label="重新计算预览" @click="loadPreview(activeScene.id)"><AppIcon name="refresh" :size="17"/></button></div>
       </div>
-      <aside class="atlas-preparation__inspector">
+      <aside ref="inspectorPanel" class="atlas-preparation__inspector" tabindex="-1" aria-label="当前配置参数">
+       <button type="button" class="atlas-preparation__return-preview" @click="revealPreparationArea('preview')"><AppIcon name="eye" :size="18"/>返回三维预览</button>
        <p v-if="locationNotice" class="configuration-location" role="status">{{locationNotice}}</p>
        <section v-if="previewError.includes('缺少标准处置任务')" class="atlas-property-group" role="alert" aria-label="修复场景任务"><h3>需要补齐案例任务</h3><p>该旧场景缺少演练必需的处置任务。补齐后恢复预览，重新校验并发布即可用于新场次；已有演练不受影响。</p><p v-if="parametersDirty">请先保存当前参数，保存时会同时补齐任务。</p><button type="button" class="primary-button" :disabled="isSaving || parametersDirty" @click="repairTasks">{{isSaving?'正在补齐…':'补齐任务并恢复预览'}}</button></section>
        <section v-if="!activeCanRun" class="scenario-unavailable" aria-label="案例支持情况"><h2>{{activeScene.capabilities?.title??'案例能力待确认'}}</h2><p>{{activeScene.capabilities?.notice??'未能读取案例运行能力，请重新进入场景准备。'}}</p><button type="button" class="primary-button" @click="startNewScene">选择可演练案例</button><button type="button" class="secondary-button" @click="router.push({name:'projects',query:{section:'history'}})">查看历史演练</button></section>

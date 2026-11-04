@@ -26,7 +26,7 @@ async def security_headers_and_admission(request, call_next):
     from app.services.command_lock import serialized_command
     path = request.url.path
     knowledge_request = path.startswith(settings.api_prefix + '/knowledge/') and request.method == 'POST'
-    limited = path.endswith(("/participant/resolve", "/participant-invite", "/join", "/socket-ticket", "/auth/login", "/auth/refresh", "/speech/transcribe"))
+    limited = path.endswith(("/participant/resolve", "/participant-invite", "/join", "/socket-ticket", "/auth/login", "/auth/refresh", "/speech/transcribe", "/guidance"))
     if (limited or knowledge_request) and request.method != "OPTIONS":
         try:
             @serialized_command

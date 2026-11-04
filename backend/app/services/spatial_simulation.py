@@ -13,6 +13,7 @@ from app.services.navigation_geometry import building_obstacles, clear_segment
 from app.services.response_staff import roster as staff_roster, projection as staff_projection
 from app.services.indoor_fire import zone_density
 from app.services.motion_trace import record_motion
+from app.services.exposure import accumulate_exposure
 
 
 def xyz(p):
@@ -277,7 +278,7 @@ def simulate(world, events, elapsed, strategy=None, branch_at=None, *, checkpoin
                     person["congestion"] = 0.
                     if person["status"] != "evacuated":
                         density = exposure_density(person)
-                        person["smoke_exposure"] += density*skipped*(1.2 if person["vulnerable"] else .85)
+                        accumulate_exposure(person, density, skipped, now)
                 now += skipped
                 continue
         actors = [*people, *(h for h in helpers.values() if h["state"] in {"approaching", "blocked"})]
@@ -297,7 +298,7 @@ def simulate(world, events, elapsed, strategy=None, branch_at=None, *, checkpoin
             if not is_helper:
                 if person["status"] == "evacuated": continue
                 density = exposure_density(person)
-                person["smoke_exposure"] += density*dt*(1.2 if person["vulnerable"] else .85)
+                accumulate_exposure(person, density, dt, now)
                 helper = helpers.get(person["id"])
                 # Finish (or retreat out of) the occupied segment before waiting
                 # for assistance; freezing inside it can block the approaching helper.
@@ -501,4 +502,4 @@ def simulate(world, events, elapsed, strategy=None, branch_at=None, *, checkpoin
         env = {**env, 'indoor': project_door_safety(env['indoor'], world['indoor_environment'], people, list(helpers.values()))}
         env['visibility'] = min(zone['visibility'] for zone in env['indoor']['zones'])
     congested_edges = sorted((edge for edge in runtime_edges.values() if edge["density_percent"] >= 55), key=lambda edge: (-edge["density_percent"], -edge["waiting_count"], edge["id"]))
-    return dict(fire=fire, environment=env, sensors={"temperature": fire["temperature"], "smoke_ppm": round(45+fire["smoke_radius"]*31), "alarm": fire["intensity"] >= 35}, residents=people, helpers=list(helpers.values()), world=world, spatial_network=graph, road_network=roads, strategy=strategy or "live_commands", parallel_strategy=strategy, summary=dict(total=len(people), evacuated=sum(p["status"] == "evacuated" for p in people), counted=sum(p["counted"] for p in people), moving=sum(p["status"] == "moving" for p in people), vulnerable=sum(p["vulnerable"] for p in people), missing=sum(p["status"] == "missing" for p in people), smoke_exposed=sum(p["smoke_exposure"] > 5 for p in people), congested=sum(p["congestion"] > 55 for p in people), congested_edges=len(congested_edges), critical_edge=({key: congested_edges[0][key] for key in ("id", "name", "density_percent", "waiting_count")} if congested_edges else None), north_load=sum(p["exit"] == "north" for p in people), south_load=sum(p["exit"] == "south" for p in people)))
+    return dict(elapsed_seconds=elapsed, fire=fire, environment=env, sensors={"temperature": fire["temperature"], "smoke_ppm": round(45+fire["smoke_radius"]*31), "alarm": fire["intensity"] >= 35}, residents=people, helpers=list(helpers.values()), world=world, spatial_network=graph, road_network=roads, strategy=strategy or "live_commands", parallel_strategy=strategy, summary=dict(total=len(people), evacuated=sum(p["status"] == "evacuated" for p in people), counted=sum(p["counted"] for p in people), moving=sum(p["status"] == "moving" for p in people), vulnerable=sum(p["vulnerable"] for p in people), missing=sum(p["status"] == "missing" for p in people), smoke_exposed=sum(p["smoke_exposure"] > 5 for p in people), congested=sum(p["congestion"] > 55 for p in people), congested_edges=len(congested_edges), critical_edge=({key: congested_edges[0][key] for key in ("id", "name", "density_percent", "waiting_count")} if congested_edges else None), north_load=sum(p["exit"] == "north" for p in people), south_load=sum(p["exit"] == "south" for p in people)))

@@ -1,9 +1,13 @@
 export interface KnowledgeHit {
+  match?:KnowledgeMatch
   applicability?:KnowledgeApplicability
   experience?:KnowledgeObservation
   id: string; document_id: string; version_id: string; version: number; chunk_id: string
   title: string; anchor: string; content: string; content_hash: string; source_url: string
   publisher: string; category: string; scenario: string
+}
+export interface KnowledgeMatch {
+  method:'keyword'|'semantic'|'hybrid';terms:string[];expanded_terms:string[];ranking_revision:string
 }
 export interface KnowledgeResult { retrieval_id: string; retrieved_at?:string; method: string; notice: string; hits: KnowledgeHit[];assessment?:KnowledgeAssessment }
 export interface KnowledgeApplicability {
@@ -19,8 +23,9 @@ export interface KnowledgeVersion {
   reviewer: string | null; reviewed_at: string | null; embedding_model: string | null
   text?: string
   valid_until?: string | null; effective_status?: string
-  chunks?: Array<{id: string; anchor: string; content: string; content_hash: string}>
+  chunks?: KnowledgeChunk[]
 }
+export interface KnowledgeChunk { id:string;anchor:string;content:string;content_hash:string }
 export interface KnowledgeDocument {
   experience?:KnowledgeObservation
   id: string; title: string; category: string; scenario: string; source_url: string; publisher: string

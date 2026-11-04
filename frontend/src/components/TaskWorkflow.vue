@@ -2,10 +2,11 @@
 import type { ExerciseTask } from '../domain/task'
 import { computed, ref } from 'vue'
 import AppIcon from './AppIcon.vue'
+import TaskGuidance from './TaskGuidance.vue'
 import '../exercise.css'
 
 interface TaskAssignee { id: string; name: string; online: boolean }
-const props = defineProps<{ task: ExerciseTask; running: boolean; busy: boolean; readonly?: boolean; director?: boolean; assignees?: TaskAssignee[] }>()
+const props = defineProps<{ task: ExerciseTask; running: boolean; busy: boolean; readonly?: boolean; director?: boolean; assignees?: TaskAssignee[]; apiBaseUrl?:string;accessToken?:string;drillId?:string;elapsedSeconds?:number;guidanceOpen?:boolean }>()
 const emit = defineEmits<{ action: [action: 'accept' | 'arrive' | 'submit', evidence: string]; assign: [participantId: string]; locate: []; dispatch: [] }>()
 const evidence = ref('')
 const label = computed(() => ({ waiting: '等待火情确认', pending: '待接收', executing: '前往目标', verifying: '处置与核验', completed: '已完成' }[props.task.status] ?? '历史任务'))
@@ -51,6 +52,7 @@ const visibleBlockers=computed(()=>(props.task.blockers??[]).filter(reason=>!(pr
         <button v-if="director && task.kind === 'broadcast'" type="button" :disabled="busy" @click="emit('dispatch')">派机器人到入口</button>
       </div>
     </template>
+    <TaskGuidance v-if="director&&apiBaseUrl&&accessToken&&drillId" :api-base-url="apiBaseUrl" :access-token="accessToken" :drill-id="drillId" :task="task" :elapsed-seconds="elapsedSeconds??0" :historical="readonly" :auto-open="guidanceOpen" @locate="emit('locate')"/>
   </article>
 </template>
 <style scoped>

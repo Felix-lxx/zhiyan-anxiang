@@ -4,7 +4,7 @@ import type { TrainingAction, TrainingJourney } from '../domain/training'
 import AppIcon from './AppIcon.vue'
 
 const props = defineProps<{ journey: TrainingJourney; status: string; busy: boolean }>()
-const emit = defineEmits<{ action: [action: TrainingAction] }>()
+const emit = defineEmits<{ action: [action: TrainingAction]; ask: [] }>()
 const phases = [
   { id: 'prepare', label: '简报' }, { id: 'detect', label: '确认' },
   { id: 'respond', label: '执行' }, { id: 'verify', label: '核验' }, { id: 'review', label: '复盘' },
@@ -24,6 +24,7 @@ function navigate(kind: TrainingAction['kind'], label: string, target_id: string
     <section class="training-journey__current" aria-label="当前任务">
       <h3>{{ journey.title }}</h3>
       <p>{{ isReady ? journey.briefing.objective : journey.summary }}</p>
+      <button class="training-journey__ask" type="button" :disabled="busy" @click="emit('ask')"><AppIcon name="brain" :size="18"/>询问当前任务与依据</button>
       <p v-if="journey.paused" class="training-journey__pause">时钟已暂停。可以查看对象和审阅方案；继续后人员移动与处置计时恢复。</p>
       <button v-if="journey.paused" :disabled="busy" type="button" @click="navigate('resume', '继续训练')"><AppIcon name="play" />继续训练</button>
       <ol class="training-journey__actions">
@@ -85,6 +86,7 @@ function navigate(kind: TrainingAction['kind'], label: string, target_id: string
 .training-journey__actions svg { flex-shrink:0; }
 .training-journey__pause { margin:14px 0 !important; }
 .training-journey__current>button { margin-top:10px; }
+.training-journey__ask { display:flex; align-items:center; gap:8px; padding:10px 12px; border:1px solid var(--border-default); border-radius:6px; background:transparent; color:inherit; cursor:pointer; }
 .training-journey__waiting,.training-journey__brief,.training-journey__completion { border-top:1px solid var(--border-default); padding-top:22px; margin-top:24px; }
 .training-journey__waiting button { width:100%; display:flex; align-items:center; text-align:left; gap:12px; padding:10px 0; border:0; background:none; color:inherit; cursor:pointer; }
 .training-journey__brief summary { min-height:44px; cursor:pointer; font-weight:700; }

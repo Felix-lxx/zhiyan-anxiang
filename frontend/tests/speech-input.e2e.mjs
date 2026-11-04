@@ -13,10 +13,12 @@ try {
   const page = await context.newPage(), errors = []
   page.on('pageerror', e => errors.push(e.message))
   let uploads = 0, chatCalls = 0
+  const semanticRequests=[]
   await page.route('**/speech-fixture/**', async route => {
     const path = new URL(route.request().url()).pathname
     if (path.endsWith('/speech/status')) return route.fulfill({ json: { configured: true } })
     if (path.endsWith('/assistant/status')) return route.fulfill({ json: { configured: false } })
+    if (path.endsWith('/knowledge/status')) return route.fulfill({ json: { embedding_configured: true } })
     if (path.endsWith('/agent/runs')) return route.fulfill({ json: { buildings: [], runs: [], drill_status: 'ready' } })
     if (path.endsWith('/speech/transcribe')) {
       const pcm = route.request().postDataBuffer()
@@ -25,7 +27,7 @@ try {
       uploads++
       return route.fulfill({ json: { text: '请查看三号楼重点人员。' } })
     }
-    if (path.endsWith('/assistant/chat')) {chatCalls++;return route.fulfill({json:{mode:'offline',model:null,
+    if (path.endsWith('/assistant/chat')) {chatCalls++;semanticRequests.push(route.request().postDataJSON().semantic_retrieval);return route.fulfill({json:{mode:'offline',model:null,
       answer:'请先核对目标居民和通道状态，再预览疏散方案。',notice:'隔离界面协议响应，未调用模型。',
       context:{at_seconds:0,historical:false,selection:null},sources:[],actions:[]}})}
     return route.fulfill({ status: 404, json: { detail: 'unexpected fixture request' } })
@@ -75,11 +77,18 @@ try {
   await page.locator('#scene-assistant-question').fill('现场情况')
   await page.locator('.scene-assistant__compose button[type=submit]').click()
   await page.getByRole('button',{name:'朗读这条回答',exact:true}).waitFor()
+  assert.equal(semanticRequests.at(-1),false,'Question text must not leave for embeddings without authorization')
+  await page.getByRole('checkbox',{name:/授权语义检索/}).check()
+  await page.locator('#scene-assistant-question').fill('重点人员如何清点')
+  await page.locator('.scene-assistant__compose button[type=submit]').click()
+  await page.waitForFunction(()=>document.querySelectorAll('.scene-assistant__message[data-role="assistant"]').length>=2)
+  assert.equal(semanticRequests.at(-1),true,'The chat request must carry explicit semantic authorization')
+  await page.getByRole('checkbox',{name:/授权语义检索/}).uncheck()
   await page.evaluate(()=>{
     window.speechSynthesis.speak=utterance=>{window.__spoken=utterance.text}
     window.speechSynthesis.cancel=()=>{window.__cancelled=(window.__cancelled||0)+1}
   })
-  await page.getByRole('button',{name:'朗读这条回答',exact:true}).click()
+  await page.getByRole('button',{name:'朗读这条回答',exact:true}).last().click()
   assert.ok(await page.evaluate(()=>window.__spoken.includes('核对目标居民')))
   await page.evaluate(() => {
     const original = navigator.mediaDevices.getUserMedia.bind(navigator.mediaDevices)
@@ -102,7 +111,7 @@ try {
   await page.getByRole('button', { name: '语音输入', exact: true }).click()
   await page.getByRole('alert').filter({ hasText: '未获得麦克风权限' }).waitFor()
   assert.equal(uploads, 2)
-  assert.equal(chatCalls,1)
+  assert.equal(chatCalls,2)
   assert.deepEqual(errors, [])
   console.log(JSON.stringify({ microphone: 'real browser synthetic device', uploads, chatCalls, widths: [390, 1366], pageErrors: errors }))
 } finally { await browser.close() }

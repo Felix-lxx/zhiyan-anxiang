@@ -1,0 +1,680 @@
+{
+  "date": "2026-11-04",
+  "corpus_hash": "1b74c821ee49d4cb5994e7e9328cac05749f544ae6f67a4077437a7b12bf1304",
+  "case_hash": "f3cd3a12b2efaff9352ec16898c3a05632aa76a92434ee340b9ba472878f5937",
+  "before_revision": "legacy_equal_expansion",
+  "after_revision": "lexical-v2",
+  "before": {
+    "corpus": "shipped builtins only",
+    "semantic_service": false,
+    "case_count": 22,
+    "positive_count": 16,
+    "negative_count": 6,
+    "hit_at_3": 0.9375,
+    "mrr_at_5": 0.9531,
+    "negative_empty_rate": 0.5,
+    "median_local_ms": 2.704,
+    "cases": [
+      {
+        "id": "gas-leak",
+        "query": "燃气泄漏能不能开抽油烟机？",
+        "scenario": "kitchen_fire",
+        "expected": [
+          "builtin-household-gas-response-01"
+        ],
+        "retrieved": [
+          "builtin-household-gas-response-01",
+          "builtin-kitchen-gas-01",
+          "builtin-kitchen-prevention-01",
+          "builtin-platform-kitchen-01",
+          "builtin-platform-revision-01"
+        ],
+        "rank": 1,
+        "latency_ms": 10.176
+      },
+      {
+        "id": "gas-check",
+        "query": "厨房燃气阀门怎样核验？",
+        "scenario": "kitchen_fire",
+        "expected": [
+          "builtin-platform-kitchen-01",
+          "builtin-kitchen-gas-01"
+        ],
+        "retrieved": [
+          "builtin-kitchen-gas-01",
+          "builtin-household-gas-response-01",
+          "builtin-platform-kitchen-01",
+          "builtin-kitchen-prevention-01",
+          "builtin-platform-revision-01"
+        ],
+        "rank": 1,
+        "latency_ms": 2.35
+      },
+      {
+        "id": "elder-escort",
+        "query": "老人下楼需要谁护送？",
+        "scenario": "kitchen_fire",
+        "expected": [
+          "builtin-family-priority-assistance-01",
+          "builtin-family-evacuation-01",
+          "builtin-community-fire-01"
+        ],
+        "retrieved": [
+          "builtin-family-priority-assistance-01",
+          "builtin-family-evacuation-01",
+          "builtin-platform-kitchen-01",
+          "builtin-community-fire-01",
+          "builtin-platform-revision-01"
+        ],
+        "rank": 1,
+        "latency_ms": 2.307
+      },
+      {
+        "id": "blocked-road",
+        "query": "充电棚通道堵了怎么改道？",
+        "scenario": "charging_shed",
+        "expected": [
+          "builtin-platform-charging-01",
+          "builtin-platform-revision-01"
+        ],
+        "retrieved": [
+          "builtin-charging-fire-01",
+          "builtin-highrise-charging-access-01",
+          "builtin-community-fire-01",
+          "builtin-platform-charging-01",
+          "builtin-platform-planning-01"
+        ],
+        "rank": 4,
+        "latency_ms": 2.591
+      },
+      {
+        "id": "door-clearance",
+        "query": "关闭房门前要确认什么？",
+        "scenario": "kitchen_fire",
+        "expected": [
+          "builtin-platform-kitchen-01",
+          "builtin-smoke-judgement-01"
+        ],
+        "retrieved": [
+          "builtin-platform-kitchen-01",
+          "builtin-smoke-judgement-01",
+          "builtin-platform-planning-01",
+          "builtin-family-evacuation-01",
+          "builtin-family-priority-assistance-01"
+        ],
+        "rank": 1,
+        "latency_ms": 2.432
+      },
+      {
+        "id": "smoke-stairs",
+        "query": "烟气很大还能进楼梯间吗？",
+        "scenario": "kitchen_fire",
+        "expected": [
+          "builtin-smoke-judgement-01"
+        ],
+        "retrieved": [
+          "builtin-smoke-judgement-01",
+          "builtin-platform-kitchen-01",
+          "builtin-family-evacuation-01",
+          "builtin-family-priority-assistance-01"
+        ],
+        "rank": 1,
+        "latency_ms": 2.522
+      },
+      {
+        "id": "assembly",
+        "query": "全部到集合点为什么还要清点？",
+        "scenario": "kitchen_fire",
+        "expected": [
+          "builtin-assembly-accountability-case-01",
+          "builtin-platform-kitchen-01"
+        ],
+        "retrieved": [
+          "builtin-assembly-accountability-case-01",
+          "builtin-platform-kitchen-01",
+          "builtin-family-priority-assistance-01",
+          "builtin-community-practical-training-01"
+        ],
+        "rank": 1,
+        "latency_ms": 2.556
+      },
+      {
+        "id": "broadcast",
+        "query": "机器人到位后怎么广播核验？",
+        "scenario": "charging_shed",
+        "expected": [
+          "builtin-platform-charging-01"
+        ],
+        "retrieved": [
+          "builtin-platform-charging-01",
+          "builtin-platform-revision-01",
+          "builtin-platform-planning-01",
+          "builtin-community-practical-training-01",
+          "builtin-assembly-accountability-case-01"
+        ],
+        "rank": 1,
+        "latency_ms": 2.572
+      },
+      {
+        "id": "voice-plan",
+        "query": "语音识别内容怎么送到目标计划？",
+        "scenario": "all",
+        "expected": [
+          "builtin-platform-voice-01"
+        ],
+        "retrieved": [
+          "builtin-platform-voice-01",
+          "builtin-platform-revision-01",
+          "builtin-platform-planning-01",
+          "builtin-family-priority-assistance-01",
+          "builtin-community-practical-training-01"
+        ],
+        "rank": 1,
+        "latency_ms": 4.078
+      },
+      {
+        "id": "reapproval",
+        "query": "什么情况下重新批准疏散计划？",
+        "scenario": "kitchen_fire",
+        "expected": [
+          "builtin-platform-revision-01",
+          "builtin-platform-planning-01"
+        ],
+        "retrieved": [
+          "builtin-platform-revision-01",
+          "builtin-platform-planning-01",
+          "builtin-family-priority-assistance-01",
+          "builtin-kitchen-gas-01",
+          "builtin-community-fire-01"
+        ],
+        "rank": 1,
+        "latency_ms": 2.636
+      },
+      {
+        "id": "charging-stair",
+        "query": "高层住宅电动车可以停在楼梯间吗？",
+        "scenario": "charging_shed",
+        "expected": [
+          "builtin-highrise-charging-access-01",
+          "builtin-charging-fire-01"
+        ],
+        "retrieved": [
+          "builtin-highrise-charging-access-01",
+          "builtin-charging-fire-01",
+          "builtin-smoke-judgement-01",
+          "builtin-family-evacuation-01",
+          "builtin-platform-voice-01"
+        ],
+        "rank": 1,
+        "latency_ms": 2.462
+      },
+      {
+        "id": "community-roles",
+        "query": "社区工作人员演练岗位怎么分工？",
+        "scenario": "all",
+        "expected": [
+          "builtin-community-practical-training-01"
+        ],
+        "retrieved": [
+          "builtin-community-practical-training-01",
+          "builtin-assembly-accountability-case-01",
+          "builtin-family-priority-assistance-01",
+          "builtin-community-fire-01",
+          "builtin-highrise-charging-access-01"
+        ],
+        "rank": 1,
+        "latency_ms": 2.82
+      },
+      {
+        "id": "family-meeting",
+        "query": "如何准备家人失联时的汇合地点？",
+        "scenario": "all",
+        "expected": [
+          "builtin-family-priority-assistance-01"
+        ],
+        "retrieved": [
+          "builtin-family-priority-assistance-01",
+          "builtin-assembly-accountability-case-01",
+          "builtin-charging-fire-01",
+          "builtin-family-evacuation-01",
+          "builtin-household-gas-response-01"
+        ],
+        "rank": 1,
+        "latency_ms": 2.713
+      },
+      {
+        "id": "kitchen-prevention",
+        "query": "厨房油烟机如何预防起火？",
+        "scenario": "kitchen_fire",
+        "expected": [
+          "builtin-kitchen-prevention-01"
+        ],
+        "retrieved": [
+          "builtin-kitchen-prevention-01",
+          "builtin-platform-kitchen-01",
+          "builtin-smoke-judgement-01",
+          "builtin-kitchen-gas-01",
+          "builtin-household-gas-response-01"
+        ],
+        "rank": 1,
+        "latency_ms": 2.385
+      },
+      {
+        "id": "vehicle-arrival",
+        "query": "消防车到了为什么没有完成任务？",
+        "scenario": "charging_shed",
+        "expected": [
+          "builtin-platform-charging-01"
+        ],
+        "retrieved": [
+          "builtin-platform-charging-01",
+          "builtin-highrise-charging-access-01",
+          "builtin-platform-revision-01",
+          "builtin-community-fire-01",
+          "builtin-community-practical-training-01"
+        ],
+        "rank": 1,
+        "latency_ms": 2.695
+      },
+      {
+        "id": "escape-preparation",
+        "query": "老年人和儿童提前准备逃生路线",
+        "scenario": "all",
+        "expected": [
+          "builtin-family-evacuation-01",
+          "builtin-family-priority-assistance-01"
+        ],
+        "retrieved": [
+          "builtin-family-evacuation-01",
+          "builtin-family-priority-assistance-01",
+          "builtin-highrise-charging-access-01",
+          "builtin-smoke-judgement-01",
+          "builtin-platform-revision-01"
+        ],
+        "rank": 1,
+        "latency_ms": 3.287
+      },
+      {
+        "id": "passport",
+        "query": "如何办理护照？",
+        "scenario": "all",
+        "expected": [],
+        "retrieved": [
+          "builtin-charging-fire-01"
+        ],
+        "rank": null,
+        "latency_ms": 3.181
+      },
+      {
+        "id": "restaurant",
+        "query": "小区附近有什么餐厅推荐？",
+        "scenario": "all",
+        "expected": [],
+        "retrieved": [
+          "builtin-platform-planning-01"
+        ],
+        "rank": null,
+        "latency_ms": 2.856
+      },
+      {
+        "id": "medical",
+        "query": "失眠能服用什么药？",
+        "scenario": "all",
+        "expected": [],
+        "retrieved": [],
+        "rank": null,
+        "latency_ms": 2.776
+      },
+      {
+        "id": "gold",
+        "query": "今日黄金价格",
+        "scenario": "all",
+        "expected": [],
+        "retrieved": [],
+        "rank": null,
+        "latency_ms": 2.934
+      },
+      {
+        "id": "quantum",
+        "query": "量子计算纠错算法",
+        "scenario": "all",
+        "expected": [],
+        "retrieved": [
+          "builtin-highrise-charging-access-01",
+          "builtin-platform-kitchen-01"
+        ],
+        "rank": null,
+        "latency_ms": 2.73
+      },
+      {
+        "id": "underspecified",
+        "query": "怎么处理？",
+        "scenario": "all",
+        "expected": [],
+        "retrieved": [],
+        "rank": null,
+        "latency_ms": 3.288
+      }
+    ]
+  },
+  "after": {
+    "corpus": "shipped builtins only",
+    "corpus_hash": "1b74c821ee49d4cb5994e7e9328cac05749f544ae6f67a4077437a7b12bf1304",
+    "case_hash": "f3cd3a12b2efaff9352ec16898c3a05632aa76a92434ee340b9ba472878f5937",
+    "semantic_service": false,
+    "case_count": 22,
+    "positive_count": 16,
+    "negative_count": 6,
+    "hit_at_3": 1.0,
+    "mrr_at_5": 1.0,
+    "negative_empty_rate": 1.0,
+    "median_local_ms": 3.158,
+    "cases": [
+      {
+        "id": "gas-leak",
+        "query": "燃气泄漏能不能开抽油烟机？",
+        "scenario": "kitchen_fire",
+        "expected": [
+          "builtin-household-gas-response-01"
+        ],
+        "retrieved": [
+          "builtin-household-gas-response-01",
+          "builtin-kitchen-prevention-01",
+          "builtin-kitchen-gas-01"
+        ],
+        "rank": 1,
+        "latency_ms": 12.962
+      },
+      {
+        "id": "gas-check",
+        "query": "厨房燃气阀门怎样核验？",
+        "scenario": "kitchen_fire",
+        "expected": [
+          "builtin-platform-kitchen-01",
+          "builtin-kitchen-gas-01"
+        ],
+        "retrieved": [
+          "builtin-kitchen-gas-01",
+          "builtin-platform-kitchen-01",
+          "builtin-household-gas-response-01",
+          "builtin-kitchen-prevention-01",
+          "builtin-platform-revision-01"
+        ],
+        "rank": 1,
+        "latency_ms": 2.681
+      },
+      {
+        "id": "elder-escort",
+        "query": "老人下楼需要谁护送？",
+        "scenario": "kitchen_fire",
+        "expected": [
+          "builtin-family-priority-assistance-01",
+          "builtin-family-evacuation-01",
+          "builtin-community-fire-01"
+        ],
+        "retrieved": [
+          "builtin-family-priority-assistance-01",
+          "builtin-platform-kitchen-01",
+          "builtin-platform-planning-01",
+          "builtin-platform-revision-01"
+        ],
+        "rank": 1,
+        "latency_ms": 3.63
+      },
+      {
+        "id": "blocked-road",
+        "query": "充电棚通道堵了怎么改道？",
+        "scenario": "charging_shed",
+        "expected": [
+          "builtin-platform-charging-01",
+          "builtin-platform-revision-01"
+        ],
+        "retrieved": [
+          "builtin-platform-charging-01",
+          "builtin-highrise-charging-access-01",
+          "builtin-charging-fire-01",
+          "builtin-community-fire-01",
+          "builtin-platform-planning-01"
+        ],
+        "rank": 1,
+        "latency_ms": 3.184
+      },
+      {
+        "id": "door-clearance",
+        "query": "关闭房门前要确认什么？",
+        "scenario": "kitchen_fire",
+        "expected": [
+          "builtin-platform-kitchen-01",
+          "builtin-smoke-judgement-01"
+        ],
+        "retrieved": [
+          "builtin-platform-kitchen-01"
+        ],
+        "rank": 1,
+        "latency_ms": 3.192
+      },
+      {
+        "id": "smoke-stairs",
+        "query": "烟气很大还能进楼梯间吗？",
+        "scenario": "kitchen_fire",
+        "expected": [
+          "builtin-smoke-judgement-01"
+        ],
+        "retrieved": [
+          "builtin-smoke-judgement-01",
+          "builtin-platform-kitchen-01"
+        ],
+        "rank": 1,
+        "latency_ms": 3.013
+      },
+      {
+        "id": "assembly",
+        "query": "全部到集合点为什么还要清点？",
+        "scenario": "kitchen_fire",
+        "expected": [
+          "builtin-assembly-accountability-case-01",
+          "builtin-platform-kitchen-01"
+        ],
+        "retrieved": [
+          "builtin-assembly-accountability-case-01",
+          "builtin-platform-kitchen-01",
+          "builtin-family-priority-assistance-01"
+        ],
+        "rank": 1,
+        "latency_ms": 3.156
+      },
+      {
+        "id": "broadcast",
+        "query": "机器人到位后怎么广播核验？",
+        "scenario": "charging_shed",
+        "expected": [
+          "builtin-platform-charging-01"
+        ],
+        "retrieved": [
+          "builtin-platform-charging-01",
+          "builtin-platform-revision-01",
+          "builtin-platform-planning-01",
+          "builtin-community-practical-training-01"
+        ],
+        "rank": 1,
+        "latency_ms": 3.16
+      },
+      {
+        "id": "voice-plan",
+        "query": "语音识别内容怎么送到目标计划？",
+        "scenario": "all",
+        "expected": [
+          "builtin-platform-voice-01"
+        ],
+        "retrieved": [
+          "builtin-platform-voice-01",
+          "builtin-platform-revision-01"
+        ],
+        "rank": 1,
+        "latency_ms": 6.363
+      },
+      {
+        "id": "reapproval",
+        "query": "什么情况下重新批准疏散计划？",
+        "scenario": "kitchen_fire",
+        "expected": [
+          "builtin-platform-revision-01",
+          "builtin-platform-planning-01"
+        ],
+        "retrieved": [
+          "builtin-platform-revision-01",
+          "builtin-platform-planning-01",
+          "builtin-family-priority-assistance-01"
+        ],
+        "rank": 1,
+        "latency_ms": 3.019
+      },
+      {
+        "id": "charging-stair",
+        "query": "高层住宅电动车可以停在楼梯间吗？",
+        "scenario": "charging_shed",
+        "expected": [
+          "builtin-highrise-charging-access-01",
+          "builtin-charging-fire-01"
+        ],
+        "retrieved": [
+          "builtin-charging-fire-01",
+          "builtin-highrise-charging-access-01",
+          "builtin-smoke-judgement-01"
+        ],
+        "rank": 1,
+        "latency_ms": 3.018
+      },
+      {
+        "id": "community-roles",
+        "query": "社区工作人员演练岗位怎么分工？",
+        "scenario": "all",
+        "expected": [
+          "builtin-community-practical-training-01"
+        ],
+        "retrieved": [
+          "builtin-community-practical-training-01",
+          "builtin-assembly-accountability-case-01",
+          "builtin-family-priority-assistance-01",
+          "builtin-highrise-charging-access-01"
+        ],
+        "rank": 1,
+        "latency_ms": 3.179
+      },
+      {
+        "id": "family-meeting",
+        "query": "如何准备家人失联时的汇合地点？",
+        "scenario": "all",
+        "expected": [
+          "builtin-family-priority-assistance-01"
+        ],
+        "retrieved": [
+          "builtin-family-priority-assistance-01",
+          "builtin-assembly-accountability-case-01"
+        ],
+        "rank": 1,
+        "latency_ms": 3.878
+      },
+      {
+        "id": "kitchen-prevention",
+        "query": "厨房油烟机如何预防起火？",
+        "scenario": "kitchen_fire",
+        "expected": [
+          "builtin-kitchen-prevention-01"
+        ],
+        "retrieved": [
+          "builtin-kitchen-prevention-01",
+          "builtin-platform-kitchen-01"
+        ],
+        "rank": 1,
+        "latency_ms": 3.007
+      },
+      {
+        "id": "vehicle-arrival",
+        "query": "消防车到了为什么没有完成任务？",
+        "scenario": "charging_shed",
+        "expected": [
+          "builtin-platform-charging-01"
+        ],
+        "retrieved": [
+          "builtin-platform-charging-01",
+          "builtin-platform-revision-01",
+          "builtin-highrise-charging-access-01",
+          "builtin-community-fire-01"
+        ],
+        "rank": 1,
+        "latency_ms": 3.197
+      },
+      {
+        "id": "escape-preparation",
+        "query": "老年人和儿童提前准备逃生路线",
+        "scenario": "all",
+        "expected": [
+          "builtin-family-evacuation-01",
+          "builtin-family-priority-assistance-01"
+        ],
+        "retrieved": [
+          "builtin-family-evacuation-01",
+          "builtin-family-priority-assistance-01",
+          "builtin-highrise-charging-access-01"
+        ],
+        "rank": 1,
+        "latency_ms": 3.294
+      },
+      {
+        "id": "passport",
+        "query": "如何办理护照？",
+        "scenario": "all",
+        "expected": [],
+        "retrieved": [],
+        "rank": null,
+        "latency_ms": 3.022
+      },
+      {
+        "id": "restaurant",
+        "query": "小区附近有什么餐厅推荐？",
+        "scenario": "all",
+        "expected": [],
+        "retrieved": [],
+        "rank": null,
+        "latency_ms": 3.116
+      },
+      {
+        "id": "medical",
+        "query": "失眠能服用什么药？",
+        "scenario": "all",
+        "expected": [],
+        "retrieved": [],
+        "rank": null,
+        "latency_ms": 3.113
+      },
+      {
+        "id": "gold",
+        "query": "今日黄金价格",
+        "scenario": "all",
+        "expected": [],
+        "retrieved": [],
+        "rank": null,
+        "latency_ms": 3.025
+      },
+      {
+        "id": "quantum",
+        "query": "量子计算纠错算法",
+        "scenario": "all",
+        "expected": [],
+        "retrieved": [],
+        "rank": null,
+        "latency_ms": 3.048
+      },
+      {
+        "id": "underspecified",
+        "query": "怎么处理？",
+        "scenario": "all",
+        "expected": [],
+        "retrieved": [],
+        "rank": null,
+        "latency_ms": 3.179
+      }
+    ]
+  }
+}

@@ -38,11 +38,33 @@ def test_seed_sources_are_readonly_and_repeatable(client):
         catalog=Path(__file__).parents[1]/'app'/'data'/'fire_knowledge.json'
         assert data['total'] == len(json.loads(catalog.read_text(encoding='utf-8')))
     official = [d for d in data['items'] if d['category']=='official_summary']
-    assert len(official)==6 and all(d['source_url'].startswith('https://') for d in official)
+    assert len(official)==11 and all(d['source_url'].startswith('https://') for d in official)
     result = client.post('/api/v1/knowledge/documents/'+official[0]['id']+'/actions', headers=headers,
                          json={'action':'withdraw','version_id':official[0]['versions'][0]['id']})
     assert result.status_code == 403
     assert client.get('/api/v1/knowledge/documents').status_code == 401
+
+
+def test_new_source_summaries_are_scoped_searchable_and_version_pinned(client):
+    headers = login(client)
+    assert client.get('/api/v1/knowledge/documents', headers=headers).status_code == 200
+    cases = [
+        ('高层住宅充电停放', 'charging_shed', 'builtin-highrise-charging-access-01'),
+        ('燃气泄漏 电器', 'kitchen_fire', 'builtin-household-gas-response-01'),
+        ('汇合地 重点人员', 'kitchen_fire', 'builtin-family-priority-assistance-01'),
+        ('集合清点 缺员上报', 'kitchen_fire', 'builtin-assembly-accountability-case-01'),
+        ('社区岗位分工 实操训练', 'charging_shed', 'builtin-community-practical-training-01'),
+    ]
+    for query, scenario, identifier in cases:
+        result = client.post('/api/v1/knowledge/search', headers=headers,
+                             json={'query': query, 'scenario': scenario}).json()
+        assert any(item['document_id'] == identifier for item in result['hits']), (query, result)
+        hit = next(item for item in result['hits'] if item['document_id'] == identifier)
+        document = client.get('/api/v1/knowledge/documents/' + identifier, headers=headers).json()
+        version = next(item for item in document['versions'] if item['id'] == hit['version_id'])
+        assert '适用范围：' in version['text'] and '2026-11-04' in version['text']
+        stored = client.get('/api/v1/knowledge/retrievals/' + result['retrieval_id'], headers=headers).json()
+        assert any(item['version_id'] == hit['version_id'] and item['content_hash'] == hit['content_hash'] for item in stored['hits'])
 
 
 def test_published_retrieval_revision_withdrawal_and_pinned_evidence(client):
@@ -136,6 +158,10 @@ def test_assistant_uses_scenario_knowledge_and_keeps_drill_state(exercise):
     data=response.json()
     assert data['knowledge']['method']=='keyword' and data['knowledge']['hits']
     assert '[K' in data['answer'] and any(s['id'].startswith('K') for s in data['sources'])
+    citations = {hit['id']: hit for hit in data['knowledge']['hits']}
+    for source in data['sources']:
+        if source['id'] in citations:
+            assert source['chunk_id'] == citations[source['id']]['chunk_id']
     assert all(h['scenario'] in {'all','charging_shed'} for h in data['knowledge']['hits'])
 
 

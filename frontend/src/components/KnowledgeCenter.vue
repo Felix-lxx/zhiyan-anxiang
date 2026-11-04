@@ -1,9 +1,10 @@
 <script setup lang="ts">
-import { computed, onMounted, onBeforeUnmount, ref, watch } from 'vue'
-import { useRoute, useRouter } from 'vue-router'
+import { computed, nextTick, onMounted, onBeforeUnmount, ref, watch } from 'vue'
+import { useRoute, useRouter, type LocationQueryRaw } from 'vue-router'
 import { createApiClient } from '../api/client'
 import type { KnowledgeDocument, KnowledgeResult, KnowledgeObservation as Observation } from '../domain/knowledge'
 import KnowledgeEvidence from './KnowledgeEvidence.vue'
+import KnowledgeReader from './KnowledgeReader.vue'
 import KnowledgeObservation from './KnowledgeObservation.vue'
 import SpeechInput from './SpeechInput.vue'
 import AppIcon from './AppIcon.vue'
@@ -17,6 +18,8 @@ const mode = ref<'detail'|'new'|'search'>('detail'), page = ref(1), total = ref(
 const result = ref<KnowledgeResult | null>(null), error = ref(''), notice = ref(''), busy = ref(false), loading = ref(false)
 const semantic = ref(false), embeddingAvailable = ref(false), allowEmbedding = ref(false), reviewed = ref(false)
 const versionId = ref(''), revisionOf = ref('')
+const workspace = ref<HTMLElement | null>(null), sourceChunkId = ref('')
+const canReturnToSearch = ref(false), returnChunkId = ref('')
 const confirmDelete = ref(false)
 const voiceBusy=ref(false)
 let generation = 0, controller:AbortController | undefined, disposed = false
@@ -41,20 +44,52 @@ async function load() {
   finally { if(current===generation)loading.value=false }
 }
 let detailGeneration=0
-async function open(documentId:string,sourceVersion?:string) {
+async function open(documentId:string,sourceVersion?:string,sourceChunk?:string) {
   const current=++detailGeneration
+  if(mode.value==='search'&&result.value){canReturnToSearch.value=true;returnChunkId.value=sourceChunk??''}
   confirmDelete.value=false
   allowEmbedding.value=false
+  selected.value=null;versionId.value='';sourceChunkId.value=''
   busy.value=true;error.value='';reviewed.value=false
   try {
     const document=await api.get<KnowledgeDocument>('/knowledge/documents/'+documentId)
     if(disposed||current!==detailGeneration)return
-    if(sourceVersion&&!document.versions.some(version=>version.id===sourceVersion))throw new Error('引用的资料版本已不可访问，请核对原检索记录。')
-    selected.value=document;versionId.value=document.versions.some(version=>version.id===sourceVersion)?sourceVersion!:document.versions[0]?.id??'';mode.value='detail'
-    if(document.community_id&&community.value!==document.community_id)community.value=document.community_id
-    if(document.scenario!=='all'&&scenario.value!==document.scenario)scenario.value=document.scenario
+    if(sourceVersion&&!document.versions.some(version=>version.id===sourceVersion)){
+      selected.value=null;versionId.value='';mode.value='detail'
+      throw new Error('引用的资料版本已不可访问，请核对原检索记录。')
+    }
+    const targetVersion=document.versions.find(version=>version.id===sourceVersion)??document.versions[0]
+    if(sourceChunk&&!targetVersion?.chunks?.some(chunk=>chunk.id===sourceChunk)){
+      mode.value='detail';throw new Error('引用片段不属于此资料版本或已不可访问，请核对原检索记录。')
+    }
+    selected.value=document;versionId.value=targetVersion?.id??'';sourceChunkId.value=sourceChunk??'';mode.value='detail'
+    if(targetVersion&&(route.query.document!==document.id||route.query.version!==targetVersion.id||(route.query.chunk??'')!==(sourceChunk??''))){
+      const destination={...route.query,document:document.id,version:targetVersion.id,chunk:sourceChunk}
+      if(!sourceChunk)delete destination.chunk
+      void router.replace({query:destination})
+    }
+    if(!canReturnToSearch.value){
+      if(document.community_id&&community.value!==document.community_id)community.value=document.community_id
+      if(document.scenario!=='all'&&scenario.value!==document.scenario)scenario.value=document.scenario
+    }
   } catch(cause) { if(current===detailGeneration)error.value=cause instanceof Error?cause.message:'资料打开失败。' }
   finally{if(current===detailGeneration)busy.value=false}
+}
+async function backToSearch(){
+  if(!result.value)return
+  mode.value='search';error.value=''
+  const destination={...route.query};delete destination.document;delete destination.version;delete destination.chunk
+  void router.replace({query:destination})
+  await nextTick()
+  const details=[...(workspace.value?.querySelectorAll<HTMLDetailsElement>('[data-knowledge-chunk]')??[])].find(item=>item.dataset.knowledgeChunk===returnChunkId.value)
+  if(details){details.open=true;details.querySelector<HTMLElement>('summary')?.focus()}
+}
+function changeVersion(){
+  sourceChunkId.value='';error.value=''
+  if(!selected.value)return
+  const destination:LocationQueryRaw={...route.query,document:selected.value.id,version:versionId.value}
+  delete destination.chunk
+  void router.replace({query:destination})
 }
 function create() { form.value=blank();revisionOf.value='';mode.value='new';error.value='';notice.value='' }
 function revise() {
@@ -113,30 +148,30 @@ async function remove() {
   try {await api.delete('/knowledge/documents/'+selected.value.id);selected.value=null;confirmDelete.value=false;notice.value='未发布资料已删除。';await load()}
   catch(cause){error.value=cause instanceof Error?cause.message:'删除失败。'}finally{busy.value=false}
 }
-watch([community,scenario],()=>{page.value=1;result.value=null;void load()})
+watch([community,scenario],()=>{page.value=1;result.value=null;canReturnToSearch.value=false;void load()})
 watch(page,()=>void load())
 watch(versionId,()=>{reviewed.value=false;allowEmbedding.value=false;confirmDelete.value=false})
 function replaySource(source:Observation){
   if(source.community_id&&source.scene_id)void router.push({name:'operations',params:{communityId:source.community_id},
     query:{scene:source.scene_id,drill:source.drill_id,mode:'replay',history_at:String(source.observed_at)}})
 }
-watch([()=>route.query.document,()=>route.query.version],([id,version])=>{
-  if(typeof id==='string'&&selected.value?.id!==id)void open(id,typeof version==='string'?version:undefined)
-  else if(typeof id==='string'&&typeof version==='string'&&selected.value?.versions.some(item=>item.id===version))versionId.value=version
+watch([()=>route.query.document,()=>route.query.version,()=>route.query.chunk],([id,version,chunk])=>{
+  if(id===selected.value?.id&&version===versionId.value&&(chunk??'')===sourceChunkId.value)return
+  if(typeof id==='string')void open(id,typeof version==='string'?version:undefined,typeof chunk==='string'?chunk:undefined)
 })
 onMounted(async()=>{
   try {
     const [items,status]=await Promise.all([api.get<Array<{id:string;name:string}>>('/communities'),api.get<{embedding_configured:boolean}>('/knowledge/status')])
     communities.value=items;embeddingAvailable.value=status.embedding_configured
     await load()
-    if(typeof route.query.document==='string')await open(route.query.document,typeof route.query.version==='string'?route.query.version:undefined)
+    if(typeof route.query.document==='string')await open(route.query.document,typeof route.query.version==='string'?route.query.version:undefined,typeof route.query.chunk==='string'?route.query.chunk:undefined)
   }catch(cause){error.value=cause instanceof Error?cause.message:'知识库初始化失败。'}
 })
 onBeforeUnmount(()=>{disposed=true;generation++;detailGeneration++;controller?.abort()})
 </script>
 
 <template>
-  <section class="knowledge-center" aria-label="知识与预案">
+  <section ref="workspace" class="knowledge-center" aria-label="知识与预案">
     <header class="knowledge-center__heading"><div><p>演练知识工作区</p><h1>知识与预案</h1><p>依据有来源，发布有版本；与厨房、充电棚训练共同使用。</p></div><div class="knowledge-center__actions"><button type="button" @click="mode='search';error=''" :disabled="busy"><AppIcon name="search"/>检索资料</button><button type="button" @click="create" :disabled="busy"><AppIcon name="plus"/>添加资料</button></div></header>
     <div class="knowledge-center__filters"><label>使用范围<select v-model="community" :disabled="busy"><option value="">通用与我的未关联资料</option><option v-for="item in communities" :key="item.id" :value="item.id">{{item.name}}</option></select></label><label>适用案例<select v-model="scenario" :disabled="busy"><option v-for="(label,key) in scenarios" :key="key" :value="key">{{key==='all'?'全部案例':label}}</option></select></label><span>{{total}} 份资料 · {{embeddingAvailable?'可选语义检索':'当前使用关键词检索'}}</span></div>
     <p v-if="error" class="knowledge-center__error" role="alert">{{error}} <button type="button" @click="load">重新读取</button></p><p v-if="notice" class="knowledge-center__notice" role="status">{{notice}}</p>
@@ -146,7 +181,8 @@ onBeforeUnmount(()=>{disposed=true;generation++;detailGeneration++;controller?.a
         <nav v-if="total>30" aria-label="资料分页"><button :disabled="page<=1||busy" @click="page--">上一页</button><span>{{page}} / {{Math.ceil(total/30)}}</span><button :disabled="page*30>=total||busy" @click="page++">下一页</button></nav>
       </aside>
       <div class="knowledge-center__detail">
-        <template v-if="mode==='search'"><h2>查找适用依据</h2><SpeechInput :api-base-url="apiBaseUrl" :access-token="accessToken" tone="light" destination="检索框" :disabled="busy" @activity="value=>voiceBusy=value" @transcript="text=>query=text.slice(0,2000)"/><form @submit.prevent="search"><label>问题或关键词<textarea v-model="query" maxlength="2000" rows="3" required placeholder="例如：厨房房门何时能关闭？重点居民怎样安排护送？"/></label><label v-if="embeddingAvailable" class="knowledge-center__check"><input v-model="semantic" type="checkbox"/>授权将本次检索问题发送给配置的 Embedding 服务</label><button :disabled="busy||voiceBusy||query.trim().length<2" type="submit">{{busy?'检索中…':'检索发布资料'}}</button></form><KnowledgeEvidence v-if="result" :result="result" @open="source=>open(source.documentId,source.versionId)"/><p v-if="!result">只检索当前权限范围内已发布且适用的版本。现场人数、道路和任务进度以导演台服务端状态为准。</p></template>
+        <button v-if="mode==='detail'&&canReturnToSearch&&result" type="button" @click="backToSearch"><AppIcon name="back" :size="18"/>返回检索结果 · {{result.hits.length}} 条</button>
+        <template v-if="mode==='search'"><h2>查找适用依据</h2><SpeechInput :api-base-url="apiBaseUrl" :access-token="accessToken" tone="light" destination="检索框" :disabled="busy" @activity="value=>voiceBusy=value" @transcript="text=>query=text.slice(0,2000)"/><form @submit.prevent="search"><label>问题或关键词<textarea v-model="query" maxlength="2000" rows="3" required placeholder="例如：厨房房门何时能关闭？重点居民怎样安排护送？"/></label><label v-if="embeddingAvailable" class="knowledge-center__check"><input v-model="semantic" type="checkbox"/>授权将本次检索问题发送给配置的 Embedding 服务</label><button :disabled="busy||voiceBusy||query.trim().length<2" type="submit">{{busy?'检索中…':'检索发布资料'}}</button></form><KnowledgeEvidence v-if="result" :result="result" @open="source=>open(source.documentId,source.versionId,source.chunkId)"/><p v-if="!result">只检索当前权限范围内已发布且适用的版本。现场人数、道路和任务进度以导演台服务端状态为准。</p></template>
         <template v-else-if="mode==='new'"><h2>{{revisionOf?'保存新版本':'添加专属资料'}}</h2><form @submit.prevent="save">
           <label>资料名称<input v-model="form.title" minlength="2" maxlength="200" required :disabled="!!revisionOf"/></label>
           <div class="knowledge-center__fields"><label>资料类别<select v-model="form.category" :disabled="!!revisionOf"><option value="community_plan">社区预案</option><option value="equipment">设备说明</option><option value="experience">复盘经验</option><option value="reference">参考资料</option></select></label><label>来源机构或编写人<input v-model="form.publisher" maxlength="200" :disabled="!!revisionOf"/></label></div>
@@ -157,7 +193,7 @@ onBeforeUnmount(()=>{disposed=true;generation++;detailGeneration++;controller?.a
           <SpeechInput v-if="form.category==='experience'&&!form.file_base64" :api-base-url="apiBaseUrl" :access-token="accessToken" tone="light" destination="经验正文" :disabled="busy" @activity="value=>voiceBusy=value" @transcript="text=>form.content=(form.content.trimEnd()+'\n'+text).slice(0,80000)"/><label>资料正文<textarea v-model="form.content" :disabled="!!form.file_base64" rows="10" maxlength="80000" placeholder="粘贴社区预案、设备说明或经过审核的复盘经验。"/></label>
           <button type="submit" :disabled="busy||voiceBusy">{{busy?'正在提取并保存…':'保存草稿'}}</button>
         </form></template>
-        <template v-else-if="selected&&version"><div class="knowledge-center__document-heading"><div><p>{{categories[selected.category]}} · {{scenarios[selected.scenario]}}</p><h2>{{selected.title}}</h2></div><select v-model="versionId" aria-label="资料版本"><option v-for="v in selected.versions" :key="v.id" :value="v.id">V{{v.number}} · {{versionLabel(v)}}</option></select></div>
+        <template v-else-if="selected&&version"><div class="knowledge-center__document-heading"><div><p>{{categories[selected.category]}} · {{scenarios[selected.scenario]}}</p><h2>{{selected.title}}</h2></div><select v-model="versionId" aria-label="资料版本" @change="changeVersion"><option v-for="v in selected.versions" :key="v.id" :value="v.id">V{{v.number}} · {{versionLabel(v)}}</option></select></div>
           <p>{{selected.publisher||'用户资料'}} <span>· {{versionLabel(version)}}</span></p><p v-if="selected.source_url"><a :href="selected.source_url" target="_blank" rel="noopener noreferrer">打开来源网站<AppIcon name="arrowRight" :size="16"/></a></p>
           <KnowledgeObservation v-if="selected.experience" :source="selected.experience" @replay="replaySource"/><p v-else-if="selected.category==='experience'">这份经验为人工编写，未关联系统生成的观察记录。</p><p v-if="selected.category==='official_summary'" class="knowledge-center__notice">这里展示经整理的资料摘要；完整内容以来源网站为准。</p>
           <p v-if="version.failure" class="knowledge-center__error" role="alert">{{version.failure}}</p>
@@ -167,7 +203,7 @@ onBeforeUnmount(()=>{disposed=true;generation++;detailGeneration++;controller?.a
           <p>{{version.valid_until?'有效期至：'+new Date(version.valid_until).toLocaleString('zh-CN'):'未设置有效截止时间；适用性仍需结合来源核对。'}}</p>
           <template v-if="!selected.builtin&&selected.versions.every(v=>['draft','review','failed'].includes(v.status))"><button :disabled="busy" @click="confirmDelete=!confirmDelete">删除未发布资料</button><div v-if="confirmDelete" class="knowledge-center__review"><p>确认删除这份未发布资料及其草稿？</p><button :disabled="busy" @click="remove">确认删除</button><button @click="confirmDelete=false">保留资料</button></div></template>
           <details v-if="embeddingAvailable&&version.status==='published'"><summary>语义索引设置</summary><label class="knowledge-center__check"><input v-model="allowEmbedding" type="checkbox"/>授权将此版本资料发送至配置的 Embedding 服务</label><button :disabled="busy||!allowEmbedding" @click="index">建立语义索引</button><p>{{version.embedding_model?'当前索引：'+version.embedding_model:'尚未建立语义索引，关键词检索可用。'}}</p></details>
-          <div class="knowledge-center__content"><p v-if="!version.chunks?.length">此版本没有有效正文，请修订资料。</p><article v-for="chunk in version.chunks" :key="chunk.id"><h3>{{chunk.anchor}}</h3><p>{{chunk.content}}</p><small>内容校验 {{chunk.content_hash.slice(0,12)}}</small></article></div>
+          <KnowledgeReader :key="version.id" :chunks="version.chunks??[]" :focus-chunk-id="sourceChunkId"/>
         </template>
         <div v-else class="knowledge-center__empty"><AppIcon name="book" :size="40"/><h2>把依据带进演练</h2><p>选择左侧资料核对来源与适用范围，或检索厨房烟气、充电风险和重点人员准备。发布后的社区预案会出现在对应场次助手的检索依据中。</p><button @click="mode='search'">开始检索</button></div>
       </div>

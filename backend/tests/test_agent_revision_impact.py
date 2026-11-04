@@ -115,3 +115,26 @@ def test_rejected_local_goal_does_not_leave_the_drill_paused(exercise):
         'goal':'疏散目标居民','floors':[99],'pause_for_review':True})
     assert response.status_code==409
     assert client.get(root,headers=headers).json()['status']=='running'
+
+
+def test_passed_door_does_not_pause_remaining_actions_but_future_doors_still_do(exercise):
+    client,headers,demo,root,_,_,_,_,start=exercise
+    data=start();pid=data['simulation']['residents'][0]['id']
+    plan=proposal(client,headers,root,[pid],'passed-door-guard-001')
+    from app.models.operations import DrillSession
+    from app.services.agent_workflow import relevant_changes
+    with operations.SessionLocal() as db:
+        run=db.get(AgentRun,plan['id'])
+        run.selected_candidate='chosen'
+        run.candidates=[{'id':'chosen','assignments':[{'id':pid,'route_edge_ids':['door','hall']}]}]
+        drill=db.get(DrillSession,demo['drill_id'])
+        operations.append_event(db,drill,'indoor.door_changed','测试员','撤空后关门',{'door_id':'door','state':'closed'})
+        db.commit()
+        current={'simulation':{'residents':[{'id':pid,'status':'moving','node_id':'b'}],
+            'spatial_network':{'edges':[{'id':'door','start_node_id':'a','end_node_id':'b'},
+                                      {'id':'hall','start_node_id':'b','end_node_id':'c'}]}}}
+        assert not relevant_changes(db,run,run.observed_sequence,current)
+        current['simulation']['residents'][0]['node_id']='a'
+        assert relevant_changes(db,run,run.observed_sequence,current)[0][0]=='needs_review'
+        current['simulation']['residents'][0].update(node_id='c',status='evacuated')
+        assert not relevant_changes(db,run,run.observed_sequence,current)

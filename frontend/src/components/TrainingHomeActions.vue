@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, watch } from 'vue'
+import { computed, ref, watch } from 'vue'
 import { createApiClient } from '../api/client'
 import type { TrainingJourney } from '../domain/training'
 import type { DrillIndex } from '../domain/drill'
@@ -13,6 +13,10 @@ const emit = defineEmits<{ resume: []; prepare: []; review: [] }>()
 const api = createApiClient(props.apiBaseUrl, () => props.accessToken)
 const journey = ref<TrainingJourney | null>(null)
 const reading = ref(false), error = ref(''), retry = ref(0)
+const reviewHasDeductions = computed(() => {
+  const score=props.review?.score
+  return Boolean(score&&(score.total_score<100||score.details?.some(item=>item.max_score!==undefined&&item.score<item.max_score)))
+})
 watch(() => [props.unfinished?.id, retry.value] as const, async ([id], _, onCleanup) => {
   journey.value = null; error.value = ''; reading.value = false
   if (!id) return
@@ -34,18 +38,18 @@ watch(() => [props.unfinished?.id, retry.value] as const, async ([id], _, onClea
     <div class="training-home__current">
       <h2>{{ unfinished ? '继续当前训练' : '准备一次训练' }}</h2>
       <template v-if="unfinished">
-        <h3>{{ unfinished.name }}</h3>
+        <h3>{{ unfinished.name }}</h3><p class="training-home__status">{{unfinished.status==='ready'?'尚未开始':unfinished.status==='paused'?'时钟已暂停':'正在运行'}} · {{unfinished.resident_count??journey?.briefing.population??'—'}} 名参演居民</p>
         <p v-if="reading" role="status">正在读取上次停留的阶段…</p>
         <template v-else-if="journey"><strong>{{ journey.title }}</strong><p>{{ journey.summary }}</p><small>进度读取至 {{ Math.floor(journey.as_of_seconds / 60) }} 分 {{ journey.as_of_seconds % 60 }} 秒；进入后恢复实时同步。</small></template>
         <p v-else>{{ unfinished.status === 'ready' ? '配置已冻结，尚未启动。进入后核对本次训练简报。' : '恢复现场并查看未完成的处置、人员与指令。' }}</p>
         <p v-if="error" class="training-home__error" role="status">进度读取失败；仍可进入场次重新读取。<button type="button" @click="retry++">重试进度</button></p>
-        <button class="training-home__primary" type="button" :disabled="busy || loading" @click="emit('resume')">{{ unfinished.status === 'ready' ? '核对简报并进入' : '恢复现场与当前任务' }}<AppIcon name="arrowRight" /></button>
+        <button class="training-home__primary" type="button" :disabled="busy || loading" @click="emit('resume')">{{ unfinished.status === 'ready' ? '核对简报并进入' : '进入现场 · 查看当前任务' }}<AppIcon name="arrowRight" /></button>
       </template>
       <template v-else><p>{{ loading ? '正在读取训练记录…' : '选择案例、核对火点和人员。进入后先查看目标与结束条件，再开始演练。' }}</p><button class="training-home__primary" type="button" :disabled="busy || loading" @click="emit('prepare')">准备新训练<AppIcon name="arrowRight" /></button></template>
     </div>
     <div class="training-home__next">
       <button v-if="unfinished" class="training-home__secondary" type="button" :disabled="busy || loading" @click="emit('prepare')"><AppIcon name="tasks" /><span><strong>准备新训练</strong><small>配置火点、人员与责任任务</small></span><AppIcon name="arrowRight" /></button>
-      <button class="training-home__secondary" type="button" :disabled="busy || loading || !review" @click="emit('review')"><AppIcon name="history" /><span><strong>{{ review ? '处理上次训练留下的问题' : '完成训练后查看改进线索' }}</strong><small>{{ review?.score?.recommendations[0] || (review ? '核对结果、失分证据与关键决定' : '复盘记录将保留决策和核验证据') }}</small></span><AppIcon name="arrowRight" /></button>
+      <button class="training-home__secondary" type="button" :disabled="busy || loading || !review" @click="emit('review')"><AppIcon name="history" /><span><strong>{{ review ? reviewHasDeductions?'核对上次训练失分':'查看上次训练结果' : '完成训练后查看改进线索' }}</strong><small v-if="review">{{review.name}}{{review.score?' · '+review.score.total_score+' 分':''}}</small><small>{{ review?.score?.recommendations[0] || (review ? '核对结果、失分证据与关键决定' : '复盘记录将保留决策和核验证据') }}</small></span><AppIcon name="arrowRight" /></button>
     </div>
   </section>
 </template>

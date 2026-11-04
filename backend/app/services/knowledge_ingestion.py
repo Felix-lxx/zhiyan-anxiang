@@ -68,11 +68,23 @@ def extract(filename: str, encoded: str) -> tuple[list[tuple[str, str]], str]:
 
 
 def chunks(pages: list[tuple[str, str]]) -> list[tuple[str, str]]:
+    """Keep paragraph/sentence boundaries for newly created immutable versions."""
     result = []
     for anchor, text in pages:
-        text = re.sub(r'\n{3,}', '\n\n', text)
-        for offset in range(0, len(text), 600):
-            part = text[offset:offset + 700].strip()
+        text = re.sub(r'\n{3,}', '\n\n', text).strip()
+        number = 0
+        while text:
+            if len(text) <= 700:
+                cut = len(text)
+            else:
+                # Prefer a complete paragraph. A long paragraph falls back to
+                # sentence boundaries, then a bounded cut for unpunctuated data.
+                paragraphs = [m.end() for m in re.finditer(r'\n\s*\n', text[:701]) if 160 <= m.end() <= 700]
+                sentences = [m.end() for m in re.finditer(r'[。！？；!?;][”’」』]?|\.(?=\s)|\n', text[:701]) if 160 <= m.end() <= 700]
+                cut = max(paragraphs or sentences or [700])
+            part = text[:cut].strip()
             if part:
-                result.append((f'{anchor} · 段 {offset // 600 + 1}', part))
+                number += 1
+                result.append((f'{anchor} · 段 {number}', part))
+            text = text[cut:].lstrip()
     return result

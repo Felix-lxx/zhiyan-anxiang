@@ -18,7 +18,7 @@ export interface RobotTask { id: string; label: string; status: string; progress
 
 export interface Robot { name: string; state: string; battery: number; x: number; y: number; current_task: string | null; route: string[]; reason: string; task_queue?: RobotTask[] }
 
-export interface Score { total_score: number; details: Array<{ name: string; score: number; max_score?: number; evidence: string; at_seconds?: number }>; recommendations: string[] }
+export interface Score { total_score: number; details: Array<{ name: string; score: number; max_score?: number; evidence: string; at_seconds?: number;time_basis?:'event'|'observation'|'occurrence'|'related_event';observed_at_seconds?:number;related_command_at_seconds?:number|null;affected_count?:number;occurrence_count?:number;occurrences?:Array<{resident_id:string;label:string;kind:string;at_seconds:number|null;location:string|null}> }>; recommendations: string[] }
 
 export interface ParticipantMember { id: string; name: string; online: boolean; last_seen_at: string }
 

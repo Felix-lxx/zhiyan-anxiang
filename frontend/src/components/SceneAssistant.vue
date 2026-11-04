@@ -4,18 +4,19 @@ import AgentPlanWorkspace from './AgentPlanWorkspace.vue'
 import SpeechInput from './SpeechInput.vue'
 import SpeechPlayback from './SpeechPlayback.vue'
 import KnowledgeApplicability from './KnowledgeApplicability.vue'
+import KnowledgeMatch from './KnowledgeMatch.vue'
 import type { AgentAssignment, AgentLiveState } from '../domain/agent'
 
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import AppIcon from './AppIcon.vue'
 import '../assistant.css'
-export type AssistantAction = { kind: 'training' | 'missions' | 'events' | 'report' | 'command' | 'rollcall' | 'branch' | 'focus' | 'plan' | 'replay' | 'indoor' | 'knowledge'; label: string; resident_id?: string; door_id?:string; object_kind?:'robot'; at_seconds?:number;plan_id?:string;document_id?:string;version_id?:string }
+export type AssistantAction = { kind: 'training' | 'missions' | 'events' | 'report' | 'command' | 'rollcall' | 'branch' | 'focus' | 'plan' | 'replay' | 'indoor' | 'knowledge'; label: string; resident_id?: string; door_id?:string; object_kind?:'robot'; at_seconds?:number;plan_id?:string;document_id?:string;version_id?:string;chunk_id?:string;task_id?:string }
 export interface AssistantFocusContext { kind: 'resident' | 'road' | 'robot' | 'object' | 'command' | 'score' | 'replay'; id?: string; label: string; type?: string; detail?: string; x?: number; y?: number }
 interface Reply {
   knowledge?: import('../domain/knowledge').KnowledgeResult
   mode: 'offline' | 'model'; model: string | null; answer: string; notice: string
   context: { at_seconds: number; historical: boolean; selection: AssistantFocusContext | null }
-  sources: Array<{ id: string; title: string; detail: string; source_url?:string; publisher?:string; version?:number; anchor?:string; category?:string;document_id?:string;version_id?:string;applicability?:import('../domain/knowledge').KnowledgeApplicability }>; actions: AssistantAction[]
+  sources: Array<{ id: string; title: string; detail: string; source_url?:string; publisher?:string; version?:number; anchor?:string; category?:string;document_id?:string;version_id?:string;chunk_id?:string;match?:import('../domain/knowledge').KnowledgeMatch;applicability?:import('../domain/knowledge').KnowledgeApplicability }>; actions: AssistantAction[]
 }
 interface Message { role: 'user' | 'assistant'; content: string; reply?: Reply }
 const props = defineProps<{ apiBaseUrl: string; accessToken: string; drillId: string; drillName: string; open: boolean; atSeconds: number | null; liveSeconds: number; drillStatus?: string; busy?: boolean; focusContext?: AssistantFocusContext | null; agentFeed?:AgentLiveState|null;connection?:'connecting'|'live'|'stale' }>()
@@ -23,7 +24,12 @@ const api = createApiClient(props.apiBaseUrl, () => props.accessToken)
 const emit = defineEmits<{ close: []; navigate: [action: AssistantAction]; planPreview: [people: AgentAssignment[]]; stateAction: [action: 'pause'|'resume'|'end'] }>()
 const activeView = ref<'chat' | 'plan'>('chat')
 function showPlan() { activeView.value = 'plan' }
-defineExpose({ showPlan })
+function showChat(draft = '') {
+  activeView.value = 'chat'
+  if (!question.value.trim()) question.value = draft.slice(0, 2000)
+  void nextTick(() => input.value?.focus({ preventScroll: true }))
+}
+defineExpose({ showPlan, showChat })
 let keepPlanPreview = false
 function previewPlan(people: AgentAssignment[]) {
   emit('planPreview', people)
@@ -47,6 +53,7 @@ function appendTranscript(text: string) {
 }
 const provider = ref<{ configured: boolean; model: string | null } | null>(null)
 const statusError = ref(''), useModel = ref(false), log = ref<HTMLElement | null>(null), input = ref<HTMLTextAreaElement | null>(null)
+const embeddingAvailable=ref(false),useSemantic=ref(false),knowledgeStatusError=ref('')
 const panel = ref<HTMLElement | null>(null), confirmClear = ref(false), questionsOpen = ref(false)
 const settingsOpen = ref(false)
 // A mobile sheet owns focus; desktop remains a non-modal scene companion.
@@ -97,7 +104,16 @@ async function loadStatus() {
   statusError.value = ''; configurationLoading.value = true; statusController?.abort(); const request = new AbortController(); statusController = request
   const timeout = window.setTimeout(() => request.abort(), 8000)
   try {
-    const value = await api.get<NonNullable<typeof provider.value>>('/assistant/status', { signal: request.signal }); if (statusController === request) { provider.value = value; if (!value.configured) useModel.value = false }
+    const [model,knowledge]=await Promise.allSettled([
+      api.get<NonNullable<typeof provider.value>>('/assistant/status',{signal:request.signal}),
+      api.get<{embedding_configured:boolean}>('/knowledge/status',{signal:request.signal}),
+    ])
+    if(statusController!==request)return
+    embeddingAvailable.value=knowledge.status==='fulfilled'&&knowledge.value.embedding_configured
+    knowledgeStatusError.value=knowledge.status==='rejected'?'知识检索配置暂不可读，关键词检索仍可使用。':''
+    if(!embeddingAvailable.value)useSemantic.value=false
+    if(model.status==='rejected')throw model.reason
+    provider.value=model.value;if(!model.value.configured)useModel.value=false
   } catch (cause) { if (statusController === request) { provider.value = null; useModel.value = false; statusError.value = cause instanceof Error && cause.name !== 'AbortError' && !(cause instanceof TypeError) ? cause.message : '暂时无法读取模型配置，请重新检查或使用离线解读。' } }
   finally { window.clearTimeout(timeout); if (statusController === request) configurationLoading.value = false }
 }
@@ -127,7 +143,7 @@ async function send(text = question.value) {
   const request = ++generation; const requestController = new AbortController(); controller = requestController
   const timeout = window.setTimeout(() => requestController.abort(), 100_000)
   try {
-    const reply = await api.post<Reply>(`/drills/${props.drillId}/assistant/chat`, { message: content, history, at_seconds: props.atSeconds, use_model: requestUsesModel, selection_context: props.focusContext ?? null }, { signal: requestController.signal })
+    const reply = await api.post<Reply>(`/drills/${props.drillId}/assistant/chat`, { message: content, history, at_seconds: props.atSeconds, use_model: requestUsesModel, semantic_retrieval:useSemantic.value&&embeddingAvailable.value, selection_context: props.focusContext ?? null }, { signal: requestController.signal })
     if (request !== generation) return
     messages.value.push({ role: 'assistant', content: reply.answer, reply }); await revealReply()
   } catch (cause) {
@@ -152,6 +168,7 @@ function navigate(action: AssistantAction, goalText?:string) {
   previousFocus = null
   emit('navigate', action)
 }
+watch(() => props.drillId, () => { useSemantic.value=false; cancel() })
 watch(() => props.open, open => {
   confirmClear.value = false
   if (open) { if(!messages.value.length && !props.focusContext && props.atSeconds===null)activeView.value='plan'; previousFocus = document.activeElement instanceof HTMLElement ? document.activeElement : null; updateViewport(); void nextTick(() => { if(activeView.value==='chat')input.value?.focus({ preventScroll: true }) }); if (!pending.value) void loadStatus() }
@@ -185,6 +202,8 @@ onBeforeUnmount(() => { for (const [element, wasInert] of inertSiblings) element
       </div>
       <p v-if="provider?.configured" id="scene-assistant-consent-note">{{ useModel ? '已授权向模型发送本场摘要、当前对象、问题、最近对话及本次检索的资料片段。' : '勾选后将本场摘要、当前对象、问题、最近对话及本次检索的资料片段发送给模型。' }}</p>
       <p v-if="statusError && !settingsOpen" class="scene-assistant__connection-hint">{{ statusError }}</p>
+      <label v-if="embeddingAvailable" class="scene-assistant__consent"><input v-model="useSemantic" type="checkbox" :disabled="pending||configurationLoading"/>授权语义检索，将本次问题发送至已配置的 Embedding 服务</label>
+      <p v-else>知识检索：关键词{{knowledgeStatusError?' · 配置暂不可读':' · 语义服务未配置'}}。</p>
     </section>
     <div v-if="confirmClear" class="scene-assistant__confirm" role="group" aria-label="确认清空对话"><p>清空本场对话？此操作无法撤销，不影响演练数据。</p><div><button type="button" @click="confirmClear = false">保留对话</button><button type="button" @click="clear">确认清空</button></div></div>
     <div v-if="contextChanged" class="scene-assistant__stale"><span>{{ focusChanged ? '当前关注对象已切换，旧回答仍保留供对照。' : '现场或回放时刻已变化，旧回答不会自动更新。' }}</span><button type="button" :disabled="pending" @click="refreshContext">{{ focusChanged ? '解读当前对象' : '按新快照重答' }}</button></div>
@@ -193,6 +212,7 @@ onBeforeUnmount(() => { for (const [element, wasInert] of inertSiblings) element
         <p>{{ provider?.configured ? '当前模型：' + provider.model : '管理员需在根目录 .env 配置模型地址、模型名称与密钥，然后重启后端。' }}</p>
         <p>授权仅在本场页面内有效，刷新或切换场次需重新勾选。未授权时使用离线规则解读；已配置不代表本次调用一定成功，请以回答标注的模式为准。</p>
         <p v-if="statusError" role="alert">{{ statusError }}</p>
+        <p>{{embeddingAvailable?'语义检索已配置，需在对话区单独授权；未授权时使用关键词。':knowledgeStatusError||'语义检索未配置，可继续使用关键词检索。'}}</p>
         <button type="button" :disabled="pending || configurationLoading" @click="loadStatus">重新检查配置</button>
       </section>
       <section v-if="!messages.length" class="scene-assistant__welcome"><AppIcon name="brain" :size="32" /><h3>看不懂现场？<br />从一个问题开始。</h3><p>我可以结合本场居民、道路和任务解释当前情况，带你找到对应的操作入口。</p><p class="scene-assistant__boundary">只读建议，不替你执行指令。回答标注数据时间；演练变化后请重新提问。</p></section>
@@ -210,10 +230,12 @@ onBeforeUnmount(() => { for (const [element, wasInert] of inertSiblings) element
           <p v-if="message.reply.knowledge" class="scene-assistant__notice">{{message.reply.knowledge.notice}}</p>
           <details class="scene-assistant__sources"><summary>查看现场与知识依据 · {{ message.reply.sources.length }} 项</summary>
             <dl><div v-for="source in message.reply.sources" :key="source.id" :data-source="source.id" tabindex="-1">
-              <dt>[{{ source.id }}] {{ source.title }}</dt><dd>{{ source.detail }}</dd>
+              <dt>[{{ source.id }}] {{ source.title }}</dt>
               <dd v-if="source.version">V{{source.version}} · {{source.anchor}} · {{source.category==='official_summary'?'官方资料摘要':source.category==='platform_guide'?'项目训练说明':'用户发布资料'}}<br/>{{source.publisher}}</dd>
+              <dd v-if="source.match"><KnowledgeMatch :value="source.match"/></dd>
+              <dd>{{ source.detail }}</dd>
               <dd v-if="source.applicability"><KnowledgeApplicability :value="source.applicability"/></dd>
-              <dd v-if="source.document_id"><button type="button" @click="navigate({kind:'knowledge',label:'核对引用版本',document_id:source.document_id,version_id:source.version_id})">核对引用资料版本</button></dd><dd v-if="source.source_url"><a :href="source.source_url" target="_blank" rel="noopener noreferrer">打开资料来源</a></dd>
+              <dd v-if="source.document_id"><button type="button" @click="navigate({kind:'knowledge',label:'核对引用版本',document_id:source.document_id,version_id:source.version_id,chunk_id:source.chunk_id})">{{source.chunk_id?'定位引用片段':'核对引用资料版本'}}</button></dd><dd v-if="source.source_url"><a :href="source.source_url" target="_blank" rel="noopener noreferrer">打开资料来源</a></dd>
             </div></dl>
           </details>
           <div v-if="message.reply.actions.length" class="scene-assistant__actions"><button v-for="action in message.reply.actions" :key="action.kind + (action.resident_id || '')" type="button" @click="navigate(action,messages[index-1]?.content)">{{ actionLabel(action) }}<AppIcon name="arrowRight" :size="15" /></button></div>
@@ -223,7 +245,7 @@ onBeforeUnmount(() => { for (const [element, wasInert] of inertSiblings) element
       </div>
       <div v-if="error" class="scene-assistant__error" role="alert"><p>{{ error }}</p><button type="button" :disabled="pending" @click="send(lastQuestion)">重试本次问题</button></div>
     </div>
-    <div v-show="activeView==='plan'" class="scene-assistant__log" aria-label="目标计划工作区"><AgentPlanWorkspace :api-base-url="apiBaseUrl" :access-token="accessToken" :drill-id="drillId" :active="open&&activeView==='plan'" :historical="atSeconds!==null" :model-available="!!provider?.configured" :live-feed="agentFeed" :connection="connection" :goal-draft="goalDraft" :plan-focus="planFocus" :focus-id="focusContext?.kind==='resident'?focusContext.id:undefined" @preview="previewPlan" @resident-focus="id=>navigate({kind:'focus',label:'定位目标居民',resident_id:id})" @robot="navigate({kind:'focus',object_kind:'robot',label:'定位机器人'})" @indoor="id=>navigate({kind:'indoor',door_id:id,label:'检查受阻房门'})" @missions="navigate({kind:'missions',label:'查看案例责任任务'})" @rollcall="navigate({kind:'rollcall',label:'前往集合清点'})" @knowledge="(id,version)=>navigate({kind:'knowledge',label:'核对知识资料',document_id:id,version_id:version})" @replay="at=>navigate({kind:'replay',label:'回看决策结果',at_seconds:at})" /></div>
+    <div v-show="activeView==='plan'" class="scene-assistant__log" aria-label="目标计划工作区"><AgentPlanWorkspace :api-base-url="apiBaseUrl" :access-token="accessToken" :drill-id="drillId" :active="open&&activeView==='plan'" :historical="atSeconds!==null" :model-available="!!provider?.configured" :live-feed="agentFeed" :connection="connection" :goal-draft="goalDraft" :plan-focus="planFocus" :focus-id="focusContext?.kind==='resident'?focusContext.id:undefined" @preview="previewPlan" @resident-focus="id=>navigate({kind:'focus',label:'定位目标居民',resident_id:id})" @robot="navigate({kind:'focus',object_kind:'robot',label:'定位机器人'})" @indoor="id=>navigate({kind:'indoor',door_id:id,label:'检查受阻房门'})" @missions="navigate({kind:'missions',label:'查看案例责任任务'})" @task="id=>navigate({kind:'missions',label:'查看任务核验依据',task_id:id})" @rollcall="navigate({kind:'rollcall',label:'前往集合清点'})" @knowledge="(id,version,chunk)=>navigate({kind:'knowledge',label:'核对知识资料',document_id:id,version_id:version,chunk_id:chunk})" @replay="at=>navigate({kind:'replay',label:'回看决策结果',at_seconds:at})" /></div>
     <div v-show="activeView==='chat'" class="scene-assistant__compose">
       <SpeechInput v-if="open && activeView==='chat'" :key="`${drillId}:${atSeconds??'live'}`" :api-base-url="apiBaseUrl" :access-token="accessToken" :disabled="pending" @activity="value=>voiceBusy=value" @transcript="appendTranscript" />
       <div class="scene-assistant__question-heading"><button type="button" :aria-expanded="questionsOpen || !messages.length" aria-controls="scene-assistant-questions" @click="toggleHelp('questions')">常见问题<AppIcon name="chevron" :size="14" /></button><button v-if="canDraftGoal&&atSeconds===null" type="button" class="scene-assistant__goal-handoff" :disabled="voiceBusy||pending" @click="draftGoal()">转为疏散目标<AppIcon name="arrowRight" :size="16"/></button><span v-else>{{ useModel && provider?.configured ? '本次发送给模型' : '本次为离线解读' }}</span></div>

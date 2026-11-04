@@ -223,16 +223,22 @@ def build_candidates(session, drill, data, scope, run=None):
     return candidates[:2]
 
 
-def relevant_changes(session, run, after):
+def relevant_changes(session, run, after, data=None):
     found = []
     ids = set(run.scope["resident_ids"])
     own = {step["command_id"] for step in owned_steps(run) if step.get("command_id")}
     robot_owned = run.scope.get("robot_broadcast") and not run.scope.get("robot_broadcast_evidence") and (
         not run.steps or any(s.get("kind") == "robot.command" and s["status"] != "completed" for s in run.steps))
-    used_edges = {edge for step in run.steps for edge in step.get("route_edge_ids", [])}
-    if not run.steps:
-        used_edges = {edge for candidate in run.candidates for person in candidate["assignments"] for edge in person.get("route_edge_ids", [])}
-        used_edges.update(edge for c in run.candidates for edge in (c.get("robot_support") or {}).get("route_edge_ids", []))
+    from app.services.agent_impact import remaining_resident_routes
+    if data is None:
+        drill = session.get(DrillSession, run.drill_session_id)
+        data = ops().snapshot(session, drill)
+    used_edges = {edge for route in remaining_resident_routes(run, data).values() for edge in route}
+    if robot_owned:
+        used_edges.update(edge for c in run.candidates if not run.selected_candidate or c['id'] == run.selected_candidate
+                          for edge in (c.get('robot_support') or {}).get('route_edge_ids', []))
+        used_edges.update(edge for step in run.steps if step.get('kind') == 'robot.command' and step['status'] != 'completed'
+                          for edge in step.get('route_edge_ids', []))
     own_events = set()
     for receipt in session.scalars(select(DrillEvent).where(DrillEvent.drill_session_id == run.drill_session_id, DrillEvent.event_type == "command.accepted")):
         if receipt.payload.get("command_id") in own: own_events.update(receipt.payload.get("event_ids", []))
@@ -274,7 +280,7 @@ def run_payload(session, run, data):
     approval_guard = None
     if run.status == "awaiting_approval":
         age = max(0, data["elapsed_seconds"] - min((c["forecast_at"] for c in run.candidates), default=data["elapsed_seconds"]))
-        changes = relevant_changes(session, run, run.observed_sequence)
+        changes = relevant_changes(session, run, run.observed_sequence, data)
         expired = age > 45 or any(c.get("navigation_geometry_version") != 1 for c in run.candidates)
         review = bool(changes) or expired
         reason = changes[0][1] if changes else "预演起点已超过45秒，请按当前现场重新比较。" if expired else "确认方案后继续演练并执行。" if data['status'] == 'paused' else "请先开始演练，再确认执行。" if data["status"] != "running" else "现场条件有效，核对方案后可确认执行。"
@@ -388,7 +394,7 @@ def _advance_run(session, run, identity, controlled):
         finalize_run(session, run, data)
         session.commit(); return
     if drill.status != "running": return
-    changes = relevant_changes(session, run, run.observed_sequence)
+    changes = relevant_changes(session, run, run.observed_sequence, data)
     if changes:
         status, reason = next((c for c in changes if c[0] == "taken_over"), changes[0])
         run.status, run.reason = status, reason

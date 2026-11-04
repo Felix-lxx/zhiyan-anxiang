@@ -13,7 +13,7 @@ from app.services.knowledge_applicability import situation
 def replan(session, drill, run, data, request, identity):
     from app.services.agent_workflow import build_candidates, note, relevant_changes
     from app.services.agent_resources import completed_broadcast
-    takeover = next((reason for state, reason in relevant_changes(session, run, run.observed_sequence)
+    takeover = next((reason for state, reason in relevant_changes(session, run, run.observed_sequence, data)
                      if state == 'taken_over'), None)
     if takeover:
         from app.services.agent_claims import release

@@ -810,6 +810,24 @@ function focusPoint(x: number, y: number): void {
   viewMode.value = 'director'; controls.enabled = true
   targetLookAt.copy(worldPoint(x, y)); targetCameraPosition.copy(targetLookAt).add(new THREE.Vector3(15, 28, 26)); renderDirty = true
 }
+function focusTaskTarget(task: {title:string;kind?:string;target_device_id?:string;target_floor?:number;target_position?:{x:number;y:number}}): void {
+  const indoor=props.simulation?.environment.indoor
+  if(indoor&&['gas_off','containment'].includes(task.kind??'')){
+    const floor=task.target_floor??indoor.zones.find(zone=>zone.id===indoor.source_zone_id)?.floor??1
+    focusIndoorFloor(floor,indoor.building_id)
+    // Device and door selections belong to the same frozen geometry used by
+    // the simulation; never synthesize an interactive object from a label.
+    const target=task.target_device_id&&interactiveMeshes.find(mesh=>{
+      const selection=mesh.userData.selection
+      return selection?.deviceId===task.target_device_id||selection?.doorId===task.target_device_id
+    })
+    selected.value=target?target.userData.selection:null
+    renderDirty=true
+    return
+  }
+  selected.value=null
+  if(task.target_position)focusPoint(task.target_position.x,task.target_position.y)
+}
 function focusResident(id: string): void {
   const person = props.simulation?.residents.find(p => p.id === id)
   if (!person) return
@@ -839,7 +857,7 @@ function selectCurrentResident(): void {
   selectedResidents.value = [id]; toolMode.value = 'residents'; controls.enabled = false
   emit('selection', selectedResidents.value); updateEntities()
 }
-defineExpose({ focusPoint, focusResident, showIndoor, selectResidents, focusIndoorFloor, focusKitchen })
+defineExpose({ focusPoint, focusResident, showIndoor, selectResidents, focusIndoorFloor, focusKitchen, focusTaskTarget })
 
 function animate(time = 0): void {
   animationFrame = requestAnimationFrame(animate)

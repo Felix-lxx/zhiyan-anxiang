@@ -115,7 +115,8 @@ def chat(drill_id: str, payload: ChatRequest, identity: AuthenticatedIdentity = 
             'kind': 'knowledge', 'version': hit['version'], 'anchor': hit['anchor'],
             'source_url': hit['source_url'], 'publisher': hit['publisher'],
             'category': hit['category'], 'content_hash': hit['content_hash']})
-        context['sources'][-1].update(document_id=hit['document_id'], version_id=hit['version_id'])
+        context['sources'][-1].update(document_id=hit['document_id'], version_id=hit['version_id'], chunk_id=hit['chunk_id'])
+        context['sources'][-1]['match'] = hit.get('match')
         if hit.get('applicability'):
             context['sources'][-1]['applicability'] = hit['applicability']
     if knowledge['hits']:

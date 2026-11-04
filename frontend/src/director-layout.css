@@ -78,6 +78,11 @@ html .operations-center--immersive .exercise-timeline .execution-link { display:
 html .operations-center--immersive>.director-stage>.ui-toast { bottom:calc(var(--director-timeline) + 88px); max-height:calc(100dvh - var(--director-topbar) - var(--director-timeline) - 120px); overflow:auto; grid-template-columns:auto minmax(0,1fr); }
 .operations-center--immersive>.director-stage>.ui-toast p { font-size:var(--ui-body-size,16px); line-height:1.65; }
 .operations-center--immersive>.director-stage>.ui-toast .ui-toast__actions { grid-column:2; justify-content:flex-end; flex-wrap:wrap; }
+/* A task receipt belongs to the drawer flow, never above its evidence editor
+   or reference reader. Keep a bounded area for long error messages. */
+html .operations-center--immersive>.director-stage .director-drawer>.ui-toast { position:static; inset:auto; transform:none; flex:0 0 auto; width:auto; max-width:none; max-height:24dvh; margin:12px 16px; overflow:auto; grid-template-columns:auto minmax(0,1fr); }
+.operations-center--immersive .director-drawer>.ui-toast p { font-size:16px; line-height:1.7; }
+.operations-center--immersive .director-drawer>.ui-toast .ui-toast__actions { grid-column:2; justify-content:flex-end; flex-wrap:wrap; }
 html .operations-center--immersive>.director-stage .director-intelligence { display:none; }
 html .operations-center--immersive .parallel-worlds { z-index:90; }
 html .operations-center--immersive[data-mode=replay]>.director-stage { visibility:hidden; }
@@ -228,3 +233,16 @@ html .operations-center--immersive .director-drawer>.training-journey { flex:1; 
 }
 .participant-invite__code { max-width:100%; overflow-wrap:anywhere; white-space:normal; letter-spacing:.04em; font-size:20px; line-height:1.65; }
 html .atlas-director :is(.spatial-action-metrics span,.spatial-action-metrics small,.spatial-impact p,.spatial-tool-rack small,.risk-scale small) { font-size:max(12px,var(--ui-meta-size,14px)); }
+
+/* The existing footer owns current-stage guidance; no new scene overlay. */
+html .operations-center--immersive .exercise-timeline.exercise-timeline--progress {
+  display:flex; flex-wrap:nowrap; align-items:center; align-content:normal;
+  padding:10px 18px; box-sizing:border-box; gap:0;
+}
+html .operations-center--immersive .atlas-director-modes button { font-size:14px; }
+html .operations-center--immersive .atlas-director-modes svg { width:20px; height:20px; min-width:20px; flex:none; }
+html .atlas-director .director-rail>button[data-director-action=missions]>b,
+html .atlas-director .director-rail>button[data-director-action=report]>em {
+  display:inline-flex; align-items:center; justify-content:center; min-width:20px;
+  padding:1px 4px; font-size:14px; line-height:1.4; font-style:normal; color:#d9efdf;
+}

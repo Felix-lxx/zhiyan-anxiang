@@ -7,6 +7,7 @@ previews, final reports and agent forecasts use the same rubric.
 from __future__ import annotations
 
 from typing import Any
+from app.services.score_evidence import attach_result_evidence
 
 
 def score_frozen_world(world: dict[str, Any], history: list[Any], simulation: dict[str, Any]) -> dict[str, Any]:
@@ -86,6 +87,7 @@ def score_frozen_world(world: dict[str, Any], history: list[Any], simulation: di
         }
         for name, value, maximum, kind, explanation in criteria
     ]
+    attach_result_evidence(details, history, simulation)
     if world.get("outdoor_smoke_domain") == "exterior_v1":
         details[1]["evidence"] += "；本场为室外烟羽模型，暴露从进入室外通道累计，不模拟楼内渗透"
     if reference_applied:

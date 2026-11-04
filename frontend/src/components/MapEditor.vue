@@ -6,6 +6,7 @@ import type { Community } from '../domain/models'
 import AppIcon from './AppIcon.vue'
 import UiConfirmDialog from './ui/UiConfirmDialog.vue'
 import { createApiClient } from '../api/client'
+import { groupMapMarkers } from '../domain/map-marker-layout'
 import '../exercise.css'
 import '../map-editor.css'
 
@@ -47,6 +48,25 @@ const connectionStartId = ref<string | null>(null)
 const dragState = ref<DragState | null>(null)
 const suppressedPointerClick = ref<string | null>(null)
 const canvasRef = ref<HTMLElement | null>(null)
+const canvasSize = ref({ width: 0, height: 0, compact: false })
+watch(canvasRef, (element, _, onCleanup) => {
+  if (!element) return
+  const media = window.matchMedia('(max-width: 620px)')
+  const measure = () => {
+    const rect = element.getBoundingClientRect()
+    canvasSize.value = { width: rect.width, height: rect.height, compact: media.matches }
+  }
+  const observer = new ResizeObserver(measure)
+  observer.observe(element); media.addEventListener('change', measure); measure()
+  onCleanup(() => { observer.disconnect(); media.removeEventListener('change', measure) })
+})
+const objectMarkerGroups = computed(() => activeLayer.value === 'objects'
+  ? groupMapMarkers(objects.value, canvasSize.value.width, canvasSize.value.height, canvasSize.value.compact, selectedObjectId.value) : [])
+const nearbyObjects = computed(() => objectMarkerGroups.value.find(group => group.members.some(item => item.id === selectedObjectId.value))?.members ?? [])
+function selectNearby(event: Event): void {
+  const object = objects.value.find(item => item.id === (event.target as HTMLSelectElement).value)
+  if (object) selectObject(object)
+}
 const objectNameInput = ref<HTMLInputElement | null>(null)
 const nodeNameInput = ref<HTMLInputElement | null>(null)
 const edgeNameInput = ref<HTMLInputElement | null>(null)
@@ -324,6 +344,10 @@ onMounted(async () => { await Promise.all([loadObjects(),loadNetwork()]);await l
             <template v-else><button type="button" :aria-pressed="canvasTool === 'place-node'" @click="setTool('place-node')"><AppIcon name="plus" />放置节点</button><button type="button" :disabled="nodes.length < 2" :aria-pressed="canvasTool === 'connect'" @click="setTool('connect')"><AppIcon name="route" />连接两点</button></template>
             <span class="map-coordinate-readout">X {{ pointerPoint.x }} · Y {{ pointerPoint.y }} · 吸附 {{ gridStep }}</span>
           </div>
+          <label v-if="nearbyObjects.length > 1" class="map-nearby-picker">此处 {{nearbyObjects.length}} 个相近对象
+            <select :value="selectedObjectId" @change="selectNearby"><option v-for="item in nearbyObjects" :key="item.id" :value="item.id">{{item.name}}</option></select>
+            <span>选择具体对象后可拖动或用方向键移动，坐标保持真实位置。</span>
+          </label>
 
           <div v-if="(activeLayer === 'objects' && isLoading) || (activeLayer === 'network' && isNetworkLoading)" class="map-canvas map-canvas--state">正在读取社区空间数据…</div>
           <div v-else-if="(activeLayer === 'objects' && loadError) || (activeLayer === 'network' && networkError && !nodes.length)" class="map-canvas map-canvas--state map-canvas--error" role="alert"><p>{{ activeLayer === 'objects' ? loadError : networkError }}</p><button class="secondary-button" type="button" @click="activeLayer === 'objects' ? loadObjects() : loadNetwork()">重新加载</button></div>
@@ -334,7 +358,7 @@ onMounted(async () => { await Promise.all([loadObjects(),loadNetwork()]);await l
             </svg>
             <p v-if="activeLayer === 'objects' && !objects.length && !draftPoint" class="map-empty-copy">选择上方对象类型，点击“放置到图上”，再在画布中确定位置。</p>
             <p v-if="activeLayer === 'network' && !nodes.length && !draftPoint" class="map-empty-copy">点击“放置节点”，先标出路口、楼门或疏散出口。</p>
-            <button v-for="mapObject in activeLayer === 'objects' ? objects : []" :key="mapObject.id" class="map-marker" :class="`map-marker--${mapObject.object_type}`" :data-selected="mapObject.id === selectedObjectId" :data-short="compactObjectLabel(mapObject)" :data-dragging="dragState?.kind === 'object' && dragState.id === mapObject.id" :style="{ left: `${mapObject.geometry.x}%`, top: `${mapObject.geometry.y}%` }" type="button" :aria-label="`${mapObject.name}，拖动或使用方向键调整位置`" @pointerdown="startDrag('object', mapObject.id, $event)" @click.stop="handleObjectClick(mapObject)" @keydown="nudge('object', mapObject.id, $event)"><span>{{ typeLabel(mapObject.object_type) }}</span><strong>{{ mapObject.name }}</strong></button>
+            <button v-for="group in objectMarkerGroups" :key="group.object.id" class="map-marker" :class="`map-marker--${group.object.object_type}`" :data-selected="group.object.id === selectedObjectId" :data-short="group.members.length>1 ? group.members.length+'处' : compactObjectLabel(group.object)" :data-dragging="dragState?.kind === 'object' && dragState.id === group.object.id" :style="{ left: `${group.object.geometry.x}%`, top: `${group.object.geometry.y}%` }" type="button" :aria-label="group.members.length>1 ? `${group.object.name}附近${group.members.length}个对象，选择后可切换具体对象` : `${group.object.name}，拖动或使用方向键调整位置`" @pointerdown="(group.members.length===1 || selectedObjectId===group.object.id) && startDrag('object', group.object.id, $event)" @click.stop="handleObjectClick(group.object)" @keydown="nudge('object', group.object.id, $event)"><span>{{ typeLabel(group.object.object_type) }}</span><strong>{{ group.object.name }}</strong></button>
             <button v-for="node in activeLayer === 'network' ? nodes : []" :key="node.id" class="road-node" :class="{ 'road-node--exit': node.is_exit, 'road-node--isolated': reachability?.unreachable_node_ids.includes(node.id) }" :data-selected="node.id === selectedNodeId || node.id === connectionStartId" :data-short="node.is_exit ? '门' : '点'" :data-dragging="dragState?.kind === 'node' && dragState.id === node.id" :style="{ left: `${node.x}%`, top: `${node.y}%` }" type="button" :aria-label="`${node.name}${node.is_exit ? '，疏散出口' : ''}`" @pointerdown="startDrag('node', node.id, $event)" @click.stop="handleNodeClick(node)" @keydown="nudge('node', node.id, $event)"><span>{{ node.is_exit ? '出口' : '节点' }}</span><strong>{{ node.name }}</strong></button>
             <div v-if="draftPoint" class="map-draft-marker" :style="{ left: `${draftPoint.x}%`, top: `${draftPoint.y}%` }"><span>待保存</span></div>
             <button v-for="issue in planningIssues.filter((item) => item.layer === activeLayer && item.point)" :key="issue.id" class="map-diagnostic-pin" :data-tone="issue.tone" :style="{ left: `${issue.point?.x}%`, top: `${issue.point?.y}%` }" type="button" :aria-label="issue.title" @click.stop="focusIssue(issue)">!</button>

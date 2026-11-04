@@ -11,7 +11,7 @@ import AgentRevisionView from './AgentRevisionView.vue'
 import SpeechPlayback from './SpeechPlayback.vue'
 
 const props = defineProps<{ apiBaseUrl:string;accessToken:string;drillId:string;active:boolean;historical:boolean;modelAvailable:boolean;focusId?:string;liveFeed?:AgentLiveState|null;connection?:'connecting'|'live'|'stale';goalDraft?:{id:number;text:string}|null;planFocus?:{id:string;request:number}|null }>()
-const emit = defineEmits<{ preview:[people:AgentAssignment[]];residentFocus:[id:string];robot:[];rollcall:[];missions:[];indoor:[doorId?:string];replay:[at:number];knowledge:[id:string,version?:string] }>()
+const emit = defineEmits<{ preview:[people:AgentAssignment[]];residentFocus:[id:string];robot:[];rollcall:[];missions:[];task:[id:string];indoor:[doorId?:string];replay:[at:number];knowledge:[id:string,version?:string,chunk?:string] }>()
 const api = createApiClient(props.apiBaseUrl, () => props.accessToken)
 const goal = ref('将目标居民分流疏散，重点人员安排护送'), building = ref(''), assist = ref(true), useModel = ref(false)
 const robotBroadcast = ref(false)
@@ -40,7 +40,7 @@ const executionSpeech=computed(()=>run.value?`${run.value.scope.building_name}�
 const laneLabels:Record<string,string> = { observing:'持续核对',paused:'现场冻结',review:'需要复核',approval:'待人工确认',confirmed:'已确认',waiting:'等待条件',attention:'需要关注' }
 const candidate = computed(() => run.value?.candidates.find(p => p.id===chosen.value) ?? run.value?.candidates[0])
 const live = computed(() => !props.historical && ['running','paused'].includes(drillStatus.value))
-const canCreate = computed(() => composing.value || !run.value || ['completed','stopped','taken_over','unfinished'].includes(run.value.status))
+const canCreate = computed(() => composing.value || !run.value)
 const labels:Record<string,string> = { awaiting_approval:'待确认方案',executing:'执行中',waiting:'等待条件',needs_review:'现场变化，待调整',paused:'演练已暂停',awaiting_rollcall:'到场，待人工清点',completed:'目标完成',stopped:'已停止自动下令',taken_over:'已让出控制',unfinished:'本场已结束',pending:'等待条件',accepted:'已受理',queued:'排队',blocked:'受阻',superseded:'已被替代',cancelled:'已取消',failed:'执行失败' }
 const stepSummary = computed(() => {
   const steps = run.value?.steps ?? []
@@ -177,21 +177,22 @@ onBeforeUnmount(()=>{disposed=true;generation++;pollEpoch++;clearTimeout(timer);
   <section ref="workspace" class="agent-workspace" aria-label="疏散目标计划" :aria-busy="busy||loading">
     <p v-if="historical" class="agent-workspace__notice">正在查看历史现场。返回实时现场后可制定或执行目标计划，历史解读仍在对话中查看。</p>
     <template v-else>
-      <div class="agent-workspace__intro"><h3>疏散协同智能体</h3><p>目标解析 → 仿真比较 → 人工确认 → 工具执行 → 结果核对。生成与重算方案会暂停现场，确认执行后继续。燃气、电源和证据核验由责任人操作。</p></div>
+      <div class="agent-workspace__intro"><h3>{{run?'本场目标与执行':'建立疏散目标'}}</h3><p>方案由你确认，执行进展以现场回执为准。</p><details><summary>协同方式与人工确认规则</summary><p>目标解析 → 仿真比较 → 人工确认 → 工具执行 → 结果核对。生成与重算方案会暂停现场，确认执行后继续。燃气、电源和证据核验由责任人操作。</p></details></div>
       <p v-if="connection" class="agent-workspace__sync" role="status"><AppIcon :name="drillStatus==='ended'?'tasks':streamReady?'pulse':'refresh'" :size="17" />{{syncLabel}}</p>
       <p v-if="syncError" class="agent-workspace__error" role="alert">{{syncError}} <button type="button" @click="read(true)">重新连接</button></p>
       <p v-if="loading&&!run" role="status">正在恢复本场目标计划…</p>
-      <button v-if="!canCreate && !loading" type="button" :disabled="busy" @click="composing=true">另建独立范围目标</button>
+      <button v-if="!canCreate && !loading && drillStatus!=='ended'" type="button" :disabled="busy" @click="composing=true">另建独立范围目标</button>
+      <p v-if="!run&&!loading&&drillStatus==='ended'" class="agent-workspace__meta">本场没有目标计划记录。可查看事件与评分；新开训练后再建立目标。</p>
       <button v-if="composing" type="button" @click="composing=false">返回当前计划</button>
       <section v-if="run?.task_graph?.case_tasks?.length" class="agent-workspace__case-tasks" aria-label="案例责任任务">
         <div class="agent-workspace__case-heading"><h4>案例处置 · {{run.task_graph.case_tasks.length}} 项</h4><button type="button" @click="emit('missions')">查看与核验</button></div>
         <p>{{run.task_graph.case_tasks.filter(task=>task.state!=='completed').length}} 项待核验<template v-if="run.task_graph.case_tasks.some(task=>task.verification_ready)">，已有任务满足提交条件</template>。</p>
         <details><summary>查看责任人与截止时间</summary>
-        <button v-for="task in run.task_graph.case_tasks" :key="task.id" type="button" @click="emit('missions')"><strong>{{task.label}}</strong><span>{{task.state==='completed'?'已核验':task.verification_ready?'立即核验':task.overdue?'已超时，可补救':`剩余 ${task.remaining_seconds ?? '—'} 秒`}} · {{task.responsible_role}}</span><small v-if="task.state!=='completed'">{{task.blockers.join('；')}}</small></button>
+        <button v-for="task in run.task_graph.case_tasks" :key="task.id" type="button" @click="emit('task',task.id)"><strong>{{task.label}}</strong><span>{{task.state==='completed'?'已核验':task.verification_ready?'立即核验':task.overdue?'已超时，可补救':`剩余 ${task.remaining_seconds ?? '—'} 秒`}} · {{task.responsible_role}}</span><small v-if="task.state!=='completed'">{{task.blockers.join('；')}}</small><small>查看本项任务、核验条件与资料依据</small></button>
         </details>
       </section>
       <label v-if="runs.length>1" class="agent-workspace__plan-select">当前计划<select v-model="selectedRunId" :disabled="busy"><option v-for="item in runs" :key="item.id" :value="item.id">{{labels[item.status]||item.status}} · {{item.scope.building_name}} · {{item.goal}}</option></select></label>
-      <form v-if="canCreate&&!loading" class="agent-workspace__form" @submit.prevent="create">
+      <form v-if="canCreate&&!loading&&drillStatus!=='ended'" class="agent-workspace__form" @submit.prevent="create">
         <SpeechInput v-if="active" :key="drillId" :api-base-url="apiBaseUrl" :access-token="accessToken" :disabled="busy" destination="目标框" @activity="value=>voiceBusy=value" @transcript="text=>goal=goal.trim() ? goal.trimEnd()+'\n'+text : text" />
         <label>演练目标<textarea v-model="goal" rows="3" maxlength="2000" :disabled="busy" placeholder="例如：将三号楼居民分流疏散，并护送重点人员" /></label>
         <label>目标范围<select v-model="building" aria-label="目标范围" :disabled="busy"><option value="">{{focusId?.startsWith('resident-')?'当前选中居民':'全部待撤离居民（或按目标解析建筑）'}}</option><option v-for="item in buildings" :key="item.id" :value="item.id">{{item.name}}</option></select></label>
@@ -219,7 +220,7 @@ onBeforeUnmount(()=>{disposed=true;generation++;pollEpoch++;clearTimeout(timer);
         <button v-if="run.scope.resident_ids.length" type="button" @click="emit('residentFocus',run.scope.resident_ids[0]!)"><AppIcon name="target" :size="18"/>查看目标现场</button>
         <p v-if="run.scope.floors?.length || run.scope.forbidden_exits?.length" class="agent-workspace__meta">{{run.scope.floors?.length?`目标楼层：${run.scope.floors.join('、')}层。`:''}}{{run.scope.forbidden_exits?.length?`禁用：${run.scope.forbidden_exits.map(exit=>exit==='north'?'北侧出口':'南侧出口').join('、')}。`:''}}</p>
         <AgentPlanningEvidence v-if="run.planning" :report="run.planning"/>
-        <details v-if="run.knowledge" class="agent-workspace__knowledge"><summary>方案参考资料 · {{run.knowledge.hits.length}} 条</summary><p>以下是制定目标时检索到的资料；路线、资源和动作可行性由仿真工具校验。</p><KnowledgeEvidence :result="run.knowledge" @open="source=>emit('knowledge',source.documentId,source.versionId)"/></details>
+        <details v-if="run.knowledge" class="agent-workspace__knowledge"><summary>方案参考资料 · {{run.knowledge.hits.length}} 条</summary><p>以下是制定目标时检索到的资料；路线、资源和动作可行性由仿真工具校验。</p><KnowledgeEvidence :result="run.knowledge" @open="source=>emit('knowledge',source.documentId,source.versionId,source.chunkId)"/></details>
         <section v-if="coordination" class="agent-workspace__coordination" aria-label="智能体协同状态">
           <div class="agent-workspace__coordination-heading"><h4>当前协同</h4><span>现场 {{clock(coordination.at_seconds)}}</span></div>
           <ol class="agent-workspace__lanes">

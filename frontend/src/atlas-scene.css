@@ -35,3 +35,9 @@
   .atlas-preparation__preview-time input { min-width: 140px; }
   .atlas-preparation__canvas .scene-live-preview > footer { padding-block: 10px; }
 }
+
+.atlas-preparation__return-preview { display:none; }
+.atlas-preparation__canvas,.atlas-preparation__inspector { scroll-margin-top:80px; }
+@media(max-width:650px) {
+ .atlas-preparation__return-preview { display:inline-flex; align-items:center; gap:8px; min-height:44px; margin-bottom:16px; padding:10px 12px; font:inherit; font-size:16px; border:1px solid #9bb5a9; border-radius:6px; color:#174d40; background:#f7f9f4; }
+}
