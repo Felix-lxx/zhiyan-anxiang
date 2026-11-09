@@ -58,7 +58,7 @@ export function createApartment(width: number, depth: number, floors: number, se
       box(group,[(width-doorway)/2,height,wall],[(width+doorway)/4,height/2,depth/2-wall/2],colors[seed % colors.length]!),
       box(group,[doorway,height-2.55,wall],[0,(height+2.55)/2,depth/2-wall/2],colors[seed % colors.length]!),
     ]
-    const facadeMaterial = materials?.surface('plaster', colors[seed % colors.length]!, Math.max(1,width/4), floors).clone()
+    const facadeMaterial = materials && materials.cloneSurface(materials.surface('plaster', colors[seed % colors.length]!, Math.max(1,width/4), floors))
     if (facadeMaterial) {
       shellParts[0]!.material.dispose()
       palettes.get(group)?.delete(colors[seed % colors.length]!)
@@ -210,7 +210,7 @@ export function createStreetFurniture() {
 export function createStreet(length: number, width: number, materials?: SceneMaterials, cuts?:StreetCuts) {
   const group = new THREE.Group();group.name='road-street-surface'
   const road = box(group,[width,.1,length],[0,ROAD_SURFACE_Y-.05,0],0x505a57);road.name='road-pavement'
-  if(materials) { road.material.dispose(); road.material = materials.surface('asphalt',0x737774,1,1) }
+  if(materials) { road.material.dispose(); road.material = materials.surface('asphalt',0xb7bab6,1,1) }
   const start=Math.min(length,Math.max(0,cuts?.start??width*.9)),end=Math.min(length,Math.max(0,cuts?.end??width*.9))
   const curbRun=Math.max(0,length-start-end),center=(start-end)/2
   for(const side of [-1,1]) {

@@ -15,6 +15,8 @@ async function moduleUrl(name){
   const pending=(async()=>{
     const source=await readFile(new URL('../src/three/'+name+'.ts',import.meta.url),'utf8')
     let code=ts.transpileModule(source,{compilerOptions:{target:ts.ScriptTarget.ES2022,module:ts.ModuleKind.ESNext}}).outputText
+    // Match Vite's build-time asset base replacement in this Node harness.
+    code=code.replaceAll('import.meta.env.BASE_URL',JSON.stringify('/'))
     code=code.replace(/from ['"]three['"]/g,`from '${threeUrl}'`).replace(/from ['"](three\/examples\/[^'"]+)['"]/g,(_,path)=>`from '${pathToFileURL(require.resolve(path)).href}'`)
     for(const match of [...code.matchAll(/from ['"]\.\/([^'"]+)['"]/g)])code=code.replace(match[0],`from '${await moduleUrl(match[1])}'`)
     return 'data:text/javascript;base64,'+Buffer.from(code).toString('base64')
@@ -22,7 +24,79 @@ async function moduleUrl(name){
   moduleUrls.set(name,pending);return pending
 }
 async function load(name){return import(await moduleUrl(name))}
-const { displayHeight } = await load('sceneMaterials')
+const { displayHeight, SceneMaterials } = await load('sceneMaterials')
+const { createFiretruckEquipment } = await load('firetruckEquipment')
+const { supplyHoseCurve, HOSE_RADIUS } = await load('supplyHose')
+const { ROAD_SURFACE_Y } = await load('roadSurface')
+
+test('building facade clones follow quality changes and release their materials once', t => {
+  const originalDocument = globalThis.document
+  const context = new Proxy({}, { get: () => () => {}, set: () => true })
+  globalThis.document = { createElement: () => ({ width: 0, height: 0, getContext: () => context }) }
+  t.mock.method(THREE.ImageLoader.prototype, 'load', () => undefined)
+  const materials = new SceneMaterials()
+  try {
+    const base = materials.surface('plaster', 0xeeeeee)
+    const facade = materials.cloneSurface(base)
+    const normal = facade.normalMap
+    const roughness = facade.roughnessMap
+    assert.ok(normal && roughness)
+    assert.ok(facade.map === base.map, 'LOD facades share the decoded texture rather than duplicating it')
+    materials.setQuality('low')
+    assert.equal(facade.normalMap, null)
+    assert.equal(base.roughnessMap, null)
+    materials.setQuality('high')
+    assert.equal(facade.normalMap, normal)
+    assert.equal(facade.roughnessMap, roughness)
+    let released = 0
+    facade.addEventListener('dispose', () => released++)
+    materials.dispose()
+    assert.equal(released, 1)
+  } finally {
+    materials.dispose()
+    if (originalDocument === undefined) delete globalThis.document
+    else globalThis.document = originalDocument
+  }
+})
+
+test('supply hose stays above pavement across short, long and angled connections', () => {
+  const source = new THREE.Vector3(0, .7, 0)
+  for (const pump of [new THREE.Vector3(.3, .4, .2), new THREE.Vector3(20, .5, 0), new THREE.Vector3(-8, 1, 14)]) {
+    const curve = supplyHoseCurve(source, pump)
+    assert.ok(curve.getPoint(0).distanceTo(source) < 1e-8)
+    assert.ok(curve.getPoint(1).distanceTo(pump) < 1e-8)
+    const tube = new THREE.TubeGeometry(curve, 120, HOSE_RADIUS, 12, false)
+    tube.computeBoundingBox()
+    assert.ok(tube.boundingBox.min.y >= ROAD_SURFACE_Y, 'The tube surface, including spline overshoot, must clear the road')
+    assert.ok(source.equals(new THREE.Vector3(0, .7, 0)), 'Rendering must preserve confirmed source coordinates')
+    tube.dispose()
+  }
+})
+
+test('confirmed hose detours preserve corners instead of interpolating through the building', () => {
+  const source = new THREE.Vector3(-5, .6045, 0), pump = new THREE.Vector3(5, .844, 0)
+  const route = [source.clone(), new THREE.Vector3(-2.2, 0, 2.2), new THREE.Vector3(2.2, 0, 2.2), pump.clone()]
+  const curve = supplyHoseCurve(source, pump, route)
+  const geometry = new THREE.TubeGeometry(curve, Math.ceil(curve.getLength()/.08), HOSE_RADIUS, 8, false)
+  const positions = geometry.attributes.position
+  for (let index = 0; index < positions.count; index++) {
+    const x = positions.getX(index), z = positions.getZ(index)
+    assert.ok(Math.abs(x) >= 2 || Math.abs(z) >= 2, 'The complete hose surface must avoid the wall footprint')
+    assert.ok(positions.getY(index) >= ROAD_SURFACE_Y)
+  }
+  assert.ok(curve.getPoint(0).distanceTo(source) < 1e-8)
+  assert.ok(curve.getPoint(1).distanceTo(pump) < 1e-8)
+  geometry.dispose()
+})
+test('firetruck pump fittings stay inside the road body footprint and have real hose anchors',()=>{
+  const equipment=createFiretruckEquipment(2.4)
+  const bounds=new THREE.Box3().setFromObject(equipment.group)
+  assert.ok(bounds.max.x<=1.225+1e-6 && bounds.min.x>=-1.225-1e-6)
+  assert.ok(bounds.max.z<=3.1 && bounds.min.z>=-3.1)
+  equipment.group.updateMatrixWorld(true)
+  assert.ok(equipment.pump.getWorldPosition(new THREE.Vector3()).x>1.2)
+  assert.ok(equipment.muzzle.getWorldPosition(new THREE.Vector3()).y>2.4)
+})
 const { createPerson, posePerson, createPatrolRobot } = await load('actors')
 const { RoadVisuals } = await load('roadVisuals')
 const { CrowdRenderer } = await load('crowdRenderer')
@@ -456,7 +530,6 @@ test('fallback robot keeps a compact footprint when detailed assets are unavaila
 
 const {ResidentialDoor}=await load('residentialDoor')
 const {createStreet}=await load('communityModels')
-const {ROAD_SURFACE_Y}=await load('roadSurface')
 const {fitVehicleModel,poseVehicleWheels,poseAmbulanceRearDoors}=await load('vehicleModel')
 const {createGasValve}=await load('gasValve')
 const {createStretcher,poseStretcher}=await load('stretcherModel')

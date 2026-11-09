@@ -15,7 +15,7 @@ import { ActorMotion } from '../three/actorMotion'
 import { helperIdentity, helperPresentation, meetingRoute, presentHelpers, type HelperState } from '../three/helperPresentation'
 import { VehicleVisuals } from '../three/vehicleVisuals'
 import { RescueVisuals, type RescueResident } from '../three/rescueVisuals'
-import type { Vehicle } from '../domain/drill'
+import type { Vehicle, SpatialPreview } from '../domain/drill'
 import { VisualClock } from '../three/visualClock'
 import { FireEffects } from '../three/fireEffects'
 import { createStairFlight, stairSurface, stairHeight, type StairSurface } from '../three/stairFlight'
@@ -40,7 +40,7 @@ interface Simulation {
   world?: { schema_version?: number; spatial_units?:{height_mode?:string}; parameters?: { start_time?: string; wind_direction?: string; fire_floor?:number }; fire_source?: { location: { object_id: string }; device_id?: string; ignition_position?: { x: number; y: number; height: number } }; objects: Array<{ id: string; name: string; type: string; x: number; y: number; width: number; depth: number; floors: number; entry: { x: number; y: number } }>; fire_origin: { x: number; y: number; height?:number } } | null
   helpers?: HelperState[]
   fire: { intensity: number; smoke_radius: number; temperature: number }
-  environment: { indoor?:IndoorState; south_lane: string; east_hydrant: string; visibility: number; blockages?: Array<{ x: number; y: number; target: string; road_edge_id?: string }> }
+  environment: { indoor?:IndoorState; primary_hydrant_id?:string|null; hydrants?:Array<{id:string;name:string;state:string}>; south_lane: string; east_hydrant: string; visibility: number; blockages?: Array<{ x: number; y: number; target: string; road_edge_id?: string }> }
   sensors: { temperature: number; smoke_ppm: number; alarm: boolean }
   residents: Resident[]
   summary: { total: number; evacuated: number; moving: number; vulnerable: number; missing?: number; smoke_exposed?: number; congested?: number; north_load?: number; south_load?: number }
@@ -49,20 +49,14 @@ interface Simulation {
 interface Robot { state: string; battery: number; x: number; y: number; route: string[]; reason: string; task_queue?: Array<{ id: string; label: string; status: string; progress?: number; ends_at_seconds?: number; route_points?: Array<{ x: number; y: number; height?: number }> }> }
 interface DrillEvent { sequence: number; event_type: string; message: string; payload?: { x?: number; y?: number; target?: string; route_points?: Array<{ x: number; y: number; height?: number }>; severity?: string } }
 export interface AssistantSceneContext { kind: 'resident' | 'road' | 'robot' | 'object'; id?: string; label: string; type?: string; detail?: string; x?: number; y?: number }
-type SelectedObject = { fireRoom?:{floor:number;room:string}; title: string; type: string; detail: string; action?: string; residentId?: string; roadEdgeId?: string; vehicleId?: string; x?: number; y?: number }
+type SelectedObject = { objectId?:string; hydrantId?:string; fireRoom?:{floor:number;room:string}; title: string; type: string; detail: string; action?: string; residentId?: string; roadEdgeId?: string; vehicleId?: string; x?: number; y?: number }
 type SpatialIntent =
   | { kind: 'road'; edgeId: string }
   | { kind: 'robot'; x: number; y: number; target: string }
   | { kind: 'residents'; residentIds: string[]; exit: 'north' | 'south'; action: 'evacuate' | 'priority_assist' }
-interface OperationPreview {
-  rescue_action?: 'spray' | 'load' | 'handover'
-  kind: 'road' | 'robot' | 'residents' | 'vehicle'; can_apply: boolean; title?: string; notice: string
+type OperationPreview = Omit<SpatialPreview, 'intent' | 'expected_sequence' | 'residents'> & {
   expected_sequence?: number
-  route_points?: Array<{ x: number; y: number; height?: number }>; route_edge_ids?: string[]; route_distance?: number
-  planned_duration_seconds?: number | null; queue_position?: number; risk_score?: number; width_meters?: number
-  affected_residents?: number; affected_robot_tasks?: number; residents?: Resident[]; exit?: 'north' | 'south'; action?: 'evacuate' | 'priority_assist'
-  impact?: { congested_before: number; congested_after: number; smoke_exposed_before: number; smoke_exposed_after: number; forecast_horizon_seconds: number }
-  score_impact?: { before: number; after: number; delta: number; note: string }
+  residents?: Resident[]
 }
 
 const props = defineProps<{
@@ -86,7 +80,7 @@ const props = defineProps<{
   indoorFloor?: number
 }>()
 const emit = defineEmits<{
-  inject: [eventType: 'channel_blocked' | 'hydrant_failure' | 'resident_missing', context?: { x?: number; y?: number; target?: string; road_edge_id?: string }]
+  inject: [eventType: 'channel_blocked' | 'hydrant_failure' | 'resident_missing', context?: { x?: number; y?: number; target?: string; road_edge_id?: string; hydrant_id?:string }]
   robotCommand: [command: 'step' | 'broadcast' | 'replan']
   robotTarget: [context: { x: number; y: number; target: string }]
   residentCommand: [context: { residentIds: string[]; exit: 'north' | 'south'; action: 'evacuate' | 'priority_assist' }]
@@ -120,7 +114,7 @@ const inspectorOpen = computed(() => Boolean(selected.value && viewMode.value !=
 function assistantContext(value: SelectedObject | null): AssistantSceneContext | null {
   if (!value) return null
   const kind: AssistantSceneContext['kind'] = value.residentId ? 'resident' : value.roadEdgeId ? 'road' : value.action === 'robot' || /机器人|具身智能体/.test(value.title + value.type) ? 'robot' : 'object'
-  return { kind, id: value.residentId ?? value.roadEdgeId, label: value.title, type: value.type, detail: value.detail, x: value.x, y: value.y }
+  return { kind, id: value.residentId ?? value.roadEdgeId ?? value.hydrantId ?? value.objectId, label: value.title, type: value.type, detail: value.detail, x: value.x, y: value.y }
 }
 function askAboutSelection(): void { const context = assistantContext(selected.value); if (context) emit('askAssistant', context) }
 watch(selected, value => emit('contextSelection', assistantContext(value)), { deep: true })
@@ -149,7 +143,7 @@ let residentTrailLayer: THREE.Group
 let helperLinkLayer: THREE.Group
 let indoorGeometry: THREE.Group
 const marquee = ref<{left:number;top:number;width:number;height:number}|null>(null)
-const sceneMaterials = new SceneMaterials()
+const sceneMaterials = new SceneMaterials(() => markRenderDirty())
 let fireEffects: FireEffects
 let lastFrameTime = 0
 let visualSeconds = 0
@@ -199,7 +193,7 @@ let residentRouteSignature = ''
 let robotRouteSignature = ''
 let lastEntitySeconds = -1
 let blockageSignature = ''
-const hydrantModels: Array<{ group: THREE.Group; paint: THREE.MeshStandardMaterial[]; warning: THREE.Mesh; isEast: boolean }> = []
+const hydrantModels: Array<{ id?:string; group: THREE.Group; paint: THREE.MeshStandardMaterial[]; warning: THREE.Mesh; isEast: boolean }> = []
 const exitModels: Array<{ group: THREE.Group; materials: THREE.MeshStandardMaterial[]; nodeId?: string }> = []
 const environmentRequests = new Set<AbortController>()
 const assemblyModels = new Map<string, ReturnType<typeof createAssemblyPoint>>()
@@ -297,7 +291,7 @@ function roadDetail(edge: RoadEdgeState): string {
   return `${edge.width_meters} 米 · ${status} · 综合风险 ${edge.risk_score} · 密度 ${edge.density_percent ?? 0}% · 通行 ${edge.live_occupancy ?? 0} 人 · 排队 ${edge.waiting_count ?? 0} 人${capacity}${flow}`
 }
 
-function register(object: THREE.Object3D, data: { title: string; type: string; detail: string; action?: string; residentId?: string; objectId?: string; fireRoom?:{floor:number;room:string}; x?: number; y?: number }): void {
+function register(object: THREE.Object3D, data: SelectedObject): void {
   object.userData.selection = data
   object.traverse((child) => { child.userData.selection = data })
   interactiveMeshes.push(object)
@@ -403,7 +397,7 @@ async function loadEnvironmentAssets(): Promise<void> {
   if(!destroyed && results.some(result=>result.status==='rejected')) flashNotice('部分环境模型加载失败，演练可继续；刷新后重试。')
 }
 
-function addHydrant(name: string, x: number, z: number, isEast = false): void {
+function addHydrant(name: string, x: number, z: number, isEast = false, id?:string): void {
   const group = new THREE.Group()
   const unavailable = isEast && props.simulation?.environment.east_hydrant === 'failed'
   const base = new THREE.Mesh(new THREE.CylinderGeometry(.55, .7, 1.3, 16), material(isEast ? 0x8f3c32 : 0xb94838))
@@ -421,9 +415,9 @@ function addHydrant(name: string, x: number, z: number, isEast = false): void {
   const warning = new THREE.Mesh(new THREE.RingGeometry(.9, 1.15, 24), new THREE.MeshBasicMaterial({ color: 0xe6a34a, side: THREE.DoubleSide }))
   warning.rotation.x = -Math.PI / 2; warning.position.y = .08; warning.visible=unavailable; group.add(warning)
   paint.forEach(m=>{m.userData.originalColor=m.color.getHex()})
-  hydrantModels.push({group,paint,warning,isEast})
+  hydrantModels.push({id,group,paint,warning,isEast})
   group.position.set(x, 0, z); scene.add(group)
-  register(group, { title: name, type: '消防水源', detail: isEast ? '东侧消火栓 · 可在演练中注入压力异常' : '备用消火栓 · 当前可用', action: isEast ? 'hydrant_failure' : undefined, x: x + 50, y: z + 50 })
+  register(group, { title: name, hydrantId:id, type: '消防水源', detail:'正在读取本场水源状态', action: id || isEast ? 'hydrant_failure' : undefined, x: x + 50, y: z + 50 })
 }
 
 function addExit(name: string, x: number, z: number): void {
@@ -490,6 +484,7 @@ function refreshEnvironment():void {
 }
 
 function buildScene(): void {
+  sceneMaterials.setQuality(quality.value)
   const hour = Number.parseInt(props.simulation?.world?.parameters?.start_time?.split(':')[0] ?? '20', 10)
   const night = hour >= 18 || hour < 6
   const background = night ? 0x142329 : 0xdde3e3
@@ -529,7 +524,9 @@ function buildScene(): void {
   for(const object of scene.children)if(!beforeCommunity.has(object))communityContext.add(object)
   createFireSystem(); createRobot(); createResidents(); updateEntities(); indoorGeometry.visible = false
   if(props.simulation?.environment.indoor) {
-    indoorFireVisuals=new IndoorFireVisuals(props.simulation.environment.indoor,worldPoint,(object,data)=>register(object,data as Parameters<typeof register>[1]),props.simulation.spatial_network?.edges);scene.add(indoorFireVisuals.group)
+    indoorFireVisuals=new IndoorFireVisuals(props.simulation.environment.indoor,worldPoint,(object,data)=>register(object,data as Parameters<typeof register>[1]),props.simulation.spatial_network?.edges,()=>markRenderDirty())
+    indoorFireVisuals.setQuality(quality.value)
+    scene.add(indoorFireVisuals.group)
     focusIndoorFloor(props.indoorFloor??props.simulation.world?.parameters?.fire_floor??1)
   }
   void loadEnvironmentAssets().catch(() => {
@@ -589,13 +586,15 @@ function applyQuality(): void {
     if(object instanceof THREE.LOD && object.levels[1] && !object.parent?.userData.actorLod)object.levels[1].distance=object.parent?.userData.limbs ? (quality.value==='high'?32:quality.value==='medium'?22:14) : (quality.value==='high'?150:quality.value==='medium'?100:55)
   })
   actorAssets.setQuality(quality.value)
+  sceneMaterials.setQuality(quality.value)
+  indoorFireVisuals?.setQuality(quality.value)
   resize();renderDirty=true
 }
 
 function buildFrozenCommunity(): void {
   const edges=props.simulation?.road_network?.edges ?? []
   const junctions=roadJunctions(edges)
-  for(const points of junctions.patches)scene.add(createJunctionPatch(points,sceneMaterials.surface('asphalt',0x737774,1,1)))
+  for(const points of junctions.patches)scene.add(createJunctionPatch(points,sceneMaterials.surface('asphalt',0xb7bab6,1,1)))
   for (const edge of edges) {
     const distance=Math.hypot(edge.end.x-edge.start.x,edge.end.y-edge.start.y)
     if(!Number.isFinite(distance)||distance<.001)continue
@@ -610,7 +609,7 @@ function buildFrozenCommunity(): void {
   for (const object of props.simulation?.world?.objects ?? []) {
     const x = object.x - 50, z = object.y - 50
     if (object.type === 'building') { const building = addBuilding(object.name, x, z, object.width, object.depth, object.floors); buildingMeshes.set(object.id, building) }
-    else if (object.type === 'fire_hydrant') addHydrant(object.name, x, z, /东/.test(object.name))
+    else if (object.type === 'fire_hydrant') addHydrant(object.name, x, z, /东/.test(object.name), object.id)
     else if (object.type === 'exit') addExit(object.name, x, z)
     else if (['charging_shed', 'micro_fire_station'].includes(object.type)) {
       const mesh = object.type === 'charging_shed' ? createChargingShed(object.width,object.depth) : createFireStation(object.width,object.depth)
@@ -1046,7 +1045,7 @@ function updateEntities(): void {
     if (!vehicleVisuals) { vehicleVisuals = new VehicleVisuals(object => interactiveMeshes.push(object), () => { vehicleModelFailures.value=vehicleVisuals?.failedCount??0;vehicleModelLoading.value=vehicleVisuals?.loadingCount??0;renderDirty=true }); scene.add(vehicleVisuals.layer) }
     vehicleVisuals.update(props.simulation.vehicles ?? [], props.elapsedSeconds, props.status === 'running')
     vehicleVisuals.layer.visible=!indoorView.value
-    if (!rescueVisuals) { rescueVisuals = new RescueVisuals(object => interactiveMeshes.push(object)); scene.add(rescueVisuals.layer) }
+    if (!rescueVisuals) { rescueVisuals = new RescueVisuals(object => interactiveMeshes.push(object), id => vehicleVisuals?.serviceAnchors(id)); scene.add(rescueVisuals.layer) }
     rescueVisuals.update(props.simulation.vehicles ?? [], props.simulation.residents, props.elapsedSeconds, props.status === 'running')
     rescueVisuals.layer.visible=!indoorView.value
     if (selected.value?.vehicleId) {
@@ -1091,7 +1090,8 @@ function updateEntities(): void {
     if(selected.value?.title===exit.group.userData.selection.title && selected.value?.type==='安全出口') selected.value.detail=detail
   }
   for (const hydrant of hydrantModels) {
-    const failed = hydrant.isEast && props.simulation?.environment.east_hydrant === 'failed'
+    const resource = props.simulation?.environment.hydrants?.find(item=>item.id===hydrant.id)
+    const failed = resource ? resource.state==='failed' : hydrant.isEast && props.simulation?.environment.east_hydrant === 'failed'
     hydrant.warning.visible = failed
     hydrant.paint.forEach(m=>m.color.setHex(failed ? 0x5b625e : m.userData.originalColor))
     const selection = hydrant.group.userData.selection
@@ -1388,6 +1388,21 @@ function injectDefaultRoadBlock(): void {
   flashNotice(`正在预演封锁 ${edge.name} 后的拥堵与改道`)
 }
 
+function injectDefaultHydrantFailure(): void {
+  const environment = props.simulation?.environment
+  if (environment?.hydrants) {
+    const id = selected.value?.hydrantId ?? environment.primary_hydrant_id
+    const source = environment.hydrants.find(item=>item.id===id)
+    if (!source || source.state !== 'available') {
+      flashNotice('该水源已经失效或未配置；请点选另一处具体消火栓后操作。')
+      return
+    }
+    emit('inject', 'hydrant_failure', {hydrant_id:source.id, target:source.name})
+    return
+  }
+  emit('inject', 'hydrant_failure', {x:89,y:47,target:'东侧消火栓'})
+}
+
 function dragEvent(event: DragEvent, eventType: string): void { isDraggingEvent.value = true; event.dataTransfer?.setData('application/x-drill-event', eventType); if (event.dataTransfer) event.dataTransfer.effectAllowed = 'copy' }
 function endDrag(): void { isDraggingEvent.value = false }
 function dropEvent(event: DragEvent): void {
@@ -1410,12 +1425,12 @@ function dropEvent(event: DragEvent): void {
   if (type === 'channel_blocked' && roadSelection?.roadEdgeId) {
     selected.value = roadSelection
     emit('previewAction', { kind: 'road', edgeId: roadSelection.roadEdgeId })
-  } else emit('inject', type as 'hydrant_failure' | 'resident_missing', { x, y, target })
+  } else emit('inject', type as 'hydrant_failure' | 'resident_missing', { x, y, target, hydrant_id: type==='hydrant_failure'?selection?.hydrantId:undefined })
 }
 function runSelectedAction(): void {
   if (selected.value?.action === 'robot') emit('robotCommand', 'step')
   if (selected.value?.action === 'channel_blocked' && selected.value.roadEdgeId) emit('previewAction', { kind: 'road', edgeId: selected.value.roadEdgeId })
-  else if (selected.value?.action && selected.value.action !== 'robot') emit('inject', selected.value.action as 'hydrant_failure', { x: selected.value.x, y: selected.value.y, target: selected.value.title })
+  else if (selected.value?.action && selected.value.action !== 'robot') emit('inject', selected.value.action as 'hydrant_failure', { x: selected.value.x, y: selected.value.y, target: selected.value.title, hydrant_id:selected.value.hydrantId })
 }
 
 function selectAccessibleObject(event: Event): void {
@@ -1647,7 +1662,7 @@ watch(() => [props.routePreview, props.robotRoutePreview], () => updateEntities(
           <summary><AppIcon name="pulse" /><span>导演事件</span><AppIcon name="chevron" /></summary>
           <small>可点击注入，也可拖到目标位置</small>
           <button type="button" draggable="true" :disabled="!interactive" @dragstart="dragEvent($event, 'channel_blocked')" @dragend="endDrag" @click="injectDefaultRoadBlock"><AppIcon name="block" /><span>通道堵塞</span></button>
-          <button type="button" draggable="true" :disabled="!interactive" @dragstart="dragEvent($event, 'hydrant_failure')" @dragend="endDrag" @click="emit('inject', 'hydrant_failure', { x: 89, y: 47, target: '东侧消火栓' })"><AppIcon name="water" /><span>水源失效</span></button>
+          <button type="button" draggable="true" :disabled="!interactive" @dragstart="dragEvent($event, 'hydrant_failure')" @dragend="endDrag" @click="injectDefaultHydrantFailure"><AppIcon name="water" /><span>水源失效</span></button>
           <button type="button" draggable="true" :disabled="!interactive" @dragstart="dragEvent($event, 'resident_missing')" @dragend="endDrag" @click="emit('inject', 'resident_missing', { x: 77, y: 30, target: '3 号楼重点人员' })"><AppIcon name="person" /><span>人员失联</span></button>
         </details>
       </nav>
@@ -1674,6 +1689,7 @@ watch(() => [props.routePreview, props.robotRoutePreview], () => updateEntities(
           <div v-if="operationPreview.impact" class="spatial-impact"><span>确认后 30 秒影响</span><div><p>拥堵人数<strong>{{ operationPreview.impact.congested_before }} → {{ operationPreview.impact.congested_after }}</strong></p><p>烟气暴露<strong>{{ operationPreview.impact.smoke_exposed_before }} → {{ operationPreview.impact.smoke_exposed_after }}</strong></p></div></div>
           <div v-if="operationPreview.score_impact" class="spatial-score-impact"><span>预计过程评分</span><strong>{{ operationPreview.score_impact.before }} → {{ operationPreview.score_impact.after }} <b>({{ operationPreview.score_impact.delta > 0 ? '+' : '' }}{{ operationPreview.score_impact.delta }})</b></strong><small>{{ operationPreview.score_impact.note }}</small></div>
           <p class="spatial-action-note">{{ operationPreview.notice }}</p>
+          <p v-if="operationPreview.kind==='vehicle'&&operationPreview.water_source" class="spatial-action-note">已选供水：{{operationPreview.water_source.name}}<template v-if="operationPreview.hose_length!==undefined"> · 水带 {{operationPreview.hose_length}} 米</template>。确认后使用此水源，失效时需重新部署。</p>
           <p class="spatial-evidence"><AppIcon name="award" :size="15" />{{ operationPreview.kind === 'vehicle' ? operationPreview.rescue_action ? '执行进度与完成结果写入事件证据；喷水效果进入火势、烟气与过程评分计算' : '到场后写入车辆到场证据；调度本身不额外加分' : '确认后将同步写入事件流、过程评分和复盘证据' }}</p>
           <div class="spatial-action-buttons"><button type="button" @click="emit('cancelAction')">重新选择</button><button type="button" :disabled="!operationPreview.can_apply || operationBusy" @click="emit('confirmAction')"><AppIcon name="check" :size="17" />{{ operationPreview.can_apply ? '确认执行' : '当前不可执行' }}</button></div>
         </template>

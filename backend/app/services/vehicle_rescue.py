@@ -3,6 +3,7 @@ from copy import deepcopy
 import math
 from app.services.drill_simulation import clear_segment
 from app.services.vehicle_dispatch import plan_vehicle, vehicle_runtime
+from app.services.water_resources import connection_options
 
 ACTION_LABELS = {"spray": "喷水压制", "load": "接近并上车", "handover": "出口医疗移交"}
 
@@ -112,7 +113,7 @@ def point_on_route(points, fraction):
     return {"x": points[-1]["x"], "y": points[-1]["y"], "height": 0}
 
 
-def action_plan(world, state, vehicle, action, resident_id=None):
+def action_plan(world, state, vehicle, action, resident_id=None, water_source_id=None):
     """Return the same blockers to both UI and authoritative command validation."""
     base = {"action": action, "can_apply": False, "notice": "", "duration_seconds": 0}
     def denied(message): return {**base, "notice": message}
@@ -122,17 +123,25 @@ def action_plan(world, state, vehicle, action, resident_id=None):
     if action == "spray":
         if world.get('indoor_environment'): return denied('厨房位于楼内，当前消防车仅支持室外直达喷水；请完成燃气切断与室内疏散任务。')
         if vehicle["kind"] != "firetruck": return denied("喷水任务需要消防车。")
-        if state["environment"]["east_hydrant"] == "failed": return denied("水源失效，无法供水。请在场景中准备可用水源。")
         if state["fire"]["intensity"] <= 0: return denied("当前火势已压制，无需重复喷水。")
+        base['water_sources'] = connection_options(world, state, vehicle)
         obstacles = [o for o in world["objects"] if o["type"] == "building"]
         origin = world["fire_origin"]; position = (vehicle["x"], vehicle["y"])
-        water = [o for o in world["objects"] if o["type"] == "fire_hydrant" and o.get("properties", {}).get("status") not in {"failed", "faulty"}
-                 and math.dist(position, (o["x"], o["y"])) <= 25 and clear_segment(position, (o["x"], o["y"]), obstacles)]
-        if not water: return denied("附近没有可连接的水源；请驶至距消火栓 25 个场景单位内且水带不穿楼的位置。")
+        if water_source_id and not any(item['id'] == water_source_id for item in base['water_sources']):
+            return denied('所选水源不属于本场冻结场景，请重新选择。')
+        water = [item for item in base['water_sources'] if item['can_connect'] and
+                 (not water_source_id or item['id'] == water_source_id)]
+        if not water:
+            selected = next((item for item in base['water_sources'] if item['id'] == water_source_id), None)
+            return denied(selected['notice'] if selected else '附近没有可用供水连接，请调整停靠位置或选择备用水源。')
         if math.dist(position, (origin["x"], origin["y"])) > 25 or not clear_segment(position, (origin["x"], origin["y"]), obstacles):
             return denied("火点超出射程或中间有楼栋遮挡，请调整停靠节点。")
-        hydrant = min(water, key=lambda o: math.dist(position, (o["x"], o["y"])))
-        return {**base, "can_apply": True, "duration_seconds": 45, "target": origin, "water_source": {k: hydrant[k] for k in ("id", "name", "x", "y")}, "notice": "连接水源后连续喷水 45 秒，可提前停止；火势和烟气随有效供水时间下降。"}
+        hydrant = min(water, key=lambda item: (item['hose_length'], item['id']))
+        return {**base, "can_apply": True, "duration_seconds": 45, "target": origin,
+                "water_source": {k: hydrant[k] for k in ("id", "name", "x", "y")},
+                'hose_points': hydrant['hose_points'], 'hose_length': hydrant['hose_length'],
+                'connection_position': hydrant['connection_position'],
+                "notice": f"连接{hydrant['name']}，水带约 {hydrant['hose_length']:.1f} 米；连续喷水 45 秒，可提前停止，火势和烟气随有效供水时间下降。"}
     if vehicle["kind"] != "ambulance": return denied("接运任务需要救护车。")
     if action == "handover":
         passenger = vehicle.get("passenger")

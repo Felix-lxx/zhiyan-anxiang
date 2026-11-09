@@ -1,6 +1,7 @@
 from copy import deepcopy
 from types import SimpleNamespace
 
+import pytest
 from sqlalchemy import select
 
 from app.api.routes import operations
@@ -9,6 +10,33 @@ from app.models.operations import DrillCommand
 from app.services.agent_impact import impact_view
 from test_agent_workflow import proposal
 from test_exercise_world import exercise
+
+
+@pytest.mark.parametrize('counted,tasks_completed,expected', [
+    (True, False, 'awaiting_rollcall'),
+    (False, True, 'awaiting_rollcall'),
+    (True, True, 'completed'),
+])
+def test_arrived_replan_requires_both_responsibility_evidence_and_rollcall(
+        monkeypatch, counted, tasks_completed, expected):
+    from app.services import agent_claims, agent_revision, agent_workflow
+
+    monkeypatch.setattr(agent_workflow, 'relevant_changes', lambda *args: [])
+    monkeypatch.setattr(agent_workflow, 'note', lambda *args: None)
+    released = []
+    monkeypatch.setattr(agent_claims, 'release', lambda session, run_id: released.append(run_id))
+    session = SimpleNamespace(commit=lambda: None)
+    run = SimpleNamespace(id='plan', scope={
+        'resident_ids': ['r1'], 'priority_assist': False, 'include_case_tasks': True,
+    }, observed_sequence=5)
+    data = {'elapsed_seconds': 70, 'simulation': {'residents': [
+        {'id': 'r1', 'status': 'evacuated', 'counted': counted},
+    ]}, 'tasks': [{'status': 'completed' if tasks_completed else 'verifying'}]}
+
+    agent_revision.replan(session, None, run, data, None, None)
+
+    assert run.status == expected
+    assert released == ['plan']
 
 
 def test_impact_keeps_individual_routes_and_propagates_robot_dependencies():
@@ -108,11 +136,12 @@ def test_unrelated_door_change_does_not_invalidate_a_plan(exercise):
         assert not relevant_changes(db,record,record.observed_sequence)
 
 
-def test_rejected_local_goal_does_not_leave_the_drill_paused(exercise):
+@pytest.mark.parametrize('use_model', [False, True])
+def test_rejected_goal_does_not_leave_the_drill_paused(exercise, use_model):
     client,headers,_,root,_,_,_,_,start=exercise
     start()
     response=client.post(root+'/agent/runs',headers=headers,json={'request_id':'no-floor-scope-001',
-        'goal':'疏散目标居民','floors':[99],'pause_for_review':True})
+        'goal':'疏散目标居民','floors':[99],'pause_for_review':True,'use_model':use_model})
     assert response.status_code==409
     assert client.get(root,headers=headers).json()['status']=='running'
 

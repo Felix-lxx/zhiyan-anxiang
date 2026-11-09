@@ -23,6 +23,7 @@ from app.api.routes import (
     knowledge,
     tasks,
     task_guidance,
+    training,
 )
 
 
@@ -45,6 +46,7 @@ for route_module in (
     assistant,
     agent,
     speech,
+    training,
 ):
     api_router.include_router(route_module.router)
 api_router.include_router(knowledge.router)

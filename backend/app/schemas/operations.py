@@ -14,6 +14,7 @@ class DrillAction(BaseModel):
 
 
 class EventInject(BaseModel):
+    hydrant_id: str | None = Field(default=None, max_length=64)
     resident_id: str | None = Field(default=None, max_length=64)
     event_type: str = Field(pattern=r"^(channel_blocked|hydrant_failure|resident_missing)$")
     x: float | None = Field(default=None, ge=0, le=100)
@@ -35,6 +36,7 @@ class VehicleCommand(BaseModel):
     vehicle_id: Literal["firetruck-1", "ambulance-1"]
     target_node_id: str | None = Field(default=None, max_length=64)
     resident_id: str | None = Field(default=None, max_length=64)
+    water_source_id: str | None = Field(default=None, max_length=64)
 
 
 class ResidentCommand(BaseModel):

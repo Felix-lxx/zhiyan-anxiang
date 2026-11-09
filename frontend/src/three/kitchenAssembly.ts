@@ -97,6 +97,26 @@ export function createKitchenAssembly({width:w,depth:d,worktopHeight:top,stoveX}
     block('upper-door',x,1.78,d*.105,unit-gap*2,.46,.018,slot===1?wood:paint)
     block('under-cabinet-strip',x,1.53,-d*.02,unit*.8,.012,d*.25,new THREE.MeshStandardMaterial({color:0xffe8ba,emissive:0xffd791,emissiveIntensity:1.8}))
   }
+  // Worktop props stay inside the already validated furniture footprint.
+  const prepX=unit*.5, kettleR=Math.min(.085,unit*.14)
+  const kettle=new THREE.Mesh(new THREE.LatheGeometry([
+    new THREE.Vector2(0,0),new THREE.Vector2(kettleR,.01),
+    new THREE.Vector2(kettleR,.14),new THREE.Vector2(kettleR*.7,.18),new THREE.Vector2(0,.18),
+  ],20),steel)
+  kettle.name='steel-kettle';kettle.position.set(prepX-unit*.22,top,-d*.14);group.add(kettle)
+  const lid=new THREE.Mesh(new THREE.CylinderGeometry(kettleR*.66,kettleR*.66,.012,16),black)
+  lid.position.set(kettle.position.x,top+.184,kettle.position.z);group.add(lid)
+  const kettleHandle=new THREE.Mesh(new THREE.TorusGeometry(kettleR*.68,.009,6,18,Math.PI*1.5),black)
+  kettleHandle.position.set(kettle.position.x+kettleR*.95,top+.09,kettle.position.z);kettleHandle.rotation.y=Math.PI/2;group.add(kettleHandle)
+  block('wood-cutting-board',prepX+unit*.16,top+.009,d*.08,unit*.39,.018,d*.43,wood,.018)
+  block('knife-blade',prepX+unit*.16,top+.021,d*.06,unit*.22,.004,.025,steel,.002)
+  block('knife-handle',prepX+unit*.32,top+.022,d*.06,unit*.08,.012,.028,black,.004)
+  for(let i=0;i<3;i++){
+    const jar=new THREE.Mesh(new THREE.CylinderGeometry(.023,.025,.075,12),new THREE.MeshStandardMaterial({color:[0xcbbf94,0xab6545,0x859465][i]!,roughness:.6}))
+    jar.name='spice-jar';jar.position.set(prepX+(i-1)*unit*.12,top+.04,-d*.37);group.add(jar)
+    const cap=new THREE.Mesh(new THREE.CylinderGeometry(.026,.026,.012,12),black)
+    cap.position.set(jar.position.x,top+.083,jar.position.z);group.add(cap)
+  }
   group.userData.envelope={width:w,depth:d,height:2.06}
   batchStaticParts(group,new Set(['cooktop-glass','oven-glass','sink-basin','sink-rim-left','sink-rim-right','sink-rim-front','sink-rim-back']),'kitchen-static-details')
   return group

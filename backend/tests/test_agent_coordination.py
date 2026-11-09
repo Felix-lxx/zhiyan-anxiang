@@ -72,3 +72,47 @@ def test_closed_door_links_to_exact_control_before_routine_case_tasks():
     assert view['next_action']['door_id'] == 'door-2-east'
     data['simulation']['environment']['indoor']['doors'][0]['state']='open'
     assert coordination_view(run, data, steps)['next_action']['kind'] == 'focus'
+
+
+def test_ready_verification_links_to_specific_task_before_routine_work():
+    run, data, steps = fixture()
+    run.scope['include_case_tasks'] = True
+    data['simulation']['residents'][0].update(route_reachable=True, smoke_exposure=0)
+    data['tasks'] = [
+        {'id':'gas', 'kind':'gas_off', 'title':'燃气核验', 'status':'executing',
+         'responsible_role':'物业', 'remaining_seconds':1, 'overdue':True},
+        {'id':'door', 'kind':'containment', 'title':'房门核验', 'status':'verifying',
+         'responsible_role':'网格员', 'remaining_seconds':20, 'verification_ready':True}]
+    before = deepcopy(data)
+    view = coordination_view(run, data, steps)
+    assert view['next_action']['task_id'] == 'door'
+    assert view['next_action']['label'] == '立即核验：房门核验'
+    assert view['case_tasks']['verification_ready'] == 1
+    assert view['case_tasks']['overdue'] == 1
+    assert data == before
+
+
+def test_release_wave_completion_and_manual_takeover_do_not_overwrite_drill_state():
+    run, data, steps = fixture()
+    steps[0].update(release_wave=1, status='completed')
+    data['simulation']['residents'][0]['status'] = 'evacuated'
+    view = coordination_view(run, data, steps)
+    assert view['status'] == 'executing'
+    assert view['release_waves'][0]['state'] == 'completed'
+    assert view['release_waves'][0]['arrived'] == 1
+    assert '集合核验' in view['release_waves'][0]['reason']
+
+    run.status = 'taken_over'
+    steps[0].update(status='waiting', reason='等待广播')
+    view = coordination_view(run, data, steps)
+    assert view['status'] == 'taken_over'
+    assert view['release_waves'][0]['state'] == 'stopped'
+    assert '人工' in view['release_waves'][0]['reason']
+
+    run.status = 'waiting'
+    data['status'] = 'paused'
+    steps[0].update(status='failed', reason='水源失效')
+    view = coordination_view(run, data, steps)
+    assert view['status'] == 'paused'
+    assert view['release_waves'][0]['state'] == 'blocked'
+    assert view['release_waves'][0]['reason'] == '水源失效'

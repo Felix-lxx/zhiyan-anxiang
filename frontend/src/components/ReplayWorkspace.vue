@@ -3,8 +3,10 @@ import { computed, ref, watch } from 'vue'
 import type { Drill, DrillEvent } from '../domain/drill'
 import DigitalTwinArena from './DigitalTwinArena.vue'
 import AppIcon from './AppIcon.vue'
-const props=defineProps<{drill:Drill;displayed:Drill;at:number;playing:boolean;busy:boolean;loading:boolean}>()
-const emit=defineEmits<{back:[];seek:[at:number];play:[];fork:[at:number,sequence?:number];compare:[];export:[];assistant:[context?:{kind:'score'|'replay';id?:string;label:string;type?:string;detail?:string}]}>()
+import TrainingOutcome from './TrainingOutcome.vue'
+import TrainingArchivePanel from './TrainingArchivePanel.vue'
+const props=defineProps<{drill:Drill;displayed:Drill;at:number;playing:boolean;busy:boolean;loading:boolean;apiBaseUrl:string;accessToken:string}>()
+const emit=defineEmits<{back:[];seek:[at:number];play:[];fork:[at:number,sequence?:number];compare:[];export:[];knowledge:[documentId:string];assistant:[context?:{kind:'score'|'replay';id?:string;label:string;type?:string;detail?:string}]}>()
 const selected=ref<string>(''), evidenceIndex=ref(0)
 const root = ref<HTMLElement | null>(null)
 const arena = ref<InstanceType<typeof DigitalTwinArena> | null>(null)
@@ -42,6 +44,8 @@ function togglePlayback(){if(!props.playing&&props.at>=props.drill.elapsed_secon
             <button aria-label="下一项评分证据" :disabled="evidenceIndex>=score.details.length-1" @click="evidenceIndex++"><AppIcon name="arrowRight"/></button>
           </div>
         </header>
+        <TrainingArchivePanel :api-base-url="apiBaseUrl" :access-token="accessToken" :drill-id="drill.id" :status="drill.status" @knowledge="id=>emit('knowledge',id)"/>
+        <TrainingOutcome :drill="drill"/>
         <template v-if="evidence">
           <h3>{{evidence.name}} <b>{{evidence.score}} / {{evidence.max_score??'—'}}</b></h3>
           <div class="atlas-replay__rule">
@@ -109,4 +113,6 @@ section.atlas-replay .atlas-replay__events > header > button {
  .atlas-replay__heading { flex-wrap:wrap; }
  .atlas-replay__heading-actions { flex-direction:row; flex-wrap:wrap; }
 }
+/* Event numbers remain secondary, but must stay legible during long reviews. */
+.atlas-replay__number { min-width:28px; height:28px; font-size:14px; }
 </style>

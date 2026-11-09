@@ -48,6 +48,7 @@ html .atlas-preparation .scene-live-preview>footer { display:grid; grid-template
 html .atlas-preparation .scene-live-preview>footer>span { min-width:0; }
 html .atlas-preparation .scene-live-preview>footer>p { grid-column:1/-1; justify-self:start; margin:0; }
 html .atlas-preparation .scene-live-preview :is(header small,header span,footer small,footer p,.scene-live-preview__notice) { font-size:var(--ui-meta-size); line-height:1.6; }
+html .atlas-preparation__bar>button span { font-size:var(--ui-meta-size); }
 html .atlas-preparation .scene-live-preview footer strong { font-size:var(--ui-label-size); }
 html .atlas-preparation__workspace { grid-template-columns:160px minmax(0,1fr) minmax(310px,28%); }
 html .atlas-preparation__heading { flex-wrap:wrap; }

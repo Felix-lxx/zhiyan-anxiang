@@ -3,6 +3,7 @@ import asyncio
 from fastapi import FastAPI, WebSocket
 from fastapi.responses import JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
+from starlette.middleware.gzip import GZipMiddleware
 
 from app.api.router import api_router
 import app.models.tasks  # noqa: F401
@@ -52,6 +53,7 @@ async def security_headers_and_admission(request, call_next):
 
 # Outermost middleware also adds CORS to admission-limit errors.
 app.add_middleware(KnowledgeBodyLimit, prefix=settings.api_prefix + '/knowledge/')
+app.add_middleware(GZipMiddleware, minimum_size=2048, compresslevel=4)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=settings.cors_origin_list,

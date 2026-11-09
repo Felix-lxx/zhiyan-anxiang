@@ -9,6 +9,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.models.operations import DrillSession, DrillStateSnapshot
+from app.services.snapshot_codec import encode_snapshot, decode_snapshot
 
 
 SNAPSHOT_INTERVAL_SECONDS = 5
@@ -55,7 +56,7 @@ def persist_snapshot(
         state_version=version,
         event_sequence=int(payload.get("latest_event_sequence", 0)),
         elapsed_seconds=elapsed,
-        payload=stored_payload,
+        payload=encode_snapshot(stored_payload),
     )
     try:
         with session.begin_nested():
@@ -84,7 +85,9 @@ def load_snapshot(session: Session, drill_id: str, version: str | None = None) -
     record = session.scalar(query.order_by(DrillStateSnapshot.elapsed_seconds.desc(), DrillStateSnapshot.created_at.desc()).limit(1))
     if not record:
         return None
-    payload = deepcopy(record.payload)
+    payload = decode_snapshot(record.payload)
+    if payload is None:
+        return None
     payload.pop("_engine_checkpoint", None)
     if payload.pop("_frozen_world_ref", False):
         from app.services.exercise_world import frozen_world
@@ -106,4 +109,6 @@ def restore_engine_checkpoint(session: Session, drill_id: str, world: dict, elap
         DrillStateSnapshot.elapsed_seconds <= elapsed,
     ).order_by(DrillStateSnapshot.elapsed_seconds.desc(), DrillStateSnapshot.created_at.desc()).limit(1))
     if record:
-        remember(world, record.payload.get("_engine_checkpoint"))
+        payload = decode_snapshot(record.payload)
+        if payload:
+            remember(world, payload.get("_engine_checkpoint"))

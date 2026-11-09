@@ -99,11 +99,33 @@ def score_frozen_world(world: dict[str, Any], history: list[Any], simulation: di
         "evacuated": summary["evacuated"],
         "counted": summary.get("counted", summary["evacuated"]),
     }
+    recommendations = [item["name"] + "：" + item["evidence"] for item in details if item["score"] < item["max_score"]]
+    if details[1]["score"] < details[1]["max_score"] and details[1].get("occurrences"):
+        first_exposure = next((item.get("at_seconds") for item in details[1]["occurrences"]
+                               if item.get("kind") == "smoke_exposure" and item.get("at_seconds") is not None), None)
+        if first_exposure is not None:
+            if indoor:
+                timing = (f"烟气控制时序：首名居民在 {first_exposure:.1f} 秒越过暴露阈值；"
+                          "下一分支应比较更早关闭起火房门、切断燃气与分层放行，而不是只更换出口。")
+            else:
+                suppression = next((event for event in history if event.event_type == "vehicle.action_started"
+                                    and event.payload.get("action") == "spray"), None)
+                if suppression and suppression.elapsed_seconds > first_exposure:
+                    delay = suppression.elapsed_seconds - first_exposure
+                    timing = (f"烟气控制时序：首名居民在 {first_exposure:.1f} 秒越过暴露阈值，消防车在 "
+                              f"{suppression.elapsed_seconds} 秒开始喷水，晚 {delay:.1f} 秒；下一分支应比较提前部署或压制后分批放行。")
+                elif suppression:
+                    timing = (f"烟气控制时序：消防车在 {suppression.elapsed_seconds} 秒开始喷水，但首名居民仍在 "
+                              f"{first_exposure:.1f} 秒出现累计暴露；下一分支应比较压制后分批放行。")
+                else:
+                    timing = (f"烟气控制时序：首名居民在 {first_exposure:.1f} 秒越过暴露阈值，本场没有喷水压制证据；"
+                              "下一分支应比较提前部署消防车或延后受烟羽影响楼栋放行。")
+            recommendations = [item for item in recommendations if not item.startswith("烟气与失联控制：")]
+            recommendations.insert(0, timing)
     return {
         "version": 3,
         "total_score": sum(item["score"] for item in details),
         "details": details,
         "metrics": metrics,
-        "recommendations": [item["name"] + "：" + item["evidence"] for item in details if item["score"] < item["max_score"]]
-        or ["本轮所有结果指标已达标，可调整扰动重新验证。"],
+        "recommendations": recommendations or ["本轮所有结果指标已达标，可调整扰动重新验证。"],
     }

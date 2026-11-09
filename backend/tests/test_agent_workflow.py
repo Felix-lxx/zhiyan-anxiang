@@ -23,10 +23,12 @@ def test_goal_preview_approve_resume_and_manual_takeover(exercise):
     before = data["latest_event_sequence"]
     run = proposal(client, headers, root, ids)
     assert run["status"] == "awaiting_approval" and 1 <= len(run["candidates"]) <= 2
-    assert len({tuple((p['id'], p['exit']) for p in c['assignments']) for c in run['candidates']}) == len(run['candidates'])
+    semantic = {(tuple((p['id'], p['exit']) for p in c['assignments']),
+                 tuple(step.get('kind') for step in c.get('groups', []))) for c in run['candidates']}
+    assert len(semantic) == len(run['candidates'])
     assert client.get(root, headers=headers).json()["latest_event_sequence"] == before
     assert proposal(client, headers, root, ids)["id"] == run["id"]
-    selected = next(p for p in run["candidates"] if p["can_apply"])
+    selected = next(p for p in run["candidates"] if p["can_apply"] and not p.get("vehicle_support"))
     url = root + '/agent/runs/' + run["id"] + '/actions'
     payload = {"action": "approve", "revision": run["revision"], "candidate_id": selected["id"]}
     begun = client.post(url, headers=headers, json=payload)
@@ -121,7 +123,7 @@ def robot_proposal(exercise):
         "resident_ids": [resident["id"]], "robot_broadcast": True, "priority_assist": False})
     assert response.status_code == 201, response.text
     run = response.json()
-    candidate = next(c for c in run["candidates"] if c["can_apply"])
+    candidate = next(c for c in run["candidates"] if c["can_apply"] and not c.get("vehicle_support"))
     return run, candidate
 
 
@@ -166,6 +168,46 @@ def test_robot_arrival_broadcast_runs_parallel_and_resumes_once(exercise):
         current = operations.snapshot(db, drill)
         support, extra_steps = robot_support(operations, db, drill, current, {**record.scope, "robot_broadcast_evidence": evidence})
         assert support["already_completed"] and extra_steps == []
+
+
+def test_firetruck_spray_is_a_real_release_dependency(exercise):
+    client, headers, _, root, _, _, clock, tick, start = exercise
+    data = start()
+    ids = [person["id"] for person in data["simulation"]["residents"] if not person["vulnerable"]][:3]
+    created = client.post(root + "/agent/runs", headers=headers, json={
+        "request_id": "vehicle-release-plan-0001",
+        "goal": "先派消防车到场喷水压制，再分批疏散居民",
+        "resident_ids": ids,
+        "priority_assist": False,
+    })
+    assert created.status_code == 201, created.text
+    candidate = next(item for item in created.json()["candidates"] if item.get("vehicle_support"))
+    assert candidate["can_apply"] and candidate["vehicle_support"]["target_node_id"]
+    vehicle_steps = [step for step in candidate["groups"] if step.get("kind") == "vehicle.command"]
+    resident_steps = [step for step in candidate["groups"] if step.get("kind", "residents.assign") == "residents.assign"]
+    assert [step["arguments"]["command"] for step in vehicle_steps[:2]] == ["dispatch", "spray"]
+    spray_id = vehicle_steps[1]["id"]
+    assert resident_steps and all(step['release_condition']=='active_suppression' for step in resident_steps)
+    assert spray_id in resident_steps[0]['depends_on']
+    assert all(step['arguments']['command']=='spray' for step in vehicle_steps[2:])
+
+    approved = client.post(root + "/agent/runs/" + created.json()["id"] + "/actions", headers=headers, json={
+        "action": "approve", "revision": 1, "candidate_id": candidate["id"],
+    })
+    assert approved.status_code == 200, approved.text
+    with operations.SessionLocal() as db:
+        commands = list(db.scalars(select(DrillCommand)))
+        assert any(command.kind == "vehicle.command" and command.command_args["command"] == "dispatch" for command in commands)
+        assert not any(command.kind == "residents.assign" for command in commands)
+
+    tick(clock["t"] + candidate["vehicle_support"]["duration_seconds"] + 2)
+    with operations.SessionLocal() as db:
+        run = db.get(AgentRun, created.json()["id"])
+        advance_run(db, run, SimpleNamespace(username="admin"))
+        commands = list(db.scalars(select(DrillCommand)))
+        assert any(command.kind == "vehicle.command" and command.command_args["command"] == "spray" for command in commands)
+        assert any(command.kind == "residents.assign" for command in commands)
+        assert next(step for step in run.steps if step["id"] == spray_id)["status"] == "completed"
 
 
 def test_robot_manual_cancellation_yields_automatic_control(exercise):
@@ -274,6 +316,35 @@ def test_cross_building_robot_broadcast_is_compiled_as_sequential_tasks(exercise
     assert len(robot_steps) == len(building_ids) * 2
     for index in range(2, len(robot_steps), 2):
         assert robot_steps[index - 1]["id"] in robot_steps[index]["depends_on"]
+
+
+def test_plan_review_freezes_clock_before_local_planning(exercise, monkeypatch):
+    from app.api.routes import agent, operations
+
+    client, headers, _, root, _, _, clock, _, start = exercise
+    start()
+    clock["t"] = 24
+    monkeypatch.setattr(operations, "effective_elapsed",
+                        lambda drill: clock["t"] if drill.status == "running" else drill.elapsed_seconds)
+    original = agent.interpret_goal
+
+    def slow_local_planning(*args, **kwargs):
+        clock["t"] += 40
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(agent, "interpret_goal", slow_local_planning)
+    created = client.post(root + "/agent/runs", headers=headers, json={
+        "request_id": "freeze-before-plan-0001",
+        "goal": "组织全部居民分流疏散并重点护送",
+        "priority_assist": True,
+        "pause_for_review": True,
+    })
+    assert created.status_code == 201, created.text
+    assert created.json()["at_seconds"] == 24
+    state = client.get(root, headers=headers).json()
+    assert state["status"] == "paused" and state["elapsed_seconds"] == 24
+    paused = [event for event in state["events"] if event["event_type"] == "drill.paused"]
+    assert paused[-1]["elapsed_seconds"] == 24
 
 
 def test_end_state_synchronously_freezes_completed_agent_result(exercise):

@@ -16,7 +16,7 @@ from sqlalchemy import or_, select, update
 from app.models.agent import AgentRun, AgentRunEvent, AgentDecisionCheck
 from app.models.operations import DrillCommand, DrillEvent, DrillSession
 from app.schemas.operations import LiveCommand, ResidentCommand
-from app.services.agent_resources import robot_support, robot_precondition, owned_steps
+from app.services.agent_resources import robot_support, robot_precondition, owned_steps, vehicle_suppression_support
 from app.services.response_staff import capacity as staff_capacity
 from app.services.agent_execution import execution_view
 from app.services.agent_allocation import allocate_exits
@@ -26,6 +26,8 @@ from app.bootstrap.commands import command_application
 from app.services import agent_claims
 from app.services.agent_task_graph import compile_graph, distinct_candidates, graph_view, validate_graph
 from app.services.agent_contract import goal_constraints, rank_candidate
+from app.services.agent_release import staged_release, suppression_blocker, hazard_cleared
+from app.services.water_resources import effective_spray, affected_release_steps
 
 ACTIVE = {"awaiting_approval", "executing", "waiting", "needs_review"}
 OPERATING = {"executing", "waiting"}
@@ -91,7 +93,7 @@ def resolve_scope(data, request, interpretation):
             "robot_building_id": resident_buildings[0] if request.robot_broadcast and resident_buildings else None,
             "robot_building_ids": resident_buildings if request.robot_broadcast else [],
             "scene_version_id": data["simulation"]["world"]["scene_version_id"],
-            "completion": "目标居民到达集合点；重点人员按计划会合护送；" + ("机器人真实到位并广播；" if request.robot_broadcast else "") + "清点由参演人员核验。"}
+            "completion": "目标居民到达集合点；重点人员按计划会合护送；" + ("消防车真实到位并开始有效喷水；" if constraints.get('vehicle_suppression') else "") + ("机器人真实到位并广播；" if request.robot_broadcast else "") + "清点由参演人员核验。"}
 
 
 def build_candidates(session, drill, data, scope, run=None):
@@ -111,6 +113,7 @@ def build_candidates(session, drill, data, scope, run=None):
     geometry_issues = [{"edge_id": edge["id"], "name": edge["name"], "reason": edge["blocked_reason"]}
                        for edge in data["simulation"].get("spatial_network", {}).get("edges", []) if edge.get("geometry_blocked")]
     support, resource_steps = robot_support(operations, session, drill, data, scope, run)
+    suppression, suppression_steps = ({'notice': '目标明确禁止消防车喷水，未编排车辆压制方案。'}, []) if scope.get('vehicle_suppression_forbidden') else vehicle_suppression_support(data)
     preference = scope["exit_preference"]
     alternatives = allocate_exits(routes, population, data["simulation"].get("spatial_network", {}).get("edges", []), ids, preference)
     forbidden = set(scope.get('forbidden_exits', []))
@@ -127,25 +130,72 @@ def build_candidates(session, drill, data, scope, run=None):
         alternatives.append((deepcopy(base[0]), {**deepcopy(base[1]),
             'rule': 'containment', 'description': '居民先撤离起火房间，安全条件满足后关闭房门，限制烟气向走廊交换。',
             'door_id': door['id']}))
+    if suppression.get('can_apply') and (suppression_steps or suppression.get('already_active')):
+        # The same resident allocation becomes a materially different physical
+        # decision only when release is gated by a verified spray start.
+        base = alternatives[0]
+        alternatives.append((deepcopy(base[0]), {**deepcopy(base[1]),
+            'rule': 'suppression_staged',
+            'description': '消防车先按真实路网到达有效供水位置；系统确认喷水已开始后，再分批放行居民，比较暴露与总耗时。'}))
     results = []
     forecast_seconds = forecast_horizon(routes, support)
+    if suppression.get('can_apply') and suppression_steps:
+        forecast_seconds = min(150, forecast_seconds + int(math.ceil(suppression.get('duration_seconds') or 0)) + 1)
     baseline = operations.simulation_state(drill, events, at + forecast_seconds, session=session)
     baseline_score = operations.calculate_score_data(session, drill, events, baseline)["total_score"]
     baseline_people = [p for p in baseline["residents"] if p["id"] in id_set]
     baseline_metrics = {"arrived": sum(p["status"] == "evacuated" for p in baseline_people),
         "exposed": sum(p.get("smoke_exposure", 0) > 5 for p in baseline_people),
         "queue_seconds": round(sum(p.get("queue_seconds", 0) for p in baseline_people))}
+    parameters = data["simulation"].get("world", {}).get("parameters", {})
+    kitchen = parameters.get("fire_source_type") == "kitchen"
+    fire_floor = int(parameters.get("fire_floor") or 1)
+
+    def floor_order(floor):
+        # The fire floor is handled first.  Floors above it follow because
+        # smoke and stair travel make delay more expensive; lower floors come
+        # afterwards.  The order is deterministic and visible in the plan.
+        floor = int(floor or 1)
+        return (0 if floor == fire_floor else 1 if floor > fire_floor else 2,
+                abs(floor - fire_floor), -floor)
+
     for index, (assignments, allocation) in enumerate(alternatives):
         groups, unresolved = [], []
         for exit in ("north", "south"):
-            for assist in (False, True):
+            for assist in ((True, False) if kitchen else (False, True)):
                 members = [pid for pid in ids if assignments[pid] == exit and bool(scope["priority_assist"] and population[pid]["vulnerable"]) == assist]
                 unresolved += [pid for pid in members if not routes[exit][pid].get("route_reachable")]
-                for start in range(0, len(members), max(1, capacity) if assist else 1000):
-                    batch = members[start:start + (max(1, capacity) if assist else 1000)]
-                    groups.append({"id": str(uuid4()), "label": f"{'重点护送' if assist else '居民分流'} · {'北门' if exit == 'north' else '南门'} · {len(batch)} 人",
-                                   "resident_ids": batch, "exit": exit, "action": "priority_assist" if assist else "evacuate",
-                                   "route_edge_ids": sorted({edge for pid in batch for edge in routes[exit][pid].get("route_edge_ids", [])})})
+                floors = sorted({int(population[pid].get("floor") or 1) for pid in members}, key=floor_order) if kitchen else [None]
+                for floor in floors:
+                    cohort = [pid for pid in members if floor is None or int(population[pid].get("floor") or 1) == floor]
+                    for start in range(0, len(cohort), max(1, capacity) if assist else 1000):
+                        batch = cohort[start:start + (max(1, capacity) if assist else 1000)]
+                        if not batch:
+                            continue
+                        floor_label = f" · {floor}层" if floor is not None else ""
+                        groups.append({"id": str(uuid4()),
+                            "label": f"{'重点护送' if assist else '居民分流'}{floor_label} · {'北门' if exit == 'north' else '南门'} · {len(batch)} 人",
+                            "resident_ids": batch, "exit": exit, "floor": floor,
+                            "action": "priority_assist" if assist else "evacuate",
+                            "route_edge_ids": sorted({edge for pid in batch for edge in routes[exit][pid].get("route_edge_ids", [])})})
+        if kitchen:
+            groups.sort(key=lambda group: (group['action'] != 'priority_assist',
+                floor_order(group['floor']), group['exit']))
+        staged = allocation.get('rule') == 'suppression_staged'
+        staged_steps = deepcopy(suppression_steps) if staged else []
+        candidate_robot_steps = deepcopy(resource_steps)
+        spray_step_id = suppression.get('spray_step_id') if staged else None
+        if staged:
+            groups, candidate_robot_steps = staged_release(groups, population, candidate_robot_steps, spray_step_id,
+                (suppression.get('water_source') or {}).get('id'))
+        release_at = at + (int(math.ceil(suppression.get('duration_seconds') or 0)) + 1 if staged and not suppression.get('already_active') else 0)
+        spray_at = at if suppression.get('already_active') else release_at - 1
+        first_building = next((group.get('building_id') for group in groups), None)
+        first_move = next((step for step in candidate_robot_steps if step.get('building_id') == first_building
+                           and step.get('arguments', {}).get('command') == 'move'), None)
+        if staged and first_move:
+            release_at += first_move.get('planned_duration_seconds', 0) + 1
+        release_in_window = not staged or release_at < spray_at + suppression['spray_duration_seconds']
         # Same environment and official score function.  The shared bounded
         # horizon covers the slowest selected route, so every candidate is
         # compared at the same meaningful point instead of a fixed 30 seconds.
@@ -153,27 +203,54 @@ def build_candidates(session, drill, data, scope, run=None):
         escorted = {h["resident_id"] for h in data["simulation"].get("helpers", []) if h["state"] != "completed"}
         simulated, free = list(events), max(0, capacity - len(escorted))
         sequence = data["latest_event_sequence"]
+        dispatch_forecast = suppression.get('_forecast_dispatch') if staged else None
+        forecast_release_known = not dispatch_forecast or not dispatch_forecast.get('hold_for_pedestrians')
+        if dispatch_forecast:
+            sequence += 1
+            simulated.append(SimpleNamespace(id='agent-preview-dispatch-' + str(index), sequence=sequence,
+                elapsed_seconds=at, event_type='vehicle.dispatched',
+                payload={**deepcopy(dispatch_forecast), 'vehicle_id': suppression['vehicle_id']}))
+        if staged and forecast_release_known and not suppression.get('already_active'):
+            sequence += 1
+            simulated.append(SimpleNamespace(id='agent-preview-spray-' + str(index), sequence=sequence,
+                elapsed_seconds=max(at, spray_at), event_type='vehicle.action_started',
+                payload={'action_id': 'agent-preview-spray-' + str(index), 'vehicle_id': suppression['vehicle_id'],
+                         'action': 'spray', 'duration_seconds': suppression['spray_duration_seconds'],
+                         'water_source': deepcopy(suppression.get('water_source'))}))
         for group in groups:
+            if not release_in_window or not forecast_release_known:
+                continue
+            if staged and group.get('release_wave', 1) > 1:
+                continue  # Later waves require real arrival, not a guessed timestamp.
             if group["action"] == "priority_assist":
                 needed = set(group["resident_ids"]) - escorted
                 if len(needed) > free: continue
                 free -= len(needed)
                 escorted.update(needed)
             sequence += 1
-            simulated.append(SimpleNamespace(id="agent-preview-" + group["id"], sequence=sequence, elapsed_seconds=at, event_type="resident.command",
+            simulated.append(SimpleNamespace(id="agent-preview-" + group["id"], sequence=sequence, elapsed_seconds=release_at, event_type="resident.command",
                                              payload={k: group[k] for k in ("resident_ids", "exit", "action")}))
-        if support and support["can_apply"] and not support.get("already_completed"):
+        awaiting_escort = sorted({pid for group in groups if group.get('action') == 'priority_assist'
+                                 for pid in group['resident_ids']} - escorted)
+        if staged and first_move and release_in_window and forecast_release_known:
+            sequence += 1
+            simulated.append(SimpleNamespace(id='agent-preview-first-broadcast', sequence=sequence,
+                elapsed_seconds=release_at, event_type='robot.broadcast_completed',
+                payload={'building_id': first_building, 'awaiting_escort_ids': awaiting_escort}))
+        if not staged and support and support["can_apply"] and not support.get("already_completed"):
             if not support.get("reusing_task"):
                 sequence += 1
                 simulated.append(SimpleNamespace(id="agent-preview-robot", sequence=sequence, elapsed_seconds=at,
                     event_type="robot.target_assigned", payload={"target": support["target"], "target_x": support["x"], "target_y": support["y"],
                     "route_points": support["route_points"], "route_edge_ids": support["route_edge_ids"], "route": support["route"],
                     "planned_duration_seconds": support["duration_seconds"], "battery": support["battery_available"] - support["battery_required"] + 3}))
-            if support.get("target_count", 1) == 1 and support["duration_seconds"] <= forecast_seconds:
+            if not staged and support.get("target_count", 1) == 1 and support["duration_seconds"] <= forecast_seconds:
                 sequence += 1
                 simulated.append(SimpleNamespace(id="agent-preview-broadcast", sequence=sequence,
                     elapsed_seconds=at + support["duration_seconds"], event_type="robot.broadcast_completed",
-                    payload={"x": support["x"], "y": support["y"], "target": support["target"], "battery": support["battery_available"] - support["battery_required"]}))
+                    payload={"x": support["x"], "y": support["y"], "target": support["target"],
+                             "building_id": support.get("building_id"), 'awaiting_escort_ids': awaiting_escort,
+                             "battery": support["battery_available"] - support["battery_required"]}))
         containment = []
         if allocation.get('rule') == 'containment':
             containment = [{'id': str(uuid4()), 'label': '起火房间撤空后关闭房门',
@@ -192,26 +269,42 @@ def build_candidates(session, drill, data, scope, run=None):
                             "route_reachable": routes[assignments[pid]][pid].get("route_reachable", False)} for pid in ids]
         title = {'path': '当前偏好方案' if preference != 'balanced' else '路径优先分流',
                  'risk_capacity': '风险与容量分流', 'north_priority': '北侧出口优先',
-                 'south_priority': '南侧出口优先', 'containment': '安全撤空与房门控烟'}[allocation['rule']]
+                 'south_priority': '南侧出口优先', 'containment': '安全撤空与房门控烟',
+                 'suppression_staged': '先压制后分批撤离'}[allocation['rule']]
         results.append({"id": "candidate-" + str(index + 1), "title": title,
                         "allocation": allocation, "baseline_metrics": baseline_metrics,
-                        "groups": groups + containment + [{**deepcopy(step), "battery_required": step.get("battery_required", support["battery_required"])} for step in resource_steps],
+                        "groups": staged_steps + groups + containment + [
+                            {**deepcopy(step), "battery_required": step.get("battery_required", (support or {}).get("battery_required", 0))}
+                            for step in candidate_robot_steps],
                         "robot_support": support, "assignments": assignment_list, "geometry_issues": geometry_issues, "navigation_geometry_version": 1,
-                        "can_apply": not unresolved and (not assist_required or capacity > 0) and (not support or support["can_apply"]),
+                        "vehicle_support": {key: value for key, value in suppression.items() if not key.startswith('_')} if staged else None,
+                        "suppression_notice": suppression['notice'] if not kitchen and not suppression.get('can_apply') else None,
+                        "release_policy": {'mode': 'building_waves' if staged else 'immediate',
+                            'waves': max((g.get('release_wave', 1) for g in groups), default=0),
+                            'requires_active_suppression': staged,
+                            'notice': '逐栋放行；后一栋等待前栋实际到场，每批核对有效喷水。' if staged else '批准后立即分流；护送仍按岗位容量执行。'},
+                        "can_apply": release_in_window and not unresolved and (not assist_required or capacity > 0) and (not support or support["can_apply"]) and (not staged or suppression["can_apply"]),
                         "assist_resource": {"capacity": capacity, "busy": busy_staff, "required": assist_required,
                                             "waves": math.ceil(assist_required / capacity) if capacity else None},
-                        "reason": "本场没有可用值守员，重点护送无法执行；请取消该方案并核对值守资源或调整目标。" if assist_required and not capacity else "当前存在不可达居民，请调整道路或使用另一方案。" if unresolved else support["notice"] if support and not support["can_apply"] else "确认后按真实容量执行；居民与机器人并行，护送分批等待资源。",
+                        "reason": "首栋广播晚于本次有效喷水窗口，无法按此顺序放行；请调整机器人目标或选择立即撤离方案。" if not release_in_window else "本场没有可用值守员，重点护送无法执行；请取消该方案并核对值守资源或调整目标。" if assist_required and not capacity else "当前存在不可达居民，请调整道路或使用另一方案。" if unresolved else support["notice"] if support and not support["can_apply"] else suppression["notice"] if staged else "确认后按真实容量执行；居民与机器人并行，护送分批等待资源。",
                         "metrics": {"north": sum(exit == "north" for exit in assignments.values()), "south": sum(exit == "south" for exit in assignments.values()),
                                     "unreachable": len(unresolved), "arrived": sum(p["status"] == "evacuated" for p in predicted),
                                     "exposed": sum(p.get("smoke_exposure", 0) > 5 for p in predicted), "queue_seconds": round(sum(p.get("queue_seconds", 0) for p in predicted)),
-                                    "score": score, "score_delta": score - baseline_score},
+                                    "score": score, "score_delta": score - baseline_score,
+                                    "cumulative_exposure": round(sum(p.get('smoke_exposure', 0) for p in predicted), 1),
+                                    "last_arrival_at": max((p.get('assembly_arrived_at_seconds', 0) for p in predicted if p['status'] == 'evacuated'), default=None),
+                                    "all_arrived": bool(predicted) and all(p['status'] == 'evacuated' for p in predicted)},
                         "forecast_seconds": forecast_seconds, "forecast_at": at, "forecast_sequence": data["latest_event_sequence"],
-                        "coverage": f"{forecast_seconds} 秒居民与首批可用护送资源预演；" + ("机器人按预计到位时刻计入广播，居民不等待机器人；" if support else "") + "后续批次待资源释放，车辆与人工任务沿用当前安排。"})
+                        "coverage": f"{forecast_seconds} 秒居民与首批可用护送资源预演；" + ("车辆等待行人清空，开始喷水时刻尚不确定，预演未计入放行；" if not forecast_release_known else "") + ("压制方案只估计首栋放行，后续楼栋等待真实到场，不预填完成时间；" if staged else "") + ("首栋广播按喷水后预计到位时刻计入；" if staged and support else "机器人按预计到位时刻计入广播；" if support else "") + "后续批次待资源释放，人工责任任务沿用当前安排。"})
     # The director workspace deliberately presents at most two actionable
     # decisions.  More alternatives increase review time without improving
     # the plan: keep the best forecast and one materially different fallback;
     # equivalent rules remain visible in ``equivalent_rules``.
     candidates = distinct_candidates(sorted(results, key=lambda p: rank_candidate(p, scope.get('objective', 'balanced'))))
+    staged_candidate = next((item for item in candidates if item.get('allocation', {}).get('rule') == 'suppression_staged'), None)
+    immediate = next((item for item in candidates if not item.get('vehicle_support')), None)
+    if staged_candidate and immediate:
+        return sorted([immediate, staged_candidate], key=lambda item: rank_candidate(item, scope.get('objective', 'balanced')))
     if len(candidates) <= 2:
         return candidates
     # A containment proposal is a different physical action, not a cosmetic
@@ -220,6 +313,9 @@ def build_candidates(session, drill, data, scope, run=None):
     containment = next((item for item in candidates if item.get('allocation', {}).get('rule') == 'containment'), None)
     if containment is not None and candidates[0] is not containment:
         return [candidates[0], containment]
+    staged = next((item for item in candidates if item.get('allocation', {}).get('rule') == 'suppression_staged'), None)
+    if staged is not None and candidates[0] is not staged:
+        return [candidates[0], staged]
     return candidates[:2]
 
 
@@ -263,6 +359,8 @@ def relevant_changes(session, run, after, data=None):
             affected = event.payload.get("resident_id") in ids if event.event_type == "inject.resident_missing" else event.payload.get("blocked_edge_id") in used_edges
             if affected:
                 found.append(("needs_review", "路网或目标人员状态变化，请重新比较未完成部分。"))
+        elif event.event_type == 'inject.hydrant_failure' and affected_release_steps(run.steps, event.payload.get('hydrant_id')):
+            found.append(('needs_review', '所用水源失效影响压制后放行条件，请重新比较未完成人员；已受理的移动继续保留。'))
         elif event.event_type == 'indoor.door_changed' and event.id not in own_events:
             door_id = event.payload.get('door_id')
             if door_id in used_edges or any(step.get('arguments', {}).get('door_id') == door_id for step in run.steps):
@@ -286,6 +384,11 @@ def run_payload(session, run, data):
         reason = changes[0][1] if changes else "预演起点已超过45秒，请按当前现场重新比较。" if expired else "确认方案后继续演练并执行。" if data['status'] == 'paused' else "请先开始演练，再确认执行。" if data["status"] != "running" else "现场条件有效，核对方案后可确认执行。"
         approval_guard = {"can_approve": not review and data["status"] in {"running", "paused"}, "needs_replan": review,
                           "age_seconds": age, "reason": reason}
+        from app.services.agent_contract import unsupported_goal_parts
+        unsupported = unsupported_goal_parts(run.goal)
+        if unsupported:
+            approval_guard.update(can_approve=False, needs_replan=False,
+                reason='原目标含未编排部分：' + '、'.join(unsupported) + '。请通过车辆调度处理，另建仅含疏散与核验的目标。')
         if review:
             execution["coordination"]["next_action"] = {"kind": "replan", "label": "按当前现场重新比较", "reason": reason}
             lane = next(l for l in execution["coordination"]["lanes"] if l["id"] == "planning")
@@ -318,6 +421,8 @@ def approve(session, drill, run, candidate_id, revision, identity):
     operations = ops()
     session.execute(select(DrillSession.id).where(DrillSession.id == drill.id).with_for_update())
     if run.status in {*OPERATING, "completed", "awaiting_rollcall", "unfinished"} and run.approved_revision == revision and run.selected_candidate == candidate_id: return
+    from app.services.agent_contract import validate_goal_capabilities
+    validate_goal_capabilities(run.goal)
     if run.status != "awaiting_approval" or run.revision != revision: raise HTTPException(409, "计划已变化，请重新读取方案。")
     if drill.status not in {'running', 'paused'}: raise HTTPException(409, "请先开始演练，再确认执行。")
     candidate = next((p for p in run.candidates if p["id"] == candidate_id), None)
@@ -335,7 +440,9 @@ def approve(session, drill, run, candidate_id, revision, identity):
         run.status, run.reason = "needs_review", "现场或方案时效已变化，尚未执行。请重新预演。"
         note(session, run, "invalidated", run.reason, at); session.commit()
         raise HTTPException(409, run.reason)
-    run.steps = compile_graph(candidate['groups'], at)
+    escort_capacity = staff_capacity(operations.snapshot(session, drill)['simulation'].get('world') or {})
+    run.scope = {**run.scope, 'escort_parallel_capacity': escort_capacity}
+    run.steps = compile_graph(candidate['groups'], at, escort_capacity=escort_capacity)
     run.evidence = [*run.evidence, {"decision": {"revision": revision, "candidate_id": candidate_id,
         "title": candidate["title"], "approved_at": at, "forecast_at": candidate["forecast_at"],
         "forecast_seconds": candidate["forecast_seconds"], "metrics": deepcopy(candidate["metrics"]),
@@ -480,6 +587,54 @@ def _advance_run(session, run, identity, controlled):
                         reason=receipt["reason"] if receipt else "已受理，等待真实回执。")
             people = {p["id"]: p for p in data["simulation"]["residents"]}
             continue
+        if step.get("kind") == "vehicle.command":
+            command = step["arguments"].get("command")
+            vehicle_id = step["arguments"].get("vehicle_id")
+            vehicle = next((item for item in data["simulation"].get("vehicles", [])
+                            if item.get("id") == vehicle_id), None)
+            if step['status'] == 'completed' and not receipt:
+                continue  # This gate reused a previously verified active spray.
+            if command == 'spray' and not receipt and hazard_cleared(data):
+                step.update(status='completed', progress=1,
+                    reason='现场火势和烟气均已消退，放行条件满足，无需重复喷水。')
+                continue
+            if (command == 'spray' and not receipt and not (vehicle or {}).get('service')
+                    and data['simulation']['fire']['intensity'] <= 0):
+                step.update(status='waiting', reason='火势已压制，等待残余烟气消退后放行；不重复下达无效喷水指令。')
+                continue
+            # The resident release gate is the start of effective suppression,
+            # not the end of the 45-second service.  The vehicle command receipt
+            # remains executing for supervision while this task-graph node can
+            # truthfully satisfy its dependency.
+            if command == "spray" and effective_spray(data['simulation'], vehicle, step['arguments'].get('water_source_id')):
+                step.update(status="completed", progress=1,
+                            reason="有效供水与喷水已开始；居民放行条件已满足，消防车继续压制。")
+                continue
+            if step["status"] == "blocked":
+                outcome = ("needs_review", step["reason"]); break
+            if receipt:
+                continue
+            live = LiveCommand(command_id=step["command_id"], kind="vehicle.command",
+                               arguments=step["arguments"], expected_sequence=data["latest_event_sequence"])
+            if not controlled(): return
+            try:
+                data = command_application().execute(session, drill.id, live, identity,
+                    CommandOrigin('agent', run.id, run.approved_revision, step['id']))
+            except CommandRejected as error:
+                step.update(status="blocked", reason=str(error.detail))
+                outcome = ("needs_review", "消防车实时校验未通过：" + str(error.detail)); break
+            receipt = next((c for c in data["commands"] if c["id"] == step["command_id"]), None)
+            vehicle = next((item for item in data["simulation"].get("vehicles", [])
+                            if item.get("id") == vehicle_id), None)
+            if command == "spray" and effective_spray(data['simulation'], vehicle, step['arguments'].get('water_source_id')):
+                step.update(status="completed", progress=1,
+                            reason="有效供水与喷水已开始；居民放行条件已满足，消防车继续压制。")
+            else:
+                step.update(status=receipt["status"] if receipt else "accepted",
+                            progress=receipt["progress"] if receipt else 0,
+                            reason=receipt["reason"] if receipt else "已受理，等待车辆真实回执。")
+            people = {p["id"]: p for p in data["simulation"]["residents"]}
+            continue
         selected = [people[pid] for pid in step["resident_ids"]]
         completed = all(p["status"] == "evacuated" for p in selected)
         escorted = step["action"] != "priority_assist" or all(p.get("assisted") for p in selected)
@@ -490,6 +645,12 @@ def _advance_run(session, run, identity, controlled):
         if step["status"] == "blocked":
             outcome = ("needs_review", step["reason"]); break
         if receipt: continue
+        if step.get('release_condition') == 'active_suppression':
+            problem = suppression_blocker(data, step.get('release_water_source_id'))
+            if problem:
+                step.update(status='blocked', reason=problem)
+                outcome = ('needs_review', problem)
+                break
         needed = {p["id"] for p in selected if p["status"] != "evacuated" and p["id"] not in active}
         if step["action"] == "priority_assist" and needed and not capacity:
             step.update(status="blocked", reason="本场没有可用值守资源，无法执行护送。")
@@ -526,7 +687,13 @@ def _advance_run(session, run, identity, controlled):
                            for pid in step.get("resident_ids", []) if pid in helpers]
         robot = data.get("robot") or {}
         robot_observed = (robot.get("state"), round(robot.get("x", 0), 1), round(robot.get("y", 0), 1)) if step.get("kind") == "robot.command" else None
-        signature = hashlib.sha256(repr((step["status"], round(step["progress"], 3), observed, escort_observed, robot_observed)).encode()).hexdigest()
+        vehicle = next((item for item in data["simulation"].get("vehicles", [])
+                        if item.get("id") == step.get("arguments", {}).get("vehicle_id")), None)
+        vehicle_observed = ((vehicle.get("state"), round(vehicle.get("x", 0), 1), round(vehicle.get("y", 0), 1),
+                            vehicle.get("service", {}).get("action") if vehicle.get("service") else None)
+                           if step.get("kind") == "vehicle.command" and vehicle else None)
+        signature = hashlib.sha256(repr((step["status"], round(step["progress"], 3), observed, escort_observed,
+                                         robot_observed, vehicle_observed)).encode()).hexdigest()
         if signature != step.get("progress_signature"):
             step.update(progress_signature=signature, last_progress_at=at)
         if previous.get(step["id"]) != step["status"]:

@@ -2,7 +2,7 @@
 import { nextTick, onActivated, onBeforeUnmount, onMounted, ref } from 'vue'
 import UiIconButton from './UiIconButton.vue'
 
-defineProps<{ title: string; subtitle?: string; section?: string }>()
+const props=defineProps<{ title: string; subtitle?: string; section?: string; initialFocus?: string }>()
 const emit = defineEmits<{ close: [] }>()
 const closeButton = ref<InstanceType<typeof UiIconButton> | null>(null)
 let previousFocus: HTMLElement | null = null
@@ -10,7 +10,8 @@ function focusDrawer() {
   previousFocus = document.activeElement instanceof HTMLElement ? document.activeElement : null
   void nextTick(() => {
     const button = closeButton.value?.$el as HTMLButtonElement | undefined
-    if (button?.getClientRects().length && !button.closest('[inert]')) button.focus({ preventScroll: true })
+    const target=props.initialFocus?button?.closest('.ui-drawer')?.querySelector<HTMLElement>(props.initialFocus)??button:button
+    if (target?.getClientRects().length && !target.closest('[inert]')) target.focus({ preventScroll: true })
   })
 }
 onMounted(focusDrawer)

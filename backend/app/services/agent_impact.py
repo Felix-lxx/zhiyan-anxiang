@@ -4,8 +4,10 @@ from collections import defaultdict, deque
 from sqlalchemy import select
 
 from app.models.operations import DrillCommand, DrillEvent
+from app.services.water_resources import affected_release_steps
 
 WATCHED = {'inject.channel_blocked', 'road.reopened', 'inject.resident_missing',
+           'inject.hydrant_failure',
            'indoor.door_changed', 'robot.replanned', 'robot.target_assigned',
            'robot.task_cancelled', 'robot.broadcast_completed', 'resident.command'}
 
@@ -70,6 +72,7 @@ def impact_view(session, run, data):
     affected, direct, changes = set(), set(), []
     robot_included = bool(run.scope.get('robot_broadcast') and not run.scope.get('robot_broadcast_evidence')
         and (not run.steps or any(step.get('kind') == 'robot.command' and step['status'] != 'completed' for step in run.steps)))
+    water_affected = set()
     for event in reversed(events[:100]):
         if event.id in own_events or event.payload.get('purpose') == 'inspection':
             continue
@@ -79,7 +82,12 @@ def impact_view(session, run, data):
         members = {pid for pid in remaining if edge_id and edge_id in routes[pid]}
         steps = {step['id'] for step in run.steps if step.get('status') != 'completed' and edge_id and (
             edge_id in step.get('route_edge_ids', []) or edge_id == step.get('arguments', {}).get('door_id'))}
-        if kind == 'inject.resident_missing':
+        if kind == 'inject.hydrant_failure':
+            supply_steps = affected_release_steps(run.steps, payload.get('hydrant_id'))
+            steps.update(step['id'] for step in supply_steps)
+            members.update(pid for step in supply_steps for pid in step.get('resident_ids', []) if pid in remaining)
+            water_affected.update(members)
+        elif kind == 'inject.resident_missing':
             members = {payload['resident_id']} & remaining
         elif kind == 'resident.command':
             members = set(payload.get('resident_ids', [])) & remaining
@@ -91,7 +99,8 @@ def impact_view(session, run, data):
         affected.update(members)
         changes.append({'id': event.id, 'sequence': event.sequence, 'kind': kind,
             'at_seconds': event.elapsed_seconds, 'message': event.message[:240],
-            'edge_id': edge_id, 'location': edges.get(edge_id, {}).get('name'), 'resident_count': len(members),
+            'edge_id': edge_id, 'resource_id': payload.get('hydrant_id'),
+            'location': payload.get('target') if kind == 'inject.hydrant_failure' else edges.get(edge_id, {}).get('name'), 'resident_count': len(members),
             'robot_affected': robot_changed})
     for step in run.steps:
         if set(step.get('resident_ids', [])) & affected and step['status'] != 'completed':
@@ -115,7 +124,8 @@ def impact_view(session, run, data):
         'robot_affected': any(change['robot_affected'] for change in changes),
         'residents': [{'id': pid, 'label': people[pid].get('label', pid),
             'blocked': not people[pid].get('route_reachable', True), 'location': people[pid].get('last_location', ''),
-            'reason': '原方案途经变化位置；当前路线不可达' if not people[pid].get('route_reachable', True) else '原方案途经变化位置，请核对已改道后的路线'}
+            'reason': '本批所用水源失效，请核对压制与后续放行；已受理移动继续保留' if pid in water_affected else
+                '原方案途经变化位置；当前路线不可达' if not people[pid].get('route_reachable', True) else '原方案途经变化位置，请核对已改道后的路线'}
             for pid in sorted(affected)[:8]],
         'steps': [{'id': step['id'], 'label': step['label'], 'kind': step.get('kind', 'residents.assign'),
                    'direct': step['id'] in direct} for step in run.steps if step['id'] in impacted][:8]}

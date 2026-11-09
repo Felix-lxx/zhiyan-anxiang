@@ -228,10 +228,22 @@ def simulate(world, events, elapsed, strategy=None, branch_at=None, *, checkpoin
                 for pid in payload.get("resident_ids", []):
                     p = by_id.get(pid)
                     if not p or p["status"] == "evacuated": continue
-                    p.update(exit=payload["exit"], forced_exit=True, release_at=min(p["release_at"], now))
+                    p.update(exit=payload["exit"], forced_exit=True, awaiting_escort=False, release_at=min(p["release_at"], now))
                     if payload.get("action") == "priority_assist": helper_for(p, "护送员 · "+p["label"], payload.get('staff_assignments', {}).get(pid))
             elif kind == "robot.broadcast_completed":
-                for p in people: p["release_at"] = min(p["release_at"], now)
+                # A robot broadcasting at one building entrance must not wake
+                # every building in the community.  Old events without an
+                # explicit scope remain global for replay compatibility.
+                building_id = payload.get("building_id")
+                resident_ids = set(payload.get("resident_ids", []))
+                awaiting_escort = set(payload.get('awaiting_escort_ids', []))
+                for p in people:
+                    if (not building_id and not resident_ids
+                            or building_id and p.get("building_id") == building_id
+                            or p["id"] in resident_ids):
+                        p["release_at"] = min(p["release_at"], now)
+                        if p['id'] in awaiting_escort and not p.get('forced_exit'):
+                            p['awaiting_escort'] = True
             elif kind == "inject.resident_missing":
                 p = by_id.get(payload.get("resident_id", "resident-3"))
                 if p and p["status"] != "evacuated": p["status"] = "missing"
@@ -262,6 +274,7 @@ def simulate(world, events, elapsed, strategy=None, branch_at=None, *, checkpoin
             and all(not p.get("edge_id") and (
                 p["status"] in {"evacuated", "missing"}
                 or now < p["release_at"] + p.get("preparation_seconds", 3)
+                or p.get('awaiting_escort')
                 or (helpers.get(p["id"], {}).get("state") == "blocked")
                 or not destination(p) or route(p["node_id"], destination(p)) is None
             ) for p in people)
@@ -302,6 +315,9 @@ def simulate(world, events, elapsed, strategy=None, branch_at=None, *, checkpoin
                 helper = helpers.get(person["id"])
                 # Finish (or retreat out of) the occupied segment before waiting
                 # for assistance; freezing inside it can block the approaching helper.
+                if person.get('awaiting_escort') and not person.get('edge_id'):
+                    person['status'] = 'waiting'
+                    continue
                 if person["status"] == "missing" or (helper and helper["state"] in {"approaching", "blocked"} and not person.get('edge_id')) or now < person["release_at"]+person.get("preparation_seconds", 3): continue
                 goal = destination(person)
             else:
@@ -440,6 +456,8 @@ def simulate(world, events, elapsed, strategy=None, branch_at=None, *, checkpoin
         person["last_location"] = nodes[person.get("edge_from") if person.get("edge_id") else person["node_id"]]["name"] + (" → "+nodes[person["edge_to"]]["name"] if person.get("edge_id") else "")
         helper = helpers.get(person["id"])
         person["behavior"] = "集合点已核验" if person["counted"] else "已到集合点，等待清点" if person["status"] == "evacuated" else "失联，等待搜索会合" if person["status"] == "missing" else "等待护送员入楼会合" if helper and helper["state"] in {"approaching", "blocked"} else "通道排队，前人通过后前进" if person["congestion"] else "所选集合点不可达，请改道" if not person["route_reachable"] else "等待通知" if now < person["release_at"] else "准备离开房间" if now < person["release_at"]+person.get("preparation_seconds", 3) else "护送同行" if person["assisted"] else "沿连续通道撤离"
+        if person.get('awaiting_escort') and not person.get('edge_id') and person['status'] not in {'evacuated', 'missing'}:
+            person['behavior'] = '已接到通知，等待护送批次或人工重新安排'
         if person.get("yielding_vehicle") and person.get("waiting_for_edge") in traffic_at(elapsed): person["behavior"] = "应急车辆通行管控，在路段入口等待放行"
     for helper in helpers.values():
         person = by_id[helper["resident_id"]]

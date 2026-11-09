@@ -5,7 +5,7 @@ from typing import Any, Literal
 from uuid import uuid4
 import logging
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 from sqlalchemy.orm import Session
 
@@ -14,6 +14,7 @@ from app.api.routes import operations
 from app.core.config import get_settings
 from app.core.database import get_db
 from app.models.domain import Scene
+from app.services.command_lock import serialized_command
 from app.services.scene_assistant import build_context, offline_reply, provider_status, call_model, DISCLAIMER
 
 router = APIRouter(tags=["scene assistant"])
@@ -21,6 +22,13 @@ _slots = BoundedSemaphore(4)
 _guard = Lock()
 _active: set[str] = set()
 logger = logging.getLogger(__name__)
+
+
+@serialized_command
+def admit_question(session, owner):
+    from app.services.connection_security import rate_limit
+    rate_limit(session, 'assistant-chat', owner, 30)
+    session.commit()
 
 
 class Turn(BaseModel):
@@ -54,6 +62,8 @@ class ChatRequest(BaseModel):
     use_model: bool = False
     semantic_retrieval: bool = False
     selection_context: SelectionContext | None = None
+    request_id: str | None = Field(default=None, min_length=8, max_length=80, pattern=r'^[A-Za-z0-9_-]+$')
+    conversation_generation: int | None = Field(default=None, ge=0)
 
     @field_validator("history")
     @classmethod
@@ -78,6 +88,12 @@ def assistant_status(identity: AuthenticatedIdentity = Depends(get_current_ident
 @router.post("/drills/{drill_id}/assistant/chat")
 def chat(drill_id: str, payload: ChatRequest, identity: AuthenticatedIdentity = Depends(get_current_identity), session: Session = Depends(get_db)):
     drill = operations.require_drill(session, drill_id, identity.username)
+    from app.services.assistant_conversations import prepare_request, save_exchange
+    conversation_generation, cached = prepare_request(session, drill_id, identity.username, payload)
+    if cached:
+        return cached
+    admit_question(session, identity.username)
+    request_id = payload.request_id or str(uuid4())
     scene = session.get(Scene, drill.scene_id)
     historical = payload.at_seconds is not None
     # Unlike the regular polling endpoint, this never advances or mutates the engine.
@@ -159,9 +175,27 @@ def chat(drill_id: str, payload: ChatRequest, identity: AuthenticatedIdentity = 
                 _active.discard(identity.username)
     elif payload.use_model:
         notice = "尚未完成模型配置，已使用离线解读。"
-    return {"id": str(uuid4()), "mode": mode, "model": settings.assistant_model if mode == "model" else None,
+    reply = {"id": str(uuid4()), "mode": mode, "model": settings.assistant_model if mode == "model" else None,
             "answer": answer, "notice": notice, "disclaimer": DISCLAIMER,
             "context": {k: context[k] for k in ("drill_id", "scene_name", "drill_name", "at_seconds", "historical", "counts", "selection")},
             "sources": context["sources"], "actions": actions,
             'knowledge': knowledge,
             "suggestions": ["现在下一步应该做什么？", "谁还没有到集合点？", "机器人为什么没动？", "道路拥堵应该怎么处理？", "如何从关键决定前重做？"]}
+    return save_exchange(session, drill_id, identity.username, payload, conversation_generation, request_id, reply)
+
+
+@router.get('/drills/{drill_id}/assistant/conversation')
+def get_conversation(drill_id: str, limit: int = Query(default=20, ge=1, le=50),
+                     before: int | None = Query(default=None, ge=1),
+                     identity: AuthenticatedIdentity = Depends(get_current_identity), session: Session = Depends(get_db)):
+    operations.require_drill(session, drill_id, identity.username)
+    from app.services.assistant_conversations import conversation_page
+    return conversation_page(session, drill_id, identity.username, limit, before)
+
+
+@router.delete('/drills/{drill_id}/assistant/conversation')
+def delete_conversation(drill_id: str, generation: int = Query(ge=0),
+                        identity: AuthenticatedIdentity = Depends(get_current_identity), session: Session = Depends(get_db)):
+    operations.require_drill(session, drill_id, identity.username)
+    from app.services.assistant_conversations import clear_conversation
+    return clear_conversation(session, drill_id, identity.username, generation)

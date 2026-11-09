@@ -54,12 +54,15 @@ export interface BranchPlan { strategy: string; name: string; evacuation_seconds
 export interface BranchComparison { at_seconds: number; projection_seconds: number; baseline: BranchPlan; alternative: BranchPlan; robots: { baseline: Robot | null; alternative: Robot | null }; worlds: { baseline: Simulation; alternative: Simulation }; improvement: { evacuation_seconds: number | null; vulnerable_rescue_seconds: number | null; smoke_exposed: number; score: number }; recommendation: string; disclaimer: string }
 
 export type SpatialIntent =
-  | { kind: 'vehicle'; vehicleId: string; targetNodeId?: string; command?: 'dispatch' | 'spray' | 'load' | 'handover'; residentId?: string }
+  | { kind: 'vehicle'; vehicleId: string; targetNodeId?: string; command?: 'dispatch' | 'spray' | 'load' | 'handover'; residentId?: string; waterSourceId?: string }
   | { kind: 'road'; edgeId: string }
   | { kind: 'robot'; x: number; y: number; target: string }
   | { kind: 'residents'; residentIds: string[]; exit: 'north' | 'south'; action: 'evacuate' | 'priority_assist' }
 
 export interface SpatialPreview {
+  water_source?: { id:string; name:string; x:number; y:number }
+  hose_length?: number
+  hose_points?: Array<{x:number;y:number}>
   rescue_action?: 'spray' | 'load' | 'handover'
   kind: 'road' | 'robot' | 'residents' | 'vehicle'; can_apply: boolean; title?: string; notice: string
   expected_sequence: number
@@ -83,11 +86,14 @@ export interface Vehicle {
   route_points: Array<{ x: number; y: number; edge_id?: string | null }>; route_edge_ids: string[]
   service?: RescueAction | null
   passenger?: { id: string; label: string; pickup_node_id: string } | null
-  service_options?: Partial<Record<'spray' | 'handover', { can_apply: boolean; notice: string; duration_seconds: number }>>
+  service_options?: Partial<Record<'spray' | 'handover', { can_apply: boolean; notice: string; duration_seconds: number; water_source?: WaterConnection; water_sources?: WaterConnection[] }>>
   rescue_actions?: RescueAction[]
   rescue_action_count?: number
 }
 export interface RescueAction {
+  connection_position?: {x:number;y:number;height?:number}
+  hose_points?: Array<{x:number;y:number}>
+  hose_length?: number
   action_id: string; vehicle_id: string; action: 'spray' | 'load' | 'handover'; label: string
   status: 'executing' | 'completed' | 'cancelled'; progress: number; reason: string
   duration_seconds: number; remaining_seconds: number; starts_at_seconds: number; ends_at_seconds: number
@@ -96,6 +102,10 @@ export interface RescueAction {
   loading_position?: {x:number;y:number}; boarding_position?: {x:number;y:number}
   position?: { x: number; y: number }
   target?: { x: number; y: number }; water_source?: { id: string; name: string; x: number; y: number }
+}
+export interface WaterConnection {
+  id:string; name:string; x:number; y:number; state?:'available'|'failed'
+  can_connect?:boolean; notice?:string; hose_length?:number|null
 }
 export interface TransferCandidate { id: string; label: string; exit: string; eligible: boolean; reason: string }
 export interface Simulation { vehicles?: Vehicle[]; rescue_actions?: RescueAction[]; transfer_candidates?: TransferCandidate[] }

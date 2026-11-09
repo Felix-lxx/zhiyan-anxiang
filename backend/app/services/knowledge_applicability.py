@@ -54,6 +54,11 @@ def assess_experience(source, current):
             differences.append({'field': 'population', 'label': '目标居民人数',
                                 'recorded': source['population'], 'current': current['target_population']})
     status = 'different' if differences else 'unverified' if missing or not actual else 'matched'
+    if source.get('kind') == 'simulation_archive':
+        return {'status': 'different' if differences else 'unverified', 'label': '单场训练事实',
+                'differences': differences, 'missing': missing, 'at_seconds': current['at_seconds'],
+                'event_sequence': current.get('event_sequence'),
+                'notice': '本资料记录单次训练结果，可追溯操作和问题；未经对照验证，不直接用于推断本场策略收益。'}
     labels = {'different': '条件有差异', 'unverified': '条件记录不完整', 'matched': '已核对记录条件'}
     return {'status': status, 'label': labels[status], 'differences': differences, 'missing': missing,
             'at_seconds': current['at_seconds'], 'event_sequence': current.get('event_sequence'),

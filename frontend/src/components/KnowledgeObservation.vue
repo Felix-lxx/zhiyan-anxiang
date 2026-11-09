@@ -9,14 +9,14 @@ const parameterValues:Record<string,string>={kitchen:'住宅厨房',charging_she
 </script>
 <template>
   <section class="knowledge-observation" aria-label="经验原始观察依据">
-    <h3>原始仿真观察</h3><p>{{source.drill_name||'来源演练'}} · 批准版本 {{source.revision}} · 观察 {{clock(source.observed_at)}} · {{source.population}} 人</p>
+    <h3>{{source.kind==='simulation_archive'?'训练结束时的原始事实':'原始仿真观察'}}</h3><p>{{source.drill_name||'来源演练'}}<template v-if="source.revision!=null"> · 批准版本 {{source.revision}}</template> · 观察 {{clock(source.observed_at)}} · {{source.population}} 人</p>
     <template v-if="!compact">
-      <table><caption>冻结观察事实，与下方可修订正文分别保存</caption><thead><tr><th scope="col">指标</th><th scope="col">预测</th><th scope="col">观察</th></tr></thead><tbody><tr v-for="metric in metrics" :key="metric.key"><th scope="row">{{metric.label}}<small>{{metric.unit}}</small></th><td>{{source.predicted[metric.key]}}</td><td>{{source.actual[metric.key]}}</td></tr></tbody></table>
+      <table><caption>冻结观察事实，与下方可修订正文分别保存</caption><thead><tr><th scope="col">指标</th><th v-if="source.predicted" scope="col">预测</th><th scope="col">观察</th></tr></thead><tbody><tr v-for="metric in metrics" :key="metric.key"><th scope="row">{{metric.label}}<small>{{metric.unit}}</small></th><td v-if="source.predicted">{{source.predicted[metric.key]}}</td><td>{{source.actual[metric.key]}}</td></tr></tbody></table>
       <p>观察期间记录 {{source.intervention_count}} 条场次变化。发布前，请核对适用条件并补充复盘结论。</p>
       <details><summary>核对适用条件与模型版本</summary>
         <dl><template v-for="(value,key) in source.parameters" :key="key"><dt>{{parameterLabels[key]||key}}</dt><dd>{{parameterValues[String(value)]||value}}</dd></template></dl>
         <p>冻结场景版本：{{source.scene_version_id||'历史记录未提供'}}。</p>
-        <p>模型修订：预测 {{source.forecast_engine_revision??'历史未记录'}} / 观察 {{source.observed_engine_revision??'历史未记录'}}。</p>
+        <p>模型修订：<template v-if="source.predicted">预测 {{source.forecast_engine_revision??'历史未记录'}} / </template>观察 {{source.observed_engine_revision??'历史未记录'}}。</p>
       </details>
       <button v-if="source.community_id&&source.scene_id" type="button" @click="emit('replay',source)">打开来源场次的观察时刻</button>
       <details v-if="source.events?.length"><summary>核对事件依据 · {{source.events.length}} 条</summary><ol><li v-for="event in source.events" :key="event.id"><strong>事件 {{event.sequence}} · {{clock(event.at_seconds)}}</strong><p>{{event.message}}</p></li></ol></details>

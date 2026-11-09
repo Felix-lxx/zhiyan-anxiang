@@ -28,8 +28,12 @@ def replan(session, drill, run, data, request, identity):
         raise HTTPException(409, '已有重点人员到场但未完成计划护送，不能通过重规划抹去缺项。请核对现场，必要时停止本计划后重新制定目标。')
     broadcast = completed_broadcast(session, run) if run.scope.get('robot_broadcast') else None
     if not remaining and (not run.scope.get('robot_broadcast') or broadcast):
-        run.status = 'completed' if all(p.get('counted') for p in people) else 'awaiting_rollcall'
-        run.reason = '目标行动与集合核验已完成。' if run.status == 'completed' else '目标已到场，行动证据已满足；请完成集合清点。'
+        tasks_done = not run.scope.get('include_case_tasks') or all(
+            task['status'] == 'completed' for task in data.get('tasks', []))
+        run.status = 'completed' if all(p.get('counted') for p in people) and tasks_done else 'awaiting_rollcall'
+        run.reason = '目标行动、责任任务与集合核验已完成。' if run.status == 'completed' else '目标已到场；请完成尚未核验的案例责任任务与集合清点。'
+        from app.services.agent_claims import release
+        release(session, run.id)
         note(session, run, run.status, run.reason, data['elapsed_seconds'])
         session.commit()
         return

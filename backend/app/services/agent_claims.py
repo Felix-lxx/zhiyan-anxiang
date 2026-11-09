@@ -8,6 +8,7 @@ from uuid import uuid4
 from sqlalchemy import select, update, or_
 from sqlalchemy.dialects import postgresql, sqlite
 from app.models.agent import AgentResourceClaim, AgentRun
+from app.models.operations import DrillCommand, DrillEvent
 from app.domain.errors import CommandRejected
 from app.services.response_staff import roster
 
@@ -42,10 +43,36 @@ def acquire(session, run, data):
     robot_steps = [s for s in run.steps if s.get('kind') == 'robot.command' and s['status'] != 'completed']
     if robot_steps:
         required['robot:R-01'] = '巡检广播机器人 R-01'
+    if any(s.get('kind') == 'vehicle.command' and s.get('arguments', {}).get('vehicle_id') == 'firetruck-1'
+           and s['status'] != 'completed' for s in run.steps):
+        required['vehicle:firetruck-1'] = '消防车 F-01'
+        vehicle = next((item for item in data['simulation'].get('vehicles', [])
+                        if item.get('id') == 'firetruck-1'), {})
+        if vehicle.get('state') in {'moving', 'yielding', 'blocked'} or vehicle.get('service'):
+            # Relinquishing a plan does not cancel an accepted physical action.
+            # Only its original durable receipt permits continuing supervision.
+            command_ids = [step['command_id'] for step in run.steps
+                           if step.get('kind') == 'vehicle.command' and step.get('command_id')]
+            receipts = list(session.scalars(select(DrillCommand).where(
+                DrillCommand.drill_session_id == run.drill_session_id,
+                DrillCommand.command_id.in_(command_ids)))) if command_ids else []
+            active_id = ((vehicle.get('service') or {}).get('id')
+                         if vehicle.get('service') else vehicle.get('mission_id'))
+            event_ids = {event_id for receipt in receipts for event_id in receipt.event_ids}
+            owned_actions = set(event_ids)
+            if event_ids:
+                for event in session.scalars(select(DrillEvent).where(
+                        DrillEvent.drill_session_id == run.drill_session_id, DrillEvent.id.in_(event_ids))):
+                    owned_actions.update((event.payload.get('action_id'), event.payload.get('mission_id')))
+            if not active_id or active_id not in owned_actions:
+                return False, '等待消防车完成已受理行程或处置；原计划让出控制不会取消车辆实际行动。'
     required.update({'door:'+s['arguments']['door_id']: s['label'] for s in run.steps
         if s.get('kind') == 'indoor.door.set' and s['status'] != 'completed'})
     escorts = [s for s in run.steps if s.get('action') == 'priority_assist' and s['status'] != 'completed']
     slots = max((len(s['resident_ids']) for s in escorts), default=0)
+    if run.scope.get('escort_parallel_capacity'):
+        slots = max(slots, min(run.scope['escort_parallel_capacity'],
+                               sum(len(step['resident_ids']) for step in escorts)))
     helpers = [h for h in data['simulation'].get('helpers', []) if h['state'] != 'completed']
     own_helpers = {h.get('staff_id') for h in helpers if h['resident_id'] in run.scope['resident_ids']}
     foreign_helpers = {h.get('staff_id') for h in helpers if h['resident_id'] not in run.scope['resident_ids']}
@@ -126,6 +153,7 @@ def staff_assignments(session, drill_id, data, resident_ids, run_id=None):
 
 def manual_takeover(session, drill_id, kind, arguments, at):
     keys = ({'robot:R-01'} if kind == 'robot.command' else
+            {'vehicle:' + arguments['vehicle_id']} if kind == 'vehicle.command' else
             {'door:'+arguments['door_id']} if kind == 'indoor.door.set' else
             {'resident:' + pid for pid in arguments.get('resident_ids', [])} if kind == 'residents.assign' else set())
     owners = {row.run_id for row in claims_for(session, drill_id) if row.run_id and row.resource_key in keys}

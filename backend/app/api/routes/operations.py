@@ -649,7 +649,8 @@ def reconcile_vehicle_services(session: Session, drill: DrillSession):
                              {"vehicle_id": vehicle["id"], "mission_id": vehicle["mission_id"], "planned_duration_seconds": vehicle["planned_duration_seconds"]})
         service = vehicle.get("service")
         if not service: continue
-        failed_water = service["action"] == "spray" and state["environment"]["east_hydrant"] == "failed"
+        from app.services.water_resources import source_available
+        failed_water = service["action"] == "spray" and not source_available(state['environment'], service.get('water_source'))
         if failed_water or elapsed >= service["ends_at_seconds"]:
             kind = "vehicle.action_stopped" if failed_water else "vehicle.action_completed"
             message = "水源中断，喷水停止，请调整供水方案" if failed_water else f"{service['label']}完成"
@@ -668,9 +669,9 @@ def preview_vehicle(drill_id: str, payload: VehicleCommand, identity: Authentica
     if vehicle is None:
         raise HTTPException(404, "本场次尚无可调度车辆或路网。")
     if payload.command in ACTION_LABELS:
-        plan = action_plan(frozen_world(session, drill), state, vehicle, payload.command, payload.resident_id)
+        plan = action_plan(frozen_world(session, drill), state, vehicle, payload.command, payload.resident_id, payload.water_source_id)
         return {**plan, "planned_duration_seconds": plan["duration_seconds"], "kind": "vehicle", "title": f"{vehicle['name']} · {ACTION_LABELS[payload.command]}",
-                "expected_sequence": max((e.sequence for e in events), default=0), "route_points": plan.get("pickup_points", []), "rescue_action": payload.command}
+                "expected_sequence": max((e.sequence for e in events), default=0), "route_points": plan.get("hose_points", plan.get("pickup_points", [])), "rescue_action": payload.command}
     if payload.command != "dispatch" or not payload.target_node_id:
         raise HTTPException(422, "请选择车辆到场的道路节点。")
     plan = protect_plan(plan_vehicle(state["road_network"], vehicle, payload.target_node_id), state, vehicle["id"])
@@ -694,10 +695,16 @@ def command_vehicle(drill_id: str, payload: VehicleCommand, identity: Authentica
     vehicle = next((v for v in state["vehicles"] if v["id"] == payload.vehicle_id), None)
     if vehicle is None:
         raise HTTPException(404, "没有找到本场次车辆。")
+    origin = session.info.get('command_origin')
+    def take_over_owned_vehicle():
+        if not origin or origin.kind != 'agent':
+            from app.services.agent_claims import manual_takeover
+            manual_takeover(session, drill.id, 'vehicle.command', payload.model_dump(), effective_elapsed(drill))
     active = vehicle["state"] in {"moving", "blocked", "yielding"}
     if payload.command in ACTION_LABELS:
-        plan = action_plan(frozen_world(session, drill), state, vehicle, payload.command, payload.resident_id)
+        plan = action_plan(frozen_world(session, drill), state, vehicle, payload.command, payload.resident_id, payload.water_source_id)
         if not plan["can_apply"]: raise HTTPException(409, plan["notice"])
+        take_over_owned_vehicle()
         append_event(session, drill, "vehicle.action_started", identity.username, f"{vehicle['name']}开始{ACTION_LABELS[payload.command]}。",
                      {**plan, "action_id": secrets.token_hex(16), "vehicle_id": vehicle["id"]})
         commit_changes(session)
@@ -706,6 +713,7 @@ def command_vehicle(drill_id: str, payload: VehicleCommand, identity: Authentica
         service = vehicle.get("service")
         if not service: raise HTTPException(409, "当前没有进行中的到场处置。")
         if service["action"] != "spray": raise HTTPException(409, "接运或移交正在进行，请等待人员交接完成。")
+        take_over_owned_vehicle()
         append_event(session, drill, "vehicle.action_stopped", identity.username, f"{vehicle['name']}停止{service['label']}，保留已发生的处置效果。",
                      {"action_id": service["action_id"], "vehicle_id": vehicle["id"], "action": service["action"], "resident_id": service.get("resident_id")})
         commit_changes(session)
@@ -719,14 +727,17 @@ def command_vehicle(drill_id: str, payload: VehicleCommand, identity: Authentica
         plan = protect_plan(plan_vehicle(state["road_network"], vehicle, payload.target_node_id or ""), state, vehicle["id"])
         if not plan["can_apply"]:
             raise HTTPException(409, plan["notice"])
+        take_over_owned_vehicle()
         append_event(session, drill, "vehicle.dispatched", identity.username, f"{vehicle['name']}前往{plan['target_name']}。", {**plan, "vehicle_id": vehicle["id"]})
     elif not active:
         raise HTTPException(409, "车辆没有进行中的行程。")
     elif payload.command == "cancel":
         if vehicle.get("passenger"): raise HTTPException(409, "车内有人，不能解除接运责任；请恢复通道或重新规划到出口。")
+        take_over_owned_vehicle()
         append_event(session, drill, "vehicle.cancelled", identity.username, f"{vehicle['name']}已取消行程并原地待命。", {"vehicle_id": vehicle["id"], "mission_id": vehicle["mission_id"]})
     else:
         plan = protect_plan(plan_vehicle(state["road_network"], vehicle, vehicle["target_node_id"]), state, vehicle["id"])
+        take_over_owned_vehicle()
         append_event(session, drill, "vehicle.replanned", identity.username, f"{vehicle['name']}重新规划当前行程。", {**plan, "vehicle_id": vehicle["id"], "mission_id": vehicle["mission_id"]})
     record_vehicle_arrivals(session, drill)
     commit_changes(session)
@@ -964,6 +975,9 @@ def change_state(drill_id: str, payload: DrillAction, identity: AuthenticatedIde
         finalize_runs_for_end(session, drill, identity)
         session.flush()
         score_drill(session, drill)
+        session.flush()
+        from app.services.training_archive import archive_drill
+        archive_drill(session, drill, snapshot(session, drill), identity.username)
     commit_changes(session)
     return snapshot(session, drill)
 
@@ -977,13 +991,27 @@ def inject_event(drill_id: str, payload: EventInject, identity: AuthenticatedIde
     target = payload.target or ""
     valid_target = {
         "channel_blocked": bool(payload.road_edge_id) or any(keyword in target for keyword in ("南门", "通道", "道路")),
-        "hydrant_failure": "消火栓" in target,
+        "hydrant_failure": bool(payload.hydrant_id) or "消火栓" in target,
         "resident_missing": any(keyword in target for keyword in ("居民", "人员", "3 号楼")),
     }[payload.event_type]
     if not valid_target:
         raise HTTPException(status_code=422, detail="事件投放位置与事件类型不匹配，请将事件放到对应道路、消火栓或居民对象。")
     messages = {"channel_blocked": "南门消防通道被车辆占用。", "hydrant_failure": "东侧消火栓压力异常，判定不可用。", "resident_missing": "集合点核验发现 1 名重点人员未签到。"}
     location_payload = {key: value for key, value in {"x": payload.x, "y": payload.y, "target": payload.target}.items() if value is not None}
+    if payload.event_type == 'hydrant_failure':
+        water_world = frozen_world(session, drill) or {}
+        if water_world.get('water_resources'):
+            sources = water_world['water_resources']['sources']
+            source = next((item for item in sources if item['id'] == payload.hydrant_id), None) if payload.hydrant_id else next(
+                (item for item in sources if item['name'] == target), None)
+            if source is None:
+                raise HTTPException(422, '请选择本场冻结场景中的具体消火栓，不能用任意名称或坐标代替。')
+            environment = snapshot(session, drill)['simulation']['environment']
+            from app.services.water_resources import source_available
+            if not source_available(environment, source):
+                raise HTTPException(409, '该消火栓已经失效，请选择其他水源。')
+            location_payload.update(hydrant_id=source['id'], target=source['name'], x=source['x'], y=source['y'])
+            messages['hydrant_failure'] = source['name'] + '压力异常，判定不可用；其他水源保持各自状态。'
     if payload.event_type == "resident_missing":
         people = snapshot(session, drill)["simulation"]["residents"]
         person = next((p for p in people if p["id"] == payload.resident_id), None) if payload.resident_id else next((p for p in people if p["status"] != "evacuated" and p["vulnerable"]), None)
@@ -1400,6 +1428,15 @@ def advance_director(drill_id: str, identity: AuthenticatedIdentity = Depends(ge
         if event_type == "inject.channel_blocked":
             edge, edge_distance = nearest_road_edge(session, drill, (event_payload["x"], event_payload["y"]))
             event_payload.update({"blocked_edge_id": edge.id, "blocked_edge_name": edge.name, "edge_distance": round(edge_distance, 2)})
+        elif event_type == 'inject.hydrant_failure':
+            resources = (frozen_world(session, drill) or {}).get('water_resources')
+            if resources:
+                source = next((item for item in simulation['environment'].get('hydrants', [])
+                               if item['state'] == 'available' and item['id'] == resources['primary_id']), None)
+                if source is None:
+                    raise HTTPException(409, '主水源已失效，不能重复注入同一故障。')
+                event_payload.update(hydrant_id=source['id'], target=source['name'], x=source['x'], y=source['y'])
+                message = '自适应导演注入' + source['name'] + '失效，其他水源独立保持。'
         append_event(session, drill, event_type, "自适应事件导演", message, event_payload)
         append_event(session, drill, "director.cue", "自适应事件导演", f"镜头已聚焦：{event_payload['target']}，请立即处置。", {**event_payload, "severity": "high"})
         if event_type == "inject.channel_blocked":

@@ -169,8 +169,13 @@ def simulate_residents(network: dict, events: list[dict], elapsed: int, strategy
                         person["release_at"] = min(person["release_at"], now)
                         reroute(person, now)
             elif kind == "robot.broadcast_completed":
+                building_id = payload.get("building_id")
+                resident_ids = set(payload.get("resident_ids", []))
                 for person in people:
-                    person["release_at"] = min(person["release_at"], now)
+                    if (not building_id and not resident_ids
+                            or building_id and person.get("building_id") == building_id
+                            or person["id"] in resident_ids):
+                        person["release_at"] = min(person["release_at"], now)
             elif kind == "inject.hydrant_failure":
                 hydrant_failed = True
             elif kind == "participant.resource_ready":

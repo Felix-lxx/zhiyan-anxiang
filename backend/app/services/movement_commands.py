@@ -118,7 +118,8 @@ def command_robot(runtime, session, drill, payload, identity):
         commit_changes(session)
         return runtime.snapshot(session, drill)
     elif payload.command == 'broadcast':
-        live = runtime.snapshot(session, drill)['robot']
+        snapshot = runtime.snapshot(session, drill)
+        live = snapshot['robot']
         if live['state'] == 'completed':
             return runtime.snapshot(session, drill)
         if live['state'] not in {'arrived', 'completed'}:
@@ -130,6 +131,20 @@ def command_robot(runtime, session, drill, payload, identity):
         robot.reason = '已在目标点完成现场广播，任务形成闭环证据'
         kind, message = 'robot.broadcast_completed', robot.reason
         data = {'state': robot.state, 'x': live['x'], 'y': live['y'], 'target': robot.current_task}
+        world = snapshot.get('simulation', {}).get('world') or {}
+        buildings = [item for item in world.get('objects', []) if item.get('type') == 'building']
+        # Scope only an explicitly named building broadcast.  A scenario task
+        # such as "入口广播" is intentionally community-wide even when its
+        # marker happens to sit beside a building entrance.
+        named = [item for item in buildings if item.get('name') and item['name'] in (robot.current_task or '')]
+        nearby = [item for item in named if item.get('entry') and
+                  ((item['entry']['x'] - live['x']) ** 2 + (item['entry']['y'] - live['y']) ** 2) ** .5 <= 1.5]
+        if nearby:
+            data['building_id'] = nearby[0]['id']
+        from app.services.agent_resources import pending_escort_ids
+        waiting = pending_escort_ids(session, drill.id)
+        if waiting:
+            data['awaiting_escort_ids'] = waiting
     else:
         live = runtime.snapshot(session, drill)['robot']
         if not live['task_queue'] or all(t['status'] == 'cancelled' for t in live['task_queue']):

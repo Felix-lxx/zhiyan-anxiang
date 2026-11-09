@@ -11,7 +11,7 @@ import AgentRevisionView from './AgentRevisionView.vue'
 import SpeechPlayback from './SpeechPlayback.vue'
 
 const props = defineProps<{ apiBaseUrl:string;accessToken:string;drillId:string;active:boolean;historical:boolean;modelAvailable:boolean;focusId?:string;liveFeed?:AgentLiveState|null;connection?:'connecting'|'live'|'stale';goalDraft?:{id:number;text:string}|null;planFocus?:{id:string;request:number}|null }>()
-const emit = defineEmits<{ preview:[people:AgentAssignment[]];residentFocus:[id:string];robot:[];rollcall:[];missions:[];task:[id:string];indoor:[doorId?:string];replay:[at:number];knowledge:[id:string,version?:string,chunk?:string] }>()
+const emit = defineEmits<{ preview:[people:AgentAssignment[]];residentFocus:[id:string];robot:[];vehicle:[];rollcall:[];missions:[];task:[id:string];indoor:[doorId?:string];replay:[at:number];knowledge:[id:string,version?:string,chunk?:string] }>()
 const api = createApiClient(props.apiBaseUrl, () => props.accessToken)
 const goal = ref('将目标居民分流疏散，重点人员安排护送'), building = ref(''), assist = ref(true), useModel = ref(false)
 const robotBroadcast = ref(false)
@@ -56,15 +56,18 @@ function nextAction() {
   if (!action || busy.value || syncError.value) return
   if (action.kind==='replan') void act('replan')
   else if (action.kind==='rollcall') emit('rollcall')
+  else if (action.kind==='missions' && action.task_id) emit('task',action.task_id)
   else if (action.kind==='missions') emit('missions')
   else if (action.kind==='indoor') emit('indoor',action.door_id)
   else if (action.kind==='robot') emit('robot')
+  else if (action.kind==='vehicle') emit('vehicle')
   else if (action.kind==='focus' && action.resident_id) emit('residentFocus', action.resident_id)
   else if(action.kind!=='review'&&run.value?.status==='completed') void openOutcomeEvidence()
   else detail.value=action.kind==='review'?'plan':'execution'
 }
 function focusResource(key:string) {
   if(key.startsWith('robot:')){emit('robot');return}
+  if(key.startsWith('vehicle:')){emit('vehicle');return}
   const person=run.value?.execution?.staff.find(staff=>key==='staff:'+staff.id)?.resident_id
   if(person)emit('residentFocus',person)
 }
@@ -188,7 +191,12 @@ onBeforeUnmount(()=>{disposed=true;generation++;pollEpoch++;clearTimeout(timer);
         <div class="agent-workspace__case-heading"><h4>案例处置 · {{run.task_graph.case_tasks.length}} 项</h4><button type="button" @click="emit('missions')">查看与核验</button></div>
         <p>{{run.task_graph.case_tasks.filter(task=>task.state!=='completed').length}} 项待核验<template v-if="run.task_graph.case_tasks.some(task=>task.verification_ready)">，已有任务满足提交条件</template>。</p>
         <details><summary>查看责任人与截止时间</summary>
-        <button v-for="task in run.task_graph.case_tasks" :key="task.id" type="button" @click="emit('task',task.id)"><strong>{{task.label}}</strong><span>{{task.state==='completed'?'已核验':task.verification_ready?'立即核验':task.overdue?'已超时，可补救':`剩余 ${task.remaining_seconds ?? '—'} 秒`}} · {{task.responsible_role}}</span><small v-if="task.state!=='completed'">{{task.blockers.join('；')}}</small><small>查看本项任务、核验条件与资料依据</small></button>
+        <button v-for="task in run.task_graph.case_tasks" :key="task.id" type="button" :data-ready="task.verification_ready||undefined" :data-overdue="task.overdue||undefined" @click="emit('task',task.id)">
+          <strong>{{task.label}}</strong>
+          <span>{{task.state==='completed'?'已核验':task.verification_ready?'立即核验':task.overdue?'已超时，可补救':`剩余 ${task.remaining_seconds ?? '—'} 秒`}} · {{task.responsible_role}}</span>
+          <small v-if="task.state!=='completed'">下一步：{{task.next_required_action}}</small>
+          <small v-if="task.depends_on?.length">关联行动：{{dependencyLabel(task)}}</small>
+        </button>
         </details>
       </section>
       <label v-if="runs.length>1" class="agent-workspace__plan-select">当前计划<select v-model="selectedRunId" :disabled="busy"><option v-for="item in runs" :key="item.id" :value="item.id">{{labels[item.status]||item.status}} · {{item.scope.building_name}} · {{item.goal}}</option></select></label>
@@ -228,6 +236,13 @@ onBeforeUnmount(()=>{disposed=true;generation++;pollEpoch++;clearTimeout(timer);
               <div><strong>{{lane.label}}</strong><span>{{laneLabels[lane.state]||lane.state}}</span></div><p>{{lane.detail}}</p>
             </li>
           </ol>
+          <p v-if="coordination.case_tasks?.total" class="agent-workspace__case-summary">
+            责任任务 {{coordination.case_tasks.completed}} / {{coordination.case_tasks.total}} 已核验；
+            <template v-if="coordination.case_tasks.waiting">{{coordination.case_tasks.waiting}} 项等待火情确认，</template>
+            <template v-if="coordination.case_tasks.verification_ready">{{coordination.case_tasks.verification_ready}} 项可立即提交，</template>
+            <template v-if="coordination.case_tasks.overdue">{{coordination.case_tasks.overdue}} 项已超时，</template>
+            {{Math.max(0,coordination.case_tasks.pending-coordination.case_tasks.verification_ready)}} 项仍需现场责任人推进。
+          </p>
           <div class="agent-workspace__next">
             <p>{{coordination.next_action.reason}}</p>
             <button type="button" :disabled="busy||!!syncError" @click="nextAction">{{coordination.next_action.label}}<AppIcon name="arrowRight" :size="18" /></button>
@@ -271,11 +286,24 @@ onBeforeUnmount(()=>{disposed=true;generation++;pollEpoch++;clearTimeout(timer);
               </section>
               <dl><div><dt>出口分配</dt><dd>北 {{item.metrics.north}} · 南 {{item.metrics.south}}</dd></div><div><dt>不可达</dt><dd>{{item.metrics.unreachable}} 人</dd></div><div><dt>{{item.forecast_seconds}} 秒后到场</dt><dd>{{item.metrics.arrived}} 人</dd></div><div><dt>暴露超阈值</dt><dd>{{item.metrics.exposed}} 人</dd></div><div><dt>累计排队</dt><dd>{{item.metrics.queue_seconds}} 人秒</dd></div><div><dt>{{item.forecast_seconds}}秒状态预估分</dt><dd>{{item.metrics.score}} <small>（{{item.metrics.score_delta>=0?'+':''}}{{item.metrics.score_delta}}）</small></dd></div></dl>
               <p v-if="item.assist_resource?.required" class="agent-workspace__resource-summary">需护送 {{item.assist_resource.required}} 人；本场 {{item.assist_resource.capacity}} 名值守员，{{item.assist_resource.busy}} 名正在执行。{{item.assist_resource.waves ? `至少分 ${item.assist_resource.waves} 批安排，实际等待取决于在途任务。` : '当前无可用值守员，不能执行护送。'}}</p>
+              <section v-if="item.release_policy" class="agent-workspace__resource" aria-label="居民放行策略">
+                <h4>{{item.release_policy.mode==='building_waves'?'按楼栋分批放行':'立即组织撤离'}}</h4>
+                <p>{{item.release_policy.notice}}<template v-if="item.release_policy.mode==='building_waves'">共 {{item.release_policy.waves}} 批。每栋放行前核对或接续喷水；水源失效或接续失败时，后续批次进入待复核。</template></p>
+                <dl><div v-if="item.metrics.cumulative_exposure!==undefined"><dt>预演累计暴露</dt><dd>{{item.metrics.cumulative_exposure}} 模型单位</dd></div><div><dt>{{item.metrics.all_arrived?'预计全员到场时刻':'预演内末位到场时刻'}}</dt><dd>{{item.metrics.last_arrival_at!=null?clock(item.metrics.last_arrival_at):'预演内无人到场'}}</dd></div></dl>
+                <p v-if="!item.metrics.all_arrived" class="agent-workspace__meta">尚未覆盖全员到场，以上时刻不代表最终疏散耗时。</p>
+              </section>
               <section v-if="item.robot_support" class="agent-workspace__resource" aria-label="机器人协同条件">
                 <h4><AppIcon name="robot" :size="18" />{{ item.robot_support.target }}</h4>
                 <dl><div><dt>预计到位</dt><dd>{{ item.robot_support.already_completed ? '已完成广播' : item.robot_support.already_arrived ? '原任务已到位' : item.robot_support.duration_seconds === null ? '暂不可达' : item.robot_support.duration_seconds + ' 秒' }}</dd></div><div v-if="!item.robot_support.already_completed"><dt>{{item.robot_support.reusing_task ? '剩余电量需求 / 当前' : '电量需求 / 当前'}}</dt><dd>{{ item.robot_support.battery_required }} / {{ item.robot_support.battery_available ?? '—' }}</dd></div></dl>
                 <p>{{ item.robot_support.notice }}</p>
               </section>
+              <section v-if="item.vehicle_support" class="agent-workspace__resource" aria-label="消防车压制与放行条件">
+                <h4><AppIcon name="route" :size="18" />消防车压制与居民放行</h4>
+                <dl><div><dt>有效停靠点</dt><dd>{{item.vehicle_support.target_name??'待重新规划'}}</dd></div><div><dt>预计开始喷水</dt><dd>{{item.vehicle_support.already_active?'正在喷水':item.vehicle_support.duration_seconds===null?'当前不可执行':item.vehicle_support.duration_seconds+' 秒后'}}</dd></div><div><dt>连续压制</dt><dd>{{item.vehicle_support.spray_duration_seconds}} 秒</dd></div></dl>
+                <p>{{item.vehicle_support.notice}}</p>
+                <p v-if="item.vehicle_support.water_source" class="agent-workspace__resource-summary">供水：{{item.vehicle_support.water_source.name}}<template v-if="item.vehicle_support.hose_length!==undefined"> · 水带 {{item.vehicle_support.hose_length}} 米</template>；所用水源失效后重新核对部署，不自动改用另一水源。</p>
+              </section>
+              <p v-else-if="item.suppression_notice" class="agent-workspace__notice">当前未提供压制后放行方案：{{item.suppression_notice}}</p>
               <details v-if="item.geometry_issues?.length" class="agent-workspace__geometry">
                 <summary>地图通行检查 · {{ item.geometry_issues.length }} 处不通行</summary>
                 <p>这些连接与楼体相交，已从寻路中排除。请在地图编辑中调整，保存后新建场次；不能用“恢复道路”解除几何阻挡。</p>
@@ -292,13 +320,14 @@ onBeforeUnmount(()=>{disposed=true;generation++;pollEpoch++;clearTimeout(timer);
             <button v-if="run.status==='awaiting_approval'" type="button" class="agent-workspace__primary" :disabled="busy||!live||!candidate?.can_apply||!!syncError||run.approval_guard?.can_approve===false" @click="act('approve')">确认方案并执行</button>
             <button v-if="['awaiting_approval','needs_review'].includes(run.status)" type="button" :disabled="busy||drillStatus==='ended'" @click="act('replan')">按当前现场重新比较</button>
           </div>
+          <p v-if="run.approval_guard?.can_approve===false && !run.approval_guard.needs_replan" class="agent-workspace__notice" role="status">{{run.approval_guard.reason}}</p>
           <p v-if="run.approval_guard?.needs_replan" class="agent-workspace__notice">{{run.approval_guard.reason}} 原预演保留用于对照，重新比较后需再次确认。</p>
           <p v-if="!live&&run.status==='awaiting_approval'" class="agent-workspace__notice">请先开始或继续演练，再确认执行。</p>
           <p v-if="!run.candidates.length">{{run.scope.completion}}</p>
         </section>
         <section v-else-if="detail==='execution'" aria-label="目标执行步骤">
           <SpeechPlayback :text="executionSpeech" :active="active&&!busy&&!voiceBusy" label="朗读当前执行摘要"/>
-          <section v-if="run.resources" class="agent-workspace__ownership" aria-label="资源归属"><h4>本计划资源</h4><p class="agent-workspace__meta">已登记 {{run.resources.resident_count}} 名居民；资源归属写入数据库，刷新或重启不会重复派遣。</p><ul v-if="run.resources.items.length"><li v-for="resource in run.resources.items" :key="resource.key"><strong>{{resource.name}}</strong><span>{{({owned:'本计划占用',occupied:'其他计划占用',released:'已释放'} as Record<string,string>)[resource.state]}}<template v-if="resource.revision"> · 版本 {{resource.revision}}</template></span><button v-if="resource.kind==='robot'||run.execution?.staff.some(staff=>resource.key==='staff:'+staff.id&&staff.resident_id)" type="button" @click="focusResource(resource.key)">定位现场</button></li></ul><p v-else class="agent-workspace__meta">当前没有独占资源；护送与机器人资源在批准时校验登记。</p></section>
+          <section v-if="run.resources" class="agent-workspace__ownership" aria-label="资源归属"><h4>本计划资源</h4><p class="agent-workspace__meta">已登记 {{run.resources.resident_count}} 名居民；资源归属写入数据库，刷新或重启不会重复派遣。</p><ul v-if="run.resources.items.length"><li v-for="resource in run.resources.items" :key="resource.key"><strong>{{resource.name}}</strong><span>{{({owned:'本计划占用',occupied:'其他计划占用',released:'已释放'} as Record<string,string>)[resource.state]}}<template v-if="resource.revision"> · 版本 {{resource.revision}}</template></span><button v-if="['robot','vehicle'].includes(resource.kind)||run.execution?.staff.some(staff=>resource.key==='staff:'+staff.id&&staff.resident_id)" type="button" @click="focusResource(resource.key)">定位现场</button></li></ul><p v-else class="agent-workspace__meta">当前没有独占资源；护送、机器人与车辆资源在批准时校验登记。</p></section>
           <p v-if="run.decision" class="agent-workspace__meta">执行依据：{{run.decision.title}} · 批准版本 {{run.decision.revision}} · {{clock(run.decision.approved_at)}} 确认。完整分流依据保留在“依据”中。</p>
           <button v-if="run.outcomes?.length" type="button" class="agent-workspace__disclosure" @click="openOutcomeEvidence">{{run.outcomes[0]?.result?'查看预测与实际结果差异':`查看 ${clock(run.outcomes[0]!.due_seconds)} 结果核对计划`}}<AppIcon name="arrowRight" :size="18" /></button>
           <section v-if="coordination && (coordination.issues.length || coordination.bottlenecks.length)" class="agent-workspace__attention" aria-label="需要关注的现场">
@@ -311,6 +340,15 @@ onBeforeUnmount(()=>{disposed=true;generation++;pollEpoch++;clearTimeout(timer);
             <div><h4><AppIcon name="robot" :size="18" />机器人协同</h4><button type="button" @click="emit('robot')">查看三维位置</button></div>
             <p>{{coordination.robot.reason||'等待机器人状态回执'}} · 电量 {{coordination.robot.battery??'—'}}%</p>
             <p class="agent-workspace__meta">到位与广播步骤已完成 {{coordination.robot.steps_completed}} / {{coordination.robot.steps_total}}</p>
+          </section>
+          <section v-if="coordination?.vehicle.included" class="agent-workspace__vehicle-live" aria-label="消防车实时执行">
+            <div><h4><AppIcon name="route" :size="18" />消防车协同</h4><button type="button" @click="emit('vehicle')">查看车辆与处置</button></div>
+            <p>{{coordination.vehicle.reason||'等待消防车状态回执'}}<template v-if="coordination.vehicle.target"> · {{coordination.vehicle.target}}</template></p>
+            <p class="agent-workspace__meta">到场与喷水放行步骤已完成 {{coordination.vehicle.steps_completed}} / {{coordination.vehicle.steps_total}}</p>
+          </section>
+          <section v-if="coordination?.release_waves?.length" class="agent-workspace__release" aria-label="楼栋分批放行进展">
+            <h4>楼栋放行进展</h4><p class="agent-workspace__meta">后一批等待前批真实到场；每批下令前核对有效喷水，火势与烟气均消退后直接满足放行条件。</p>
+            <ol><li v-for="wave in coordination.release_waves" :key="wave.wave"><div><strong>第 {{wave.wave}} 批 · {{labels[wave.state]||wave.state}}</strong><span>到场 {{wave.arrived}} / {{wave.total}} 人</span></div><p>{{wave.reason}}</p><button v-if="wave.resident_id" type="button" @click="emit('residentFocus',wave.resident_id)">查看这批居民</button></li></ol>
           </section>
           <p v-if="run.execution" class="agent-workspace__meta">现场同步 {{clock(run.execution.at_seconds)}} · 事件 {{run.execution.event_sequence}}。展开步骤可定位受阻人员与查看执行依据。</p>
           <p v-if="['stopped','taken_over'].includes(run.status)" class="agent-workspace__notice">自动下令已停止；下方继续显示已受理指令的实际进展。</p>
@@ -371,7 +409,7 @@ onBeforeUnmount(()=>{disposed=true;generation++;pollEpoch++;clearTimeout(timer);
 </template>
 
 <style scoped>
-.agent-workspace__case-tasks{display:grid;gap:10px;margin-block:20px;min-width:0}.agent-workspace__case-tasks h4,.agent-workspace__case-tasks p{margin:0}.agent-workspace__case-tasks button{display:grid;gap:6px;width:100%;padding:12px;text-align:start;white-space:normal;overflow-wrap:anywhere;font-size:16px}.agent-workspace__case-tasks span,.agent-workspace__case-tasks small{font-size:14px;line-height:1.6}
+.agent-workspace__case-tasks{display:grid;gap:10px;margin-block:20px;min-width:0}.agent-workspace__case-tasks h4,.agent-workspace__case-tasks p{margin:0}.agent-workspace__case-tasks details>button{display:grid;gap:6px;width:100%;padding:12px;text-align:start;white-space:normal;overflow-wrap:anywhere;font-size:16px}.agent-workspace__case-tasks span,.agent-workspace__case-tasks small{font-size:14px;line-height:1.6}.agent-workspace__case-tasks details>button[data-ready=true]{background:#d8e8bb;color:#173d2a;border-color:#d8e8bb}.agent-workspace__case-tasks details>button[data-overdue=true]:not([data-ready=true]){border-color:#d79b78;color:#ffd8c1}
 .agent-workspace__plan-select{margin-block:var(--space-3)}
 .agent-workspace__ownership{min-width:0;margin-block:var(--space-4);padding-block:var(--space-3);border-block:1px solid var(--border-default)}
 .agent-workspace__ownership h4{margin:0;font-size:16px}
@@ -427,6 +465,7 @@ onBeforeUnmount(()=>{disposed=true;generation++;pollEpoch++;clearTimeout(timer);
 .agent-workspace__decision li p{font-size:14px;color:var(--text-secondary)}
 .agent-workspace__decision button{min-height:44px;white-space:normal}
 .agent-workspace__resource-summary{padding-block:var(--space-3);border-block:1px solid var(--border-default);font-size:14px;color:var(--text-secondary)}
+.agent-workspace__release{padding-block:var(--space-4);border-block:1px solid var(--border-default);min-width:0}.agent-workspace__release ol{list-style:none;padding:0;margin:0}.agent-workspace__release li{padding-block:var(--space-3);border-bottom:1px solid var(--border-default)}.agent-workspace__release li>div{display:flex;flex-wrap:wrap;justify-content:space-between;gap:8px 16px}.agent-workspace__release li span,.agent-workspace__release li p{font-size:14px}.agent-workspace__release button{min-height:44px;white-space:normal}
 .agent-workspace__disclosure{width:100%;display:flex;align-items:center;justify-content:space-between;gap:var(--space-2);margin-block:var(--space-3);min-height:44px;text-align:left}
 .agent-workspace__disclosure svg{flex-shrink:0}
 .agent-workspace__disclosure[aria-expanded=true] svg{transform:rotate(180deg)}
@@ -441,13 +480,14 @@ onBeforeUnmount(()=>{disposed=true;generation++;pollEpoch++;clearTimeout(timer);
 .agent-workspace__step-heading>strong{flex:1 1 180px;min-width:0}
 .agent-workspace__detail .agent-workspace__evidence{margin-block:var(--space-3)}
 .agent-workspace__coordination{margin-block:var(--space-5);padding-block:var(--space-4);border-block:1px solid var(--border-default)}
-.agent-workspace__coordination-heading,.agent-workspace__lanes li>div,.agent-workspace__robot-live>div{display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:var(--space-2)}
+.agent-workspace__coordination-heading,.agent-workspace__lanes li>div,.agent-workspace__robot-live>div,.agent-workspace__vehicle-live>div{display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:var(--space-2)}
 .agent-workspace h4{margin:0;font-size:16px}
 .agent-workspace__coordination-heading>span,.agent-workspace__lanes li>div>span{font-size:14px;color:var(--text-secondary)}
 .agent-workspace__lanes{margin:var(--space-3) 0;padding:0;list-style:none;display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:var(--space-4)}
 .agent-workspace__lanes li{min-width:0;padding-top:var(--space-3);border-top:1px solid var(--border-default)}
 .agent-workspace__lanes p{font-size:14px;margin:var(--space-2) 0 0;color:var(--text-secondary)}
 .agent-workspace__lanes li[data-state=attention] strong,.agent-workspace__lanes li[data-state=review] strong{color:var(--status-warning)}
+.agent-workspace__case-summary{padding-block:var(--space-3);border-block:1px solid var(--border-default);font-size:14px;color:var(--text-secondary)}
 .agent-workspace__next{margin-top:var(--space-4)}
 .agent-workspace__next button{width:100%;min-height:44px;display:flex;align-items:center;justify-content:space-between;gap:var(--space-3);white-space:normal;text-align:left}
 .agent-workspace__attention{margin-block:var(--space-4)}
@@ -455,8 +495,8 @@ onBeforeUnmount(()=>{disposed=true;generation++;pollEpoch++;clearTimeout(timer);
 .agent-workspace__attention li{display:flex;align-items:center;gap:var(--space-3);padding-block:var(--space-3);border-bottom:1px solid var(--border-default)}
 .agent-workspace__attention li>div{flex:1;min-width:0}.agent-workspace__attention li p{margin:var(--space-1) 0 0;font-size:14px;color:var(--text-secondary)}
 .agent-workspace__attention button{flex-shrink:0;min-height:44px;display:flex;align-items:center;gap:var(--space-1)}
-.agent-workspace__robot-live{padding-block:var(--space-4);margin-bottom:var(--space-4);border-block:1px solid var(--border-default)}
-.agent-workspace__robot-live h4{display:flex;align-items:center;gap:var(--space-2)}
+.agent-workspace__robot-live,.agent-workspace__vehicle-live{padding-block:var(--space-4);margin-bottom:var(--space-4);border-block:1px solid var(--border-default)}
+.agent-workspace__robot-live h4,.agent-workspace__vehicle-live h4{display:flex;align-items:center;gap:var(--space-2)}
 @media(max-width:480px){.agent-workspace__lanes{grid-template-columns:minmax(0,1fr);gap:var(--space-3)}.agent-workspace__attention li{align-items:flex-start;flex-wrap:wrap}.agent-workspace__attention li>div{flex-basis:100%}}
 .agent-workspace__constraints{padding-block:12px;border-block:1px solid var(--border-default);}
 .agent-workspace__case-heading{display:flex;align-items:center;justify-content:space-between;gap:8px 16px;flex-wrap:wrap;}.agent-workspace__case-heading h4{margin:0;}.agent-workspace__case-tasks summary{min-height:44px;line-height:1.7;cursor:pointer;}

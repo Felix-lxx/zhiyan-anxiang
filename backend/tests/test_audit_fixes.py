@@ -92,14 +92,20 @@ def complete_case(client, headers, root, tick, indoor=False):
         ids = [p['id'] for p in state['simulation']['residents'] if p['status']=='evacuated' and not p.get('counted')]
         if ids:
             state = call('POST','/participant-actions',{'role':'居民代表','action':'resident_counted','message':'集合点逐人核验到场','resident_ids':ids})
-        if state['simulation']['summary']['counted']==state['simulation']['summary']['total'] and all(t['status']=='completed' for t in state['tasks']):
-            break
+        if state['simulation']['summary']['counted']==state['simulation']['summary']['total']:
+            assert not [p['id'] for p in state['simulation']['residents'] if p['vulnerable'] and not p.get('assisted')], '重点人员未经护送就完成清点'
+            if all(t['status']=='completed' for t in state['tasks']):
+                break
     else:
-        raise AssertionError([(t['kind'], t['status'], t.get('blockers')) for t in state['tasks']])
+        raise AssertionError({'tasks': [(t['kind'], t['status'], t.get('blockers')) for t in state['tasks']],
+            'remaining': [{key:p.get(key) for key in ('id','status','assisted','floor','node_id','edge_id','waiting_reason','waiting_for_edge')}
+                          for p in state['simulation']['residents'] if p['status']!='evacuated'],
+            'priority': [{key:p.get(key) for key in ('id','status','assisted','floor','behavior')} for p in state['simulation']['residents'] if p['vulnerable']],
+            'steps': [(s['label'],s['status'],s.get('reason')) for s in next(item for item in call('GET','/agent/runs')['runs'] if item['id']==run['id'])['steps']]})
     ended = call('PATCH','/state',{'action':'end'})
     final_run = next(r for r in call('GET','/agent/runs')['runs'] if r['id']==run['id'])
     assert final_run['status']=='completed'
-    assert ended['score']['total_score'] >= 95
+    assert ended['score']['total_score'] >= 95, ended['score']
     print('CASE_RESULT='+json.dumps({'indoor':indoor,'score':ended['score']['total_score'],
         'seconds':ended['elapsed_seconds'],'summary':ended['simulation']['summary'],
         'candidate_count':len(run['candidates']),'agent':final_run['status']}))
@@ -125,3 +131,19 @@ def test_repaired_shed_complete_decision(exercise):
 def test_repaired_kitchen_complete_decision(kitchen):
     client,headers,_,_,_,root,tick = kitchen
     complete_case(client,headers,root,tick,True)
+
+
+def test_broadcast_notifies_but_does_not_release_future_escort_batch(kitchen):
+    _, _, _, _, drill, _, _ = kitchen
+    world = drill['simulation']['world']
+    person = next(p for p in world['residents'] if p['vulnerable'])
+    notice = {'sequence':1, 'elapsed_seconds':0, 'event_type':'robot.broadcast_completed',
+              'payload':{'awaiting_escort_ids':[person['id']]}}
+    waiting = next(p for p in simulate(world, [notice], 20)['residents'] if p['id']==person['id'])
+    assert waiting['release_at']==0 and waiting['awaiting_escort']
+    assert waiting['travelled']==0 and not waiting['assisted']
+    # A deliberate manual route assignment can override the waiting decision.
+    command = {'sequence':2, 'elapsed_seconds':21, 'event_type':'resident.command',
+               'payload':{'resident_ids':[person['id']], 'exit':'south', 'action':'evacuate'}}
+    moving = next(p for p in simulate(world, [notice, command], 50)['residents'] if p['id']==person['id'])
+    assert not moving['awaiting_escort'] and moving['travelled']>0

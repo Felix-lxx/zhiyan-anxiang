@@ -482,7 +482,7 @@
 .map-editor .workspace-content { width: min(calc(100% - 32px), 1560px); padding-block: 18px 28px; }
 .map-editor .map-heading { align-items: center; }
 .map-editor .map-heading h1 { font-size: clamp(1.45rem, 2vw, 2rem); }
-.map-editor .map-heading__note { max-width: 43rem; font-size: .78rem; }
+.map-editor .map-heading__note { max-width: 43rem; font-size:14px; }
 .map-editor .map-workbench { grid-template-columns: minmax(0, 1fr) 304px; gap: 12px; }
 .map-editor .map-stage { min-height: calc(100dvh - 156px); padding: 12px; border-radius: 8px; box-shadow: 0 18px 42px rgb(26 47 41 / 8%); }
 .map-editor .map-stage__topline { min-height: 42px; }
@@ -493,6 +493,10 @@
 .map-editor .map-inspector { position: sticky; top: 12px; max-height: calc(100dvh - 88px); overflow: auto; padding: 16px; border-top: 1px solid var(--border-default); border-radius: 8px; box-shadow: 0 18px 42px rgb(26 47 41 / 7%); }
 .map-editor .map-object-form { gap: 11px; }
 .map-editor .map-object-form :is(input, textarea, select) { min-height: 44px; }
+.map-editor .map-inspector > p,
+.map-editor .map-object-form label,
+.map-editor .map-object-form label span,
+.map-editor .form-hint { font-size:14px; }
 .map-editor .map-marker { box-shadow: 0 8px 18px rgb(21 45 39 / 14%); }
 @media (max-width: 900px) {
   .map-editor .map-workbench { grid-template-columns: minmax(0, 1fr); }

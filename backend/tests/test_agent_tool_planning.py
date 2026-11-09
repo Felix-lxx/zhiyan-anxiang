@@ -13,7 +13,8 @@ from test_exercise_world import exercise
 
 def test_natural_floor_constraints_do_not_confuse_building_numbers():
     assert goal_constraints(GoalCreate(request_id='contract-00001', goal='疏散三号楼三层和十二层居民，降低暴露，不要走北门')) == {
-        'floors': [3, 12], 'objective': 'low_exposure', 'forbidden_exits': ['north']}
+        'floors': [3, 12], 'objective': 'low_exposure', 'forbidden_exits': ['north'],
+        'vehicle_suppression': False, 'vehicle_suppression_forbidden': False}
     assert goal_constraints(GoalCreate(request_id='contract-00002', goal='疏散三号楼居民'))['floors'] == []
     with pytest.raises(HTTPException):
         goal_constraints(GoalCreate(request_id='contract-00003', goal='疏散三至六层居民'))

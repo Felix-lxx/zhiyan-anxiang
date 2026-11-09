@@ -3,6 +3,12 @@ import math
 
 
 VEHICLE_LENGTHS = {"firetruck": 6.2, "ambulance": 5.2}
+VEHICLE_WIDTHS = {'firetruck': 2.45, 'ambulance': 2.3, 'stretcher': .8}
+
+
+def body_width(actor):
+    """Rendered body width, distinct from the larger operational road requirement."""
+    return min(VEHICLE_WIDTHS.get(actor.get('kind'), actor['minimum_width']), actor['minimum_width'])
 
 
 def half_length(actor):

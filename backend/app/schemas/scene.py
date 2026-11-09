@@ -99,6 +99,7 @@ class KitchenParametersUpdate(BaseModel):
 
 
 class SimulationPreviewRead(BaseModel):
+    configuration_validation: dict[str, Any] | None = None
     simulation: dict[str, Any] = Field(default_factory=dict)
     minute: int
     fire_level: str

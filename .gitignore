@@ -12,6 +12,8 @@ backend/.pytest_cache/
 # Runtime configuration and data
 .env
 backend/.env
+.env.*
+!.env.example
 postgres-data/
 
 # Local IDE and generated review artifacts

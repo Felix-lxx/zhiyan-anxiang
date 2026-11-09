@@ -42,3 +42,19 @@ def test_result_evidence_seeks_actual_exposure_not_earlier_command(road_graph):
     simulate(world, simulation_events, 100, checkpoint_out=checkpoint)
     continued = simulate(world, simulation_events, 200, checkpoint=deepcopy(checkpoint))
     assert continued['residents'][0]['smoke_exposed_at_seconds'] == simulation['residents'][0]['smoke_exposed_at_seconds']
+
+
+def test_outdoor_score_explains_late_vehicle_suppression(road_graph):
+    world = layout(road_graph, 1)
+    history = [
+        SimpleNamespace(id='release', event_type='resident.command', elapsed_seconds=1,
+                        payload={'resident_ids': [], 'exit': 'north'}),
+        SimpleNamespace(id='spray', event_type='vehicle.action_started', elapsed_seconds=100,
+                        payload={'action': 'spray', 'action_id': 'water-1', 'duration_seconds': 45}),
+    ]
+    simulation = simulate(world, [dict(vars(event), sequence=index) for index, event in enumerate(history)], 200)
+    result = score_frozen_world(world, history, simulation)
+    assert result['details'][1]['score'] < result['details'][1]['max_score']
+    assert result['recommendations'][0].startswith('烟气控制时序：首名居民在')
+    assert '消防车在 100 秒开始喷水' in result['recommendations'][0]
+    assert '晚' in result['recommendations'][0]

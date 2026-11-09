@@ -52,6 +52,22 @@ def test_two_buildings_have_independent_stairs_and_complete_arrival(road_graph):
     assert all(p["building_exited_at_seconds"] < p["assembly_arrived_at_seconds"] for p in final["residents"])
 
 
+def test_building_broadcast_releases_only_that_building(road_graph):
+    world = layout(road_graph, 4)
+    a = dict(id="home", name="甲楼", type="building", x=58, y=40, width=10, depth=8,
+             floors=3, entry={"x": 58, "y": 48})
+    b = dict(a, id="second", name="乙楼", x=34, y=60, floors=2,
+             entry={"x": 34, "y": 48}, properties={"stair_width": 2.4})
+    world["objects"] = [a, b]
+    for person in world["residents"]:
+        person.update(building_id="home" if person["id"] in {"resident-1", "resident-2"} else "second", floor=2)
+    add_spatial_layout(world, a)
+    state = simulate(world, [event("robot.broadcast_completed", 0, {"building_id": "home"})], 20)
+    released = {person["id"] for person in state["residents"] if person["release_at"] == 0}
+    assert released == {"resident-1", "resident-2"}
+    assert all(person["status"] == "waiting" for person in state["residents"] if person["building_id"] == "second")
+
+
 def test_warm_tick_is_equivalent_without_replaying_long_history(road_graph):
     world = layout(road_graph, 100)
     events = [event("robot.broadcast_completed", 0, {})]
@@ -79,15 +95,17 @@ def test_engine_checkpoint_is_durable_but_not_exposed_to_clients(exercise):
     assert '_engine_checkpoint' not in state
     with operations.SessionLocal() as session:
         record = session.scalar(select(DrillStateSnapshot).where(DrillStateSnapshot.drill_session_id==demo['drill_id']).order_by(DrillStateSnapshot.elapsed_seconds.desc()))
-        assert record.payload['_engine_checkpoint']['now'] == 6
-        assert record.payload['simulation']['world'] is None
-        assert record.payload['_frozen_world_ref'] is True
+        from app.services.snapshot_codec import decode_snapshot
+        stored = decode_snapshot(record.payload)
+        assert stored['_engine_checkpoint']['now'] == 6
+        assert stored['simulation']['world'] is None
+        assert stored['_frozen_world_ref'] is True
         assert load_snapshot(session, demo['drill_id'])['simulation']['world'] == world
         assert '_engine_checkpoint' not in load_snapshot(session, demo['drill_id'])
         with cache._lock: cache._states.clear()
         assert cache.recall(world, 6) is None
         restore_engine_checkpoint(session, demo['drill_id'], world, 6)
-        assert cache.recall(world, 6)['people'] == record.payload['_engine_checkpoint']['people']
+        assert cache.recall(world, 6)['people'] == stored['_engine_checkpoint']['people']
 
 
 def test_large_assembly_berths_remain_inside_community(road_graph):

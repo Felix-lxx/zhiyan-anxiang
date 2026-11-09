@@ -10,7 +10,7 @@ import type { AgentAssignment, AgentLiveState } from '../domain/agent'
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import AppIcon from './AppIcon.vue'
 import '../assistant.css'
-export type AssistantAction = { kind: 'training' | 'missions' | 'events' | 'report' | 'command' | 'rollcall' | 'branch' | 'focus' | 'plan' | 'replay' | 'indoor' | 'knowledge'; label: string; resident_id?: string; door_id?:string; object_kind?:'robot'; at_seconds?:number;plan_id?:string;document_id?:string;version_id?:string;chunk_id?:string;task_id?:string }
+export type AssistantAction = { kind: 'training' | 'missions' | 'events' | 'report' | 'command' | 'rollcall' | 'branch' | 'focus' | 'plan' | 'replay' | 'indoor' | 'knowledge'; label: string; resident_id?: string; door_id?:string; object_kind?:'robot'|'vehicle'; at_seconds?:number;plan_id?:string;document_id?:string;version_id?:string;chunk_id?:string;task_id?:string }
 export interface AssistantFocusContext { kind: 'resident' | 'road' | 'robot' | 'object' | 'command' | 'score' | 'replay'; id?: string; label: string; type?: string; detail?: string; x?: number; y?: number }
 interface Reply {
   knowledge?: import('../domain/knowledge').KnowledgeResult
@@ -19,6 +19,7 @@ interface Reply {
   sources: Array<{ id: string; title: string; detail: string; source_url?:string; publisher?:string; version?:number; anchor?:string; category?:string;document_id?:string;version_id?:string;chunk_id?:string;match?:import('../domain/knowledge').KnowledgeMatch;applicability?:import('../domain/knowledge').KnowledgeApplicability }>; actions: AssistantAction[]
 }
 interface Message { role: 'user' | 'assistant'; content: string; reply?: Reply }
+interface ConversationPage { generation:number; next_before:number|null; items:Array<{sequence:number;question:string;reply:Reply}> }
 const props = defineProps<{ apiBaseUrl: string; accessToken: string; drillId: string; drillName: string; open: boolean; atSeconds: number | null; liveSeconds: number; drillStatus?: string; busy?: boolean; focusContext?: AssistantFocusContext | null; agentFeed?:AgentLiveState|null;connection?:'connecting'|'live'|'stale' }>()
 const api = createApiClient(props.apiBaseUrl, () => props.accessToken)
 const emit = defineEmits<{ close: []; navigate: [action: AssistantAction]; planPreview: [people: AgentAssignment[]]; stateAction: [action: 'pause'|'resume'|'end'] }>()
@@ -37,6 +38,29 @@ function previewPlan(people: AgentAssignment[]) {
 }
 function showSettings() { activeView.value = 'chat'; void toggleHelp('settings') }
 const messages = ref<Message[]>([]), question = ref(''), error = ref(''), pending = ref(false)
+const historyLoading=ref(false),historyError=ref(''),historyReady=ref(false),nextHistoryPage=ref<number|null>(null)
+const conversationGeneration=ref(0)
+let historyController:AbortController|null=null
+let retryRequest:{key:string;body:Record<string,unknown>}|null=null
+async function loadConversation(earlier=false) {
+  if(pending.value||historyLoading.value)return
+  const drillId=props.drillId
+  historyLoading.value=true;historyError.value=''
+  const request=new AbortController();historyController=request
+  const timeout=window.setTimeout(()=>request.abort(),10000)
+  try {
+    const cursor=earlier&&nextHistoryPage.value!==null?`&before=${nextHistoryPage.value}`:''
+    const page=await api.get<ConversationPage>(`/drills/${drillId}/assistant/conversation?limit=20${cursor}`,{signal:request.signal})
+    if(historyController!==request||props.drillId!==drillId)return
+    if(earlier&&page.generation!==conversationGeneration.value)throw new Error('对话已在其他页面清空，请重新读取已保存对话。')
+    const restored=page.items.flatMap(item=>[{role:'user' as const,content:item.question},{role:'assistant' as const,content:item.reply.answer,reply:item.reply}])
+    messages.value=earlier?[...restored,...messages.value]:restored
+    conversationGeneration.value=page.generation;nextHistoryPage.value=page.next_before;historyReady.value=true
+    lastQuestion.value=[...messages.value].reverse().find(item=>item.role==='user')?.content??''
+    if(!earlier){retryRequest=null;await scrollLog()}
+  }catch(cause){if(historyController===request){historyError.value=cause instanceof Error&&cause.name!=='AbortError'?cause.message:'读取对话超时，请重试。';if(!earlier)historyReady.value=false}}
+  finally{window.clearTimeout(timeout);if(historyController===request){historyLoading.value=false;historyController=null}}
+}
 const voiceBusy=ref(false)
 const goalDraft=ref<{id:number;text:string}|null>(null)
 const planFocus=ref<{id:string;request:number}|null>(null)
@@ -132,20 +156,34 @@ function fragments(message: Message) { return message.content.split(/(\[[SK]\d+\
 function revealSource(index: number, id: string) { const section = log.value?.querySelectorAll<HTMLElement>('.scene-assistant__message')[index]; const details = section?.querySelector('details'); if (details) details.open = true; const source = section?.querySelector<HTMLElement>(`[data-source="${id}"]`); source?.scrollIntoView({ block: 'nearest', behavior: 'instant' }); source?.focus({ preventScroll: true }) }
 function trapFocus(event: KeyboardEvent) { if (!mobile.value || event.key !== 'Tab') return; const targets = [...(panel.value?.querySelectorAll<HTMLElement>('button:not(:disabled), textarea, input, summary, [tabindex="0"]') ?? [])].filter(e => e.getClientRects().length > 0); const first = targets[0], last = targets[targets.length - 1]; if (event.shiftKey && document.activeElement === first) { event.preventDefault(); last?.focus() } else if (!event.shiftKey && document.activeElement === last) { event.preventDefault(); first?.focus() } }
 function cancel() { generation++; controller?.abort(); controller = null; pending.value = false }
-function clear() { cancel(); messages.value = []; question.value = ''; error.value = ''; confirmClear.value = false; lastQuestion.value = ''; void nextTick(() => input.value?.focus()) }
+async function clear() {
+  if(historyLoading.value||!historyReady.value)return
+  cancel();historyLoading.value=true;historyError.value=''
+  const drillId=props.drillId
+  try {
+    const page=await api.delete<ConversationPage>(`/drills/${drillId}/assistant/conversation?generation=${conversationGeneration.value}`)
+    if(props.drillId!==drillId)return
+    conversationGeneration.value=page.generation;messages.value=[];nextHistoryPage.value=null;retryRequest=null
+    question.value='';error.value='';confirmClear.value=false;lastQuestion.value='';void nextTick(()=>input.value?.focus())
+  }catch(cause){if(props.drillId===drillId)historyError.value=cause instanceof Error?cause.message:'清空失败，已保存记录仍保留。'}
+  finally{if(props.drillId===drillId)historyLoading.value=false}
+}
 async function send(text = question.value) {
-  const content = text.trim(); if (!content || pending.value || voiceBusy.value || configurationLoading.value || content.length > 2000) return
+  const content = text.trim(); if (!content || pending.value || voiceBusy.value || configurationLoading.value || historyLoading.value || !historyReady.value || content.length > 2000) return
   const requestUsesModel = useModel.value && !!provider.value?.configured
   error.value = ''; pending.value = true; question.value = ''; lastQuestion.value = content; questionsOpen.value = false; settingsOpen.value = false; confirmClear.value = false; if (mobile.value) input.value?.blur()
   if (messages.value[messages.value.length - 1]?.role === 'user') messages.value.pop()
   const history = messages.value.slice(-12).map(m => ({ role: m.role, content: m.content.slice(0, 2000) }))
+  const requestKey=JSON.stringify([content,props.atSeconds,requestUsesModel,useSemantic.value,props.focusContext,conversationGeneration.value])
+  if(retryRequest?.key!==requestKey)retryRequest={key:requestKey,body:{message:content,history,at_seconds:props.atSeconds,use_model:requestUsesModel,semantic_retrieval:useSemantic.value&&embeddingAvailable.value,selection_context:props.focusContext??null,request_id:crypto.randomUUID(),conversation_generation:conversationGeneration.value}}
+  const requestBody=retryRequest.body
   messages.value.push({ role: 'user', content }); await scrollLog()
   const request = ++generation; const requestController = new AbortController(); controller = requestController
   const timeout = window.setTimeout(() => requestController.abort(), 100_000)
   try {
-    const reply = await api.post<Reply>(`/drills/${props.drillId}/assistant/chat`, { message: content, history, at_seconds: props.atSeconds, use_model: requestUsesModel, semantic_retrieval:useSemantic.value&&embeddingAvailable.value, selection_context: props.focusContext ?? null }, { signal: requestController.signal })
+    const reply = await api.post<Reply>(`/drills/${props.drillId}/assistant/chat`, requestBody, { signal: requestController.signal })
     if (request !== generation) return
-    messages.value.push({ role: 'assistant', content: reply.answer, reply }); await revealReply()
+    messages.value.push({ role: 'assistant', content: reply.answer, reply });retryRequest=null; await revealReply()
   } catch (cause) {
     if (request === generation) { question.value = content; error.value = cause instanceof DOMException && cause.name === 'AbortError' ? '等待已超时，请重试或切换离线解读。' : cause instanceof TypeError ? '暂时无法连接助手服务，请检查后端后重试。' : cause instanceof Error ? cause.message : '发送失败，请重试。' }
   } finally { window.clearTimeout(timeout); if (request === generation) { pending.value = false; controller = null; if (!mobile.value && props.open) void nextTick(() => input.value?.focus({ preventScroll: true })) } }
@@ -168,7 +206,7 @@ function navigate(action: AssistantAction, goalText?:string) {
   previousFocus = null
   emit('navigate', action)
 }
-watch(() => props.drillId, () => { useSemantic.value=false; cancel() })
+watch(() => props.drillId, () => { useSemantic.value=false;cancel();historyController?.abort();historyController=null;historyLoading.value=false;historyReady.value=false;messages.value=[];retryRequest=null;question.value='';void loadConversation() })
 watch(() => props.open, open => {
   confirmClear.value = false
   if (open) { if(!messages.value.length && !props.focusContext && props.atSeconds===null)activeView.value='plan'; previousFocus = document.activeElement instanceof HTMLElement ? document.activeElement : null; updateViewport(); void nextTick(() => { if(activeView.value==='chat')input.value?.focus({ preventScroll: true }) }); if (!pending.value) void loadStatus() }
@@ -178,8 +216,8 @@ watch(() => props.open, open => {
 watch([() => props.open, mobile], syncModalBackground, { flush: 'post' })
 watch(error, async value => { if (value && props.open) { await nextTick(); log.value?.querySelector('.scene-assistant__error')?.scrollIntoView({ block: 'nearest' }) } })
 watch(() => props.atSeconds, () => { if (pending.value) stop() })
-onMounted(() => { void loadStatus(); updateViewport(); syncModalBackground(); media.addEventListener('change', updateViewport); window.visualViewport?.addEventListener('resize', updateViewport); window.visualViewport?.addEventListener('scroll', updateViewport) })
-onBeforeUnmount(() => { for (const [element, wasInert] of inertSiblings) element.inert = wasInert; inertSiblings.clear(); cancel(); statusController?.abort(); statusController = null; media.removeEventListener('change', updateViewport); window.visualViewport?.removeEventListener('resize', updateViewport); window.visualViewport?.removeEventListener('scroll', updateViewport) })
+onMounted(() => { void loadStatus();void loadConversation(); updateViewport(); syncModalBackground(); media.addEventListener('change', updateViewport); window.visualViewport?.addEventListener('resize', updateViewport); window.visualViewport?.addEventListener('scroll', updateViewport) })
+onBeforeUnmount(() => { for (const [element, wasInert] of inertSiblings) element.inert = wasInert; inertSiblings.clear(); cancel();historyController?.abort();historyController=null; statusController?.abort(); statusController = null; media.removeEventListener('change', updateViewport); window.visualViewport?.removeEventListener('resize', updateViewport); window.visualViewport?.removeEventListener('scroll', updateViewport) })
 </script>
 
 <template>
@@ -205,7 +243,8 @@ onBeforeUnmount(() => { for (const [element, wasInert] of inertSiblings) element
       <label v-if="embeddingAvailable" class="scene-assistant__consent"><input v-model="useSemantic" type="checkbox" :disabled="pending||configurationLoading"/>授权语义检索，将本次问题发送至已配置的 Embedding 服务</label>
       <p v-else>知识检索：关键词{{knowledgeStatusError?' · 配置暂不可读':' · 语义服务未配置'}}。</p>
     </section>
-    <div v-if="confirmClear" class="scene-assistant__confirm" role="group" aria-label="确认清空对话"><p>清空本场对话？此操作无法撤销，不影响演练数据。</p><div><button type="button" @click="confirmClear = false">保留对话</button><button type="button" @click="clear">确认清空</button></div></div>
+    <div class="scene-assistant__history"><span role="status">{{historyLoading?'正在读取或更新对话…':pending?'本次问答完成后保存':historyReady?'对话已按本场与当前账号保存':'尚未读取已保存对话'}}</span><button type="button" :disabled="pending||historyLoading" @click="loadConversation()">重新读取对话</button><p v-if="historyError" role="alert">{{historyError}}</p></div>
+    <div v-if="confirmClear" class="scene-assistant__confirm" role="group" aria-label="确认清空对话"><p>删除本场当前账号的已保存对话？此操作无法撤销，不影响训练档案、评分和经验资料。</p><div><button type="button" @click="confirmClear = false">保留对话</button><button type="button" :disabled="historyLoading||!historyReady" @click="clear">确认清空</button></div></div>
     <div v-if="contextChanged" class="scene-assistant__stale"><span>{{ focusChanged ? '当前关注对象已切换，旧回答仍保留供对照。' : '现场或回放时刻已变化，旧回答不会自动更新。' }}</span><button type="button" :disabled="pending" @click="refreshContext">{{ focusChanged ? '解读当前对象' : '按新快照重答' }}</button></div>
       <section v-if="settingsOpen" id="scene-assistant-settings" class="scene-assistant__settings" aria-label="模型设置详情">
         <h3>模型设置</h3>
@@ -218,9 +257,10 @@ onBeforeUnmount(() => { for (const [element, wasInert] of inertSiblings) element
       <section v-if="!messages.length" class="scene-assistant__welcome"><AppIcon name="brain" :size="32" /><h3>看不懂现场？<br />从一个问题开始。</h3><p>我可以结合本场居民、道路和任务解释当前情况，带你找到对应的操作入口。</p><p class="scene-assistant__boundary">只读建议，不替你执行指令。回答标注数据时间；演练变化后请重新提问。</p></section>
       <section v-if="questionsOpen || !messages.length" id="scene-assistant-questions" class="scene-assistant__questions" aria-label="常见场景问题">
         <h3>可以这样问</h3>
-        <div class="scene-assistant__suggestions"><button v-for="item in suggestions" :key="item" type="button" :disabled="pending || configurationLoading" @click="send(item)">{{ item }}<AppIcon name="arrowRight" :size="14" /></button></div>
+        <div class="scene-assistant__suggestions"><button v-for="item in suggestions" :key="item" type="button" :disabled="pending || configurationLoading || historyLoading || !historyReady" @click="send(item)">{{ item }}<AppIcon name="arrowRight" :size="14" /></button></div>
       </section>
       <div role="log" aria-label="场景对话记录" aria-live="polite" :aria-busy="pending">
+      <button v-if="nextHistoryPage!==null" type="button" :disabled="pending||historyLoading" @click="loadConversation(true)">加载更早对话</button>
       <article v-for="(message, index) in messages" :key="index" class="scene-assistant__message" :data-role="message.role">
         <div class="scene-assistant__speaker"><strong>{{ message.role === 'user' ? '你' : '安巷教练' }}</strong><span v-if="message.reply">{{ message.reply.mode === 'model' ? message.reply.model : '离线规则' }} · {{ clock(message.reply.context.at_seconds) }}{{ message.reply.context.historical ? ' 回放' : ' 快照' }}</span></div>
         <p class="scene-assistant__text"><template v-for="(fragment, part) in fragments(message)" :key="part"><button v-if="fragment.source" type="button" class="scene-assistant__citation" :aria-label="'查看依据 ' + fragment.source" @click="revealSource(index, fragment.source)">{{ fragment.text }}</button><template v-else>{{ fragment.text }}</template></template></p>
@@ -245,12 +285,25 @@ onBeforeUnmount(() => { for (const [element, wasInert] of inertSiblings) element
       </div>
       <div v-if="error" class="scene-assistant__error" role="alert"><p>{{ error }}</p><button type="button" :disabled="pending" @click="send(lastQuestion)">重试本次问题</button></div>
     </div>
-    <div v-show="activeView==='plan'" class="scene-assistant__log" aria-label="目标计划工作区"><AgentPlanWorkspace :api-base-url="apiBaseUrl" :access-token="accessToken" :drill-id="drillId" :active="open&&activeView==='plan'" :historical="atSeconds!==null" :model-available="!!provider?.configured" :live-feed="agentFeed" :connection="connection" :goal-draft="goalDraft" :plan-focus="planFocus" :focus-id="focusContext?.kind==='resident'?focusContext.id:undefined" @preview="previewPlan" @resident-focus="id=>navigate({kind:'focus',label:'定位目标居民',resident_id:id})" @robot="navigate({kind:'focus',object_kind:'robot',label:'定位机器人'})" @indoor="id=>navigate({kind:'indoor',door_id:id,label:'检查受阻房门'})" @missions="navigate({kind:'missions',label:'查看案例责任任务'})" @task="id=>navigate({kind:'missions',label:'查看任务核验依据',task_id:id})" @rollcall="navigate({kind:'rollcall',label:'前往集合清点'})" @knowledge="(id,version,chunk)=>navigate({kind:'knowledge',label:'核对知识资料',document_id:id,version_id:version,chunk_id:chunk})" @replay="at=>navigate({kind:'replay',label:'回看决策结果',at_seconds:at})" /></div>
+    <div v-show="activeView==='plan'" class="scene-assistant__log" aria-label="目标计划工作区"><AgentPlanWorkspace :api-base-url="apiBaseUrl" :access-token="accessToken" :drill-id="drillId" :active="open&&activeView==='plan'" :historical="atSeconds!==null" :model-available="!!provider?.configured" :live-feed="agentFeed" :connection="connection" :goal-draft="goalDraft" :plan-focus="planFocus" :focus-id="focusContext?.kind==='resident'?focusContext.id:undefined" @preview="previewPlan" @resident-focus="id=>navigate({kind:'focus',label:'定位目标居民',resident_id:id})" @robot="navigate({kind:'focus',object_kind:'robot',label:'定位机器人'})" @vehicle="navigate({kind:'focus',object_kind:'vehicle',label:'查看消防车调度'})" @indoor="id=>navigate({kind:'indoor',door_id:id,label:'检查受阻房门'})" @missions="navigate({kind:'missions',label:'查看案例责任任务'})" @task="id=>navigate({kind:'missions',label:'查看任务核验依据',task_id:id})" @rollcall="navigate({kind:'rollcall',label:'前往集合清点'})" @knowledge="(id,version,chunk)=>navigate({kind:'knowledge',label:'核对知识资料',document_id:id,version_id:version,chunk_id:chunk})" @replay="at=>navigate({kind:'replay',label:'回看决策结果',at_seconds:at})" /></div>
     <div v-show="activeView==='chat'" class="scene-assistant__compose">
       <SpeechInput v-if="open && activeView==='chat'" :key="`${drillId}:${atSeconds??'live'}`" :api-base-url="apiBaseUrl" :access-token="accessToken" :disabled="pending" @activity="value=>voiceBusy=value" @transcript="appendTranscript" />
       <div class="scene-assistant__question-heading"><button type="button" :aria-expanded="questionsOpen || !messages.length" aria-controls="scene-assistant-questions" @click="toggleHelp('questions')">常见问题<AppIcon name="chevron" :size="14" /></button><button v-if="canDraftGoal&&atSeconds===null" type="button" class="scene-assistant__goal-handoff" :disabled="voiceBusy||pending" @click="draftGoal()">转为疏散目标<AppIcon name="arrowRight" :size="16"/></button><span v-else>{{ useModel && provider?.configured ? '本次发送给模型' : '本次为离线解读' }}</span></div>
-      <form @submit.prevent="send()"><label class="sr-only" for="scene-assistant-question">向场景助手提问</label><textarea id="scene-assistant-question" ref="input" v-model="question" rows="2" maxlength="2000" placeholder="问问当前现场，例如：谁还没有到集合点？" :disabled="pending" aria-describedby="scene-assistant-input-hint" @keydown="onKey"></textarea><div class="scene-assistant__send"><span id="scene-assistant-input-hint">{{ question.length }}/2000 · Shift+Enter 换行</span><button v-if="pending" type="button" @click="stop">停止等待</button><button v-else type="submit" :disabled="!question.trim() || configurationLoading || voiceBusy"><AppIcon name="send" :size="16" />{{voiceBusy?'等待语音完成':useModel && provider?.configured ? '发送给模型' : '离线解读' }}</button></div></form>
-      <p class="scene-assistant__disclaimer">训练解读，不替代真实火场专业判断。对话仅在本场页面内保留。</p>
+      <form @submit.prevent="send()">
+        <label class="sr-only" for="scene-assistant-question">向场景助手提问</label>
+        <textarea id="scene-assistant-question" ref="input" v-model="question" rows="2" maxlength="2000" placeholder="问问当前现场，例如：谁还没有到集合点？" :disabled="pending" aria-describedby="scene-assistant-input-hint" @keydown="onKey"></textarea>
+        <div class="scene-assistant__send">
+          <span id="scene-assistant-input-hint">{{ question.length }}/2000 · Shift+Enter 换行</span>
+          <button v-if="pending" type="button" @click="stop">停止等待</button>
+          <button v-else type="submit" :disabled="!question.trim() || configurationLoading || voiceBusy || historyLoading || !historyReady"><AppIcon name="send" :size="16" />{{voiceBusy?'等待语音完成':useModel && provider?.configured ? '发送给模型' : '离线解读' }}</button>
+        </div>
+      </form>
+      <p class="scene-assistant__disclaimer">对话按本场与当前账号保存，刷新可恢复。清空只删除对话；模型授权仍需每次进入后确认。</p>
     </div>
   </aside>
 </template>
+<style scoped>
+.scene-assistant__history{display:flex;flex-wrap:wrap;align-items:center;gap:8px 12px;padding-block:12px;border-block:1px solid #41675b;font-size:14px;line-height:1.7;}
+.scene-assistant__history button{min-height:44px;white-space:normal;font-size:14px;}
+.scene-assistant__history p{flex-basis:100%;margin:0;color:#ffbe9c;overflow-wrap:anywhere;}
+</style>

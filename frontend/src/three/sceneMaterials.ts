@@ -1,12 +1,57 @@
 import * as THREE from 'three'
+import { surfaceAssets, type PhotographicSurface } from './surfaceAssets'
 
 export type SurfaceKind = 'plaster' | 'asphalt' | 'paving' | 'tile' | 'stone' | 'wood'
 
-/** Procedural, deterministic, offline surface maps. Each arena owns its resources. */
+/** Local PBR surfaces with deterministic fallback. Each arena owns its resources. */
 export class SceneMaterials {
+  constructor(private changed: () => void = () => {}) {}
   private canvases = new Map<SurfaceKind, HTMLCanvasElement>()
   private textures = new Map<string, THREE.Texture>()
   private materials = new Map<string, THREE.MeshStandardMaterial>()
+  private closed = false
+  private highDetail = true
+  private physicalMaps = new Map<string, THREE.Texture>()
+  private physicalMaterials = new Map<THREE.MeshStandardMaterial, {
+    normal: THREE.Texture
+    roughness: THREE.Texture
+  }>()
+
+  cloneSurface(material: THREE.MeshStandardMaterial) {
+    const clone = material.clone()
+    const maps = this.physicalMaterials.get(material)
+    if (maps) this.physicalMaterials.set(clone, maps)
+    return clone
+  }
+
+  private photograph(kind: PhotographicSurface, channel: 'diff'|'nor_gl'|'rough', x: number, y: number, fallback?: HTMLCanvasElement) {
+    const key = `${kind}:${channel}:${x}:${y}`
+    const cached = this.physicalMaps.get(key)
+    if (cached) return cached
+    const texture: THREE.Texture = new THREE.Texture(fallback)
+    texture.colorSpace = channel === 'diff' ? THREE.SRGBColorSpace : THREE.NoColorSpace
+    texture.wrapS = texture.wrapT = THREE.RepeatWrapping
+    texture.repeat.set(x, y); texture.anisotropy = 4
+    if (fallback) texture.needsUpdate = true
+    this.physicalMaps.set(key, texture)
+    const url = `${import.meta.env.BASE_URL}assets/surfaces/${surfaceAssets[kind]}_${channel}_1k.jpg`
+    new THREE.ImageLoader().load(url, image => {
+      if (this.closed) return
+      // WebGL immutable storage cannot resize a 256px fallback with a 1K
+      // sub-image upload. Release its GPU allocation before replacing pixels.
+      texture.dispose(); texture.image = image; texture.needsUpdate = true; this.changed()
+    }, undefined, () => { /* Keep the operational procedural fallback. */ })
+    return texture
+  }
+
+  setQuality(quality: 'low'|'medium'|'high') {
+    this.highDetail = quality !== 'low'
+    for (const [material, maps] of this.physicalMaterials) {
+      material.normalMap = this.highDetail ? maps.normal : null
+      material.roughnessMap = this.highDetail ? maps.roughness : null
+      material.needsUpdate = true
+    }
+  }
 
   surface(kind: SurfaceKind, color: number, repeatX = 1, repeatY = 1) {
     const key = `${kind}:${color}:${repeatX}:${repeatY}`
@@ -61,11 +106,38 @@ export class SceneMaterials {
     // Data maps must stay in linear space, separate from the albedo texture.
     const bump = new THREE.CanvasTexture(canvas); bump.wrapS = bump.wrapT = THREE.RepeatWrapping; bump.repeat.copy(map.repeat)
     const material = new THREE.MeshStandardMaterial({ color, map, bumpMap: bump, bumpScale: kind === 'asphalt' ? .045 : kind === 'stone' ? .003 : kind === 'tile' ? .008 : .014, roughness: kind === 'asphalt' ? .96 : kind === 'stone' ? .36 : kind === 'tile' ? .48 : kind === 'wood' ? .66 : .88 })
+    if (kind in surfaceAssets) {
+      const source = kind as PhotographicSurface
+      material.map = this.photograph(source, 'diff', repeatX, repeatY, canvas)
+      // A flat normal is used while the real OpenGL normal image decodes.
+      const flat = document.createElement('canvas'); flat.width = flat.height = 1
+      const ctx = flat.getContext('2d')!; ctx.fillStyle = '#8080ff'; ctx.fillRect(0, 0, 1, 1)
+      const maps = {
+        normal: this.photograph(source, 'nor_gl', repeatX, repeatY, flat),
+        roughness: this.photograph(source, 'rough', repeatX, repeatY, canvas),
+      }
+      this.physicalMaterials.set(material, maps)
+      material.normalMap = this.highDetail ? maps.normal : null
+      material.roughnessMap = this.highDetail ? maps.roughness : null
+      material.normalScale.setScalar(source === 'asphalt' ? .45 : .3)
+      material.bumpMap = null
+    }
     this.textures.set(key, map); this.textures.set(key + ':bump', bump); this.materials.set(key, material)
     return material
   }
 
-  dispose() { this.materials.forEach(m => m.dispose()); this.textures.forEach(t => t.dispose()); this.materials.clear(); this.textures.clear(); this.canvases.clear() }
+  dispose() {
+    this.closed = true
+    const ownedMaterials = new Set([...this.materials.values(), ...this.physicalMaterials.keys()])
+    ownedMaterials.forEach(material => material.dispose())
+    this.textures.forEach(texture => texture.dispose())
+    this.physicalMaps.forEach(texture => texture.dispose())
+    this.physicalMaterials.clear()
+    this.physicalMaps.clear()
+    this.materials.clear()
+    this.textures.clear()
+    this.canvases.clear()
+  }
 }
 
 /** Legacy simulation levels are 1.92 units apart. Ground-floor rooms render above the entrance slab. */

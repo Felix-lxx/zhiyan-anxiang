@@ -252,9 +252,9 @@ def list_sessions(
                 if _aware(record.expires_at) <= now
                 else "active"
             ),
-            created_at=record.created_at,
-            last_used_at=record.last_used_at,
-            expires_at=record.expires_at,
+            created_at=_aware(record.created_at),
+            last_used_at=_aware(record.last_used_at),
+            expires_at=_aware(record.expires_at),
         )
         for record in records
     ]

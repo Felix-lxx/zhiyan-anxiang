@@ -64,7 +64,7 @@ class DrillCommandApplication:
             raise CommandRejected(409, '目标计划的批准或执行归属已变化，请重新核对计划。')
         step = next((s for s in run.steps if s['id'] == origin.step_id and s['command_id'] == payload.command_id), None)
         kind = step.get('kind', 'residents.assign') if step else None
-        arguments = (step['arguments'] if kind in {'robot.command', 'indoor.door.set'} else
+        arguments = (step['arguments'] if kind in {'robot.command', 'vehicle.command', 'indoor.door.set'} else
                      {key: step[key] for key in ('resident_ids', 'exit', 'action')}) if step else None
         if not step or kind != payload.kind or arguments != payload.arguments or payload.target_id is not None:
             raise CommandRejected(409, '指令对象或参数与已批准步骤不一致，请重新比较方案。')

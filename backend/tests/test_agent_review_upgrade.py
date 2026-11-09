@@ -23,11 +23,18 @@ def test_review_pause_approval_and_containment_are_real_commands(kitchen):
     assert len(run['task_graph']['case_tasks'])==4
     candidate=next(c for c in run['candidates'] if c['allocation']['rule']=='containment')
     assert any(s.get('kind')=='indoor.door.set' for s in candidate['groups'])
+    resident_groups=[s for s in candidate['groups'] if s.get('kind','residents.assign')=='residents.assign']
+    assert resident_groups and all(s.get('floor') for s in resident_groups)
+    assert all(f"{s['floor']}层" in s['label'] for s in resident_groups)
     approved=client.post(base+'/agent/runs/'+run['id']+'/actions', headers=headers,
         json={'action':'approve','revision':1,'candidate_id':candidate['id']})
     assert approved.status_code==200,approved.text
     assert client.get(base,headers=headers).json()['status']=='running'
     step=next(s for s in approved.json()['steps'] if s['kind']=='indoor.door.set')
+    containment_task=next(task for task in approved.json()['task_graph']['case_tasks'] if task['kind']=='containment')
+    escort_task=next(task for task in approved.json()['task_graph']['case_tasks'] if task['kind']=='escort')
+    assert containment_task['depends_on']==[step['id']]
+    assert set(escort_task['depends_on'])=={s['id'] for s in approved.json()['steps'] if s.get('action')=='priority_assist'}
     assert step['status']=='waiting'  # occupied source room must remain passable
     for t in (74,104,144,204,284):
         tick(t)

@@ -10,6 +10,50 @@ RANKING_METHODS = {'balanced': '按预演状态分、暴露人数、到场人数
     'fast_arrival': '按预演时刻到场人数、暴露人数、排队时间依次排序；不表示全程最终耗时。'}
 
 
+def unsupported_goal_parts(goal):
+    """Find requested actions outside this planner's executable contract."""
+    patterns = {
+        '伤员转运': r'转运|送医|医疗移交|接运',
+    }
+    found = []
+    for clause in re.split(r'[，,。；;！？!?\n]|但是|同时|然后|并且|并|再', goal):
+        for label, pattern in patterns.items():
+            for match in re.finditer(pattern, clause):
+                prefix = clause[max(0, match.start() - 12):match.start()]
+                if re.search(r'(?:不要|不用|无需|不必|禁止|暂不|勿|避免|不需要|不安排|不)(?:.{0,8})$', prefix):
+                    continue
+                if re.search(r'不要|不用|无需|禁止|暂不|不需要', match.group()):
+                    continue
+                if label not in found:
+                    found.append(label)
+    return found
+
+
+def validate_goal_capabilities(goal):
+    unsupported = unsupported_goal_parts(goal)
+    if unsupported:
+        raise HTTPException(422, '本次目标包含尚未接入自动编排的部分：' + '、'.join(unsupported)
+            + '。请从“车辆调度”单独预览并确认伤员接运；当前目标计划支持室外消防车到场喷水、居民疏散、分流、护送及责任任务核验。')
+
+
+def suppression_intent(goal):
+    requested, excluded = False, False
+    pattern = r'(?:消防车|水源|供水).{0,16}(?:喷水|压制|灭火|到场)|(?:先|等待).{0,8}(?:喷水|压制).{0,12}(?:疏散|撤离|放行)'
+    negative = r'不要|不用|无需|不必|禁止|暂不|勿|避免|不需要|不安排|不'
+    for clause in re.split(r'[，,。；;！？!?\n]|但是|同时|然后|并且|并|再', goal):
+        for match in re.finditer(pattern, clause):
+            prefix = clause[max(0, match.start() - 12):match.start()]
+            negated = re.search(r'(?:' + negative + r')(?:.{0,8})$', prefix) or re.search(
+                r'(?:' + negative + r').{0,4}(?:喷水|压制|灭火|到场)', match.group())
+            if negated:
+                excluded = True
+            else:
+                requested = True
+    if requested and excluded:
+        raise HTTPException(422, '目标同时要求和禁止消防车喷水，请明确本次是否允许该动作。')
+    return requested, excluded
+
+
 def goal_constraints(request):
     if re.search(r'(?:不要|暂不|不)(?:疏散|撤离|护送)[^，。；;]{0,12}[\d一二三四五六七八九十]+\s*层', request.goal):
         raise HTTPException(422, '暂不处理的楼层请从目标范围中排除，并明确写出要疏散的人员。')
@@ -49,7 +93,9 @@ def goal_constraints(request):
             forbidden.add(key)
     if len(forbidden) == 2:
         raise HTTPException(422, '两个出口均被禁止，无法形成疏散计划。请调整约束或先处理通道。')
-    return {'floors': sorted(set(floors)), 'objective': objective, 'forbidden_exits': sorted(forbidden)}
+    suppression, suppression_forbidden = suppression_intent(request.goal)
+    return {'floors': sorted(set(floors)), 'objective': objective, 'forbidden_exits': sorted(forbidden),
+            'vehicle_suppression': suppression, 'vehicle_suppression_forbidden': suppression_forbidden}
 
 
 def rank_candidate(candidate, objective='balanced'):
@@ -71,6 +117,13 @@ def tool_report(data, scope, candidates):
         support = candidate.get('robot_support')
         if support and not support['can_apply']:
             failures.append(support['notice'])
+        vehicle = candidate.get('vehicle_support')
+        if vehicle and not vehicle['can_apply']:
+            failures.append(vehicle['notice'])
+        if scope.get('vehicle_suppression') and not vehicle:
+            failures.append('目标要求先由消防车喷水，但该候选没有车辆压制与居民放行依赖')
+        if scope.get('vehicle_suppression_forbidden') and vehicle:
+            failures.append('目标禁止消防车喷水，该候选包含被禁止的动作')
         assist = candidate.get('assist_resource') or {}
         if assist.get('required') and not assist.get('capacity'):
             failures.append('本场无可用护送岗位')

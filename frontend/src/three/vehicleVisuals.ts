@@ -4,6 +4,7 @@ import { fitVehicleModel, poseVehicleWheels, poseAmbulanceRearDoors, type Vehicl
 import { VEHICLE_GROUND_Y } from './roadSurface'
 import { ActorMotion } from './actorMotion'
 import { routeHeading } from './routeHeading'
+import { createFiretruckEquipment } from './firetruckEquipment'
 
 function dispose(root: THREE.Object3D) {
   root.traverse(object => {
@@ -37,6 +38,11 @@ export class VehicleVisuals {
         void this.load(root, vehicle)
       }
       root.visible = true;root.userData.vehicle=vehicle
+      const equipment=root.userData.fireEquipment as ReturnType<typeof createFiretruckEquipment>|undefined
+      if(equipment&&vehicle.service?.target){
+        const target=vehicle.service.target
+        equipment.turret.rotation.y=Math.atan2(vehicle.x-target.x,vehicle.y-target.y)-(vehicle.heading_radians??root.rotation.y)
+      }
       const modelNotice=root.userData.assetStatus==='fallback'?'车辆使用轻量模型。':''
       const detail = modelNotice+(vehicle.service ? `${vehicle.service.label} · 剩余 ${vehicle.service.remaining_seconds} 秒。${vehicle.service.reason}` : `${vehicle.reason}${vehicle.passenger ? ` 车内人员：${vehicle.passenger.label}。` : ''}${vehicle.remaining_seconds === null ? '' : ` 剩余 ${vehicle.remaining_seconds} 秒。`}`)
       root.traverse(object => { object.userData.selection = { title: vehicle.name, type: '可调度应急车辆', detail, vehicleId: vehicle.id, x: vehicle.x, y: vehicle.y } })
@@ -62,6 +68,12 @@ export class VehicleVisuals {
 
   get failedCount(){return [...this.models.values()].filter(root=>root.visible&&root.userData.assetStatus==='fallback').length}
   get loadingCount(){return [...this.models.values()].filter(root=>root.visible&&root.userData.assetStatus==='loading').length}
+  serviceAnchors(id:string) {
+    const root=this.models.get(id),equipment=root?.userData.fireEquipment as ReturnType<typeof createFiretruckEquipment>|undefined
+    if(!root||!equipment)return undefined
+    root.updateMatrixWorld(true)
+    return {pump:equipment.pump.getWorldPosition(new THREE.Vector3()),muzzle:equipment.muzzle.getWorldPosition(new THREE.Vector3())}
+  }
   async retryFailed(){
     if(this.disposed)return
     await Promise.allSettled([...this.models.values()].filter(root=>root.visible&&root.userData.assetStatus==='fallback').map(root=>this.load(root,root.userData.vehicle)))
@@ -110,6 +122,7 @@ export class VehicleVisuals {
     const beacon = new THREE.Mesh(new THREE.BoxGeometry(1.4, .16, .32), new THREE.MeshBasicMaterial({ color: 0x60c8ff, transparent: true }))
     beacon.position.set(0, 2.5, -length / 2 + 1)
     root.add(body, beacon); root.userData.body = body; root.userData.beacon = beacon;root.userData.wheels=wheels;root.userData.assetStatus='loading'
+    if(firetruck){const equipment=createFiretruckEquipment();root.add(equipment.group);root.userData.fireEquipment=equipment}
     this.register(root)
     return root
   }
@@ -159,6 +172,11 @@ export class VehicleVisuals {
         if ((object as THREE.Mesh).isMesh) { object.castShadow = true; object.receiveShadow = true }
       })
       const modelHeight=new THREE.Box3().setFromObject(scene).max.y
+      if(vehicle.kind==='firetruck'){
+        const previous=root.userData.fireEquipment as ReturnType<typeof createFiretruckEquipment>|undefined
+        if(previous)dispose(previous.group)
+        const equipment=createFiretruckEquipment(modelHeight);root.add(equipment.group);root.userData.fireEquipment=equipment
+      }
       dispose(root.userData.body); root.add(scene); root.userData.body = scene;candidate=undefined
       root.userData.wheels=wheels;root.userData.assetStatus='ready'
       root.userData.beacon.position.y=modelHeight+.08

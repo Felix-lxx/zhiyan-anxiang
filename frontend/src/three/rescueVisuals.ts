@@ -5,6 +5,7 @@ import { createStretcher, poseStretcher } from './stretcherModel'
 import { routeHeading } from './routeHeading'
 import { VisualClock } from './visualClock'
 import { VEHICLE_GROUND_Y } from './roadSurface'
+import { supplyHoseCurve, HOSE_RADIUS } from './supplyHose'
 
 export interface RescueResident {
   id: string; label: string; x: number; y: number; behavior?: string
@@ -21,7 +22,8 @@ export class RescueVisuals {
   private transform = new THREE.Object3D()
   private elapsed = 0
   private clock = new VisualClock()
-  constructor(private register: (object: THREE.Object3D) => void) {}
+  constructor(private register: (object: THREE.Object3D) => void,
+    private anchors?: (id:string)=>{pump:THREE.Vector3;muzzle:THREE.Vector3}|undefined) {}
 
   update(vehicles: Vehicle[], residents: RescueResident[], elapsed: number, running: boolean) {
     this.elapsed = elapsed
@@ -32,14 +34,23 @@ export class RescueVisuals {
       const action = vehicle.service
       if (action?.action === 'spray' && action.target && action.water_source && action.remaining_seconds > 0) {
         let item = this.water.get(vehicle.id)
-        if (item?.id !== action.action_id) {
+        const anchor=this.anchors?.(vehicle.id)
+        if (item?.id !== action.action_id || anchor && item.curve.v0.distanceTo(anchor.muzzle) > .01) {
           if (item) this.release(item.root)
-          const root = new THREE.Group(), start = point(vehicle, 2.4), end = point(action.target, .4)
+          const root = new THREE.Group(), start = anchor?.muzzle ?? point(vehicle, 2.4), end = point(action.target, .4)
           const apex = start.clone().lerp(end, .5); apex.y += Math.min(5, start.distanceTo(end) * .2)
           const curve = new THREE.QuadraticBezierCurve3(start, apex, end)
           const stream = new THREE.Mesh(new THREE.TubeGeometry(curve, 28, .065, 5, false), new THREE.MeshBasicMaterial({ color: 0xbce2ee, transparent: true, opacity: .6, depthWrite: false }))
-          const source = point(action.water_source), pump = point(vehicle, .3), bend = source.clone().lerp(pump, .5); bend.y = .14
-          const hose = new THREE.Mesh(new THREE.TubeGeometry(new THREE.QuadraticBezierCurve3(source, bend, pump), 16, .09, 6, false), new THREE.MeshStandardMaterial({ color: 0xc9ac65, roughness: .85 }))
+          const source = action.connection_position ? point(action.connection_position, action.connection_position.height ?? .65) : point(action.water_source,.65)
+          const pump = anchor?.pump ?? (action.hose_points?.length ? point(action.hose_points[action.hose_points.length-1]!, .83+VEHICLE_GROUND_Y) : point(vehicle, .3))
+          const hoseCurve = supplyHoseCurve(source, pump, (action.hose_points ?? []).map(p => point(p)))
+          const hoseSegments = Math.max(48, Math.min(512, Math.ceil(hoseCurve.getLength() / .08)))
+          const hose = new THREE.Mesh(new THREE.TubeGeometry(hoseCurve,hoseSegments,HOSE_RADIUS,8,false), new THREE.MeshStandardMaterial({ color: 0xc9ac65, roughness: .85 }))
+          hose.name='confirmed-supply-hose'
+          for(const socket of [source,pump]){
+            const coupling=new THREE.Mesh(new THREE.SphereGeometry(.095,10,8),new THREE.MeshStandardMaterial({color:0xa3b7b6,metalness:.85,roughness:.25}))
+            coupling.position.copy(socket);root.add(coupling)
+          }
           const drops = new THREE.InstancedMesh(new THREE.SphereGeometry(.10, 5, 4), new THREE.MeshBasicMaterial({ color: 0xd5f1fa }), 28)
           drops.frustumCulled = false
           root.add(stream, hose, drops); this.layer.add(root)

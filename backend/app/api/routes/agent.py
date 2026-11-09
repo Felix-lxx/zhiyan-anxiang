@@ -28,6 +28,23 @@ def pause_review(session, drill, enabled):
         session.flush()
 
 
+@operations.serialized_command
+def freeze_for_review(session, drill_id, identity, payload):
+    """Freeze field time before candidate simulation or model/tool planning."""
+    drill = operations.require_drill(session, drill_id, identity.username)
+    session.execute(select(type(drill).id).where(type(drill).id == drill_id).with_for_update())
+    # Reject impossible explicit object/floor selections before committing a
+    # pause for an external model request. Model interpretation cannot make a
+    # missing resident or an empty floor valid.
+    if payload.resident_ids or payload.building_id or payload.floors:
+        data = operations.snapshot(session, drill)
+        interpretation, _, _ = interpret_goal(payload.goal, buildings_for(data), False)
+        resolve_scope(data, payload, interpretation)
+    pause_review(session, drill, payload.pause_for_review)
+    session.commit()
+    return operations.snapshot(session, drill)
+
+
 def request_fingerprint(payload):
     return hashlib.sha256(json.dumps(payload.model_dump(exclude={"request_id"}), sort_keys=True, ensure_ascii=False).encode()).hexdigest()
 
@@ -61,16 +78,21 @@ def create_run(drill_id: str, payload: GoalCreate, identity: AuthenticatedIdenti
         validate_retry(existing, payload, identity.username)
         return run_payload(session, existing, operations.snapshot(session, drill))
     if drill.status not in {"running", "paused", "ready"}: raise HTTPException(409, "本场已结束，请新开一轮再制定计划。")
+    from app.services.agent_contract import validate_goal_capabilities
+    validate_goal_capabilities(payload.goal)
     if not any(word in payload.goal for word in ("疏散", "撤离", "分流", "护送")):
         raise HTTPException(422, "当前目标计划支持居民疏散、分流和重点护送；其他问题请使用场景对话，车辆仍从车辆调度操作。")
     goal_constraints(payload)
     if not payload.use_model:
+        # Local interpretation performs no external I/O. Keep pause, scope
+        # validation and proposal creation in the same transaction so a rejected
+        # range cannot leave a committed review pause behind.
+        pause_review(session, drill, payload.pause_for_review)
         data = operations.snapshot(session, drill)
         interpretation, planner, notice = interpret_goal(payload.goal, buildings_for(data), False)
         return _create_after_interpretation(session, drill_id, payload, interpretation, planner, notice, identity)
-    pause_review(session, drill, payload.pause_for_review)
-    session.commit()
-    data = operations.snapshot(session, drill)
+    frozen_data = freeze_for_review(session, drill_id, identity, payload) if payload.pause_for_review else None
+    data = frozen_data or operations.snapshot(session, drill)
     buildings = buildings_for(data)
     session.rollback()  # No DB locks or open read transaction while waiting for a model.
     interpretation, planner, notice = interpret_goal(payload.goal, buildings, payload.use_model)
@@ -176,6 +198,8 @@ def _apply_plan_action(drill_id, run_id, payload, identity, session):
         note(session, run, "stopped", run.reason, operations.effective_elapsed(drill)); session.commit()
     else:
         if payload.revision != run.revision or run.status not in {"awaiting_approval", "needs_review"}: raise HTTPException(409, "请先停止或等待当前执行；已被人工接管的计划不能自动夺回控制。")
+        from app.services.agent_contract import validate_goal_capabilities
+        validate_goal_capabilities(run.goal)
         if drill.status == "ended": raise HTTPException(409, "本场已结束，请新开一轮。")
         pause_review(session, drill, run.scope.get('pause_for_review'))
         data = operations.snapshot(session, drill)

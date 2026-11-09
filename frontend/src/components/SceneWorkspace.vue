@@ -15,6 +15,7 @@ import '../atlas-scene.css'
 import { createApiClient } from '../api/client'
 
 interface Preview {
+  configuration_validation?: ConfigurationValidation
   fire_level: string; smoke_level: string; risk_level: string; affected_targets: string[]; route_advice: string; explanation: string
   simulation: Record<string, unknown> & { summary: { total: number; congested?: number; smoke_exposed?: number }; environment: { east_hydrant: string; south_lane: string; visibility?: number }; world: { parameters: Record<string, unknown>; spatial_network: { stair_width: number } } }
 }
@@ -60,6 +61,7 @@ async function focusParameter(field:string){
 }
 function locateIssue(issue:ConfigurationIssue){guardUnsaved(()=>void focusParameter(issue.query.field))}
 const validating = ref(false)
+let validationRequest=0
 const preparationSteps = [
   ['社区底图', '楼栋、道路与基础设施'],
   ['人员与出口', '居民分布与疏散出口'],
@@ -69,10 +71,14 @@ const preparationSteps = [
 ]
 async function validateCurrent() {
   if (!activeScene.value) return
+  const id=activeScene.value.id, request=++validationRequest
   validating.value = true; error.value = ''
-  try { validation.value = await api.post('/scenes/' + activeScene.value.id + '/validate') }
-  catch(cause) { error.value = cause instanceof Error ? cause.message : '校验失败，请重试。' }
-  finally { validating.value = false }
+  try {
+    const checked=await api.post<ConfigurationValidation>('/scenes/' + id + '/validate')
+    if(request===validationRequest && activeScene.value?.id===id && checked.version_number===activeVersion.value?.version_number)validation.value=checked
+  }
+  catch(cause) { if(request===validationRequest)error.value = cause instanceof Error ? cause.message : '校验失败，请重试。' }
+  finally { if(request===validationRequest)validating.value = false }
 }
 function openPreparationStep(index: number) {
   const change = () => {
@@ -161,6 +167,7 @@ function selectScene(scene: Scene, step: WorkflowStep = 'parameters') {
     activeStep.value = step
     preparationStep.value = step === 'publish' ? 4 : step === 'decisions' ? 3 : 1
     validation.value = null
+    validationRequest++; validating.value=false
     error.value = ''; notice.value = ''; previewError.value = ''
     hydrateParameters(scene)
     void loadFireSources(scene.id)
@@ -279,7 +286,12 @@ async function loadPreview(sceneId: string, draft = previewIsDraft.value) {
     const payload = draft
       ? await api.post<Preview>(path, parameterForm.value, { signal: previewController.signal })
       : await api.get<Preview>(path, { signal: previewController.signal })
-    if (request === previewRequest) preview.value = payload
+    if (request === previewRequest) {
+      preview.value = payload
+      const checked=payload.configuration_validation
+      if(!draft && !parametersDirty.value && checked && checked.version_number===activeVersion.value?.version_number)
+        validation.value=checked
+    }
   } catch (caught) { if (request === previewRequest && !(caught instanceof DOMException && caught.name === 'AbortError')) previewError.value = caught instanceof Error ? caught.message : '预览生成失败。' } finally { if (request === previewRequest) isPreviewing.value = false }
 }
 function handlePublished() {
@@ -354,7 +366,7 @@ onBeforeUnmount(() => { fireSourcesRequest++; previewRequest++; window.removeEve
        <ScenePublishPanel v-else :api-base-url="apiBaseUrl" :access-token="accessToken" :key="activeScene.id+'-'+activeVersion?.version_number" :scene-id="activeScene.id" :scene-status="activeScene.status" :version-number="activeVersion?.version_number ?? 0" @published="handlePublished" @locate="locateIssue"/>
       </aside>
     </section>
-    <footer v-if="activeScene" class="atlas-preparation__validation"><AppIcon :name="validation?.passed?'check':'inspect'" :size="23"/><strong>场景校验：</strong><span>{{parametersDirty?'参数未保存，请先保存后校验':validation?validation.passed?'校验通过，可以冻结':validation.issues.length+' 项需处理':'尚未校验当前版本'}}</span><p>{{validation?.issues[0] || (parametersDirty?'三维正在试算，尚未写入场景版本。':'预览与正式演练使用同一份场景数据。')}}</p><button :disabled="validating || parametersDirty" @click="validateCurrent">{{validating?'正在校验…':'运行校验'}}<AppIcon name="arrowRight" :size="17"/></button></footer>
+    <footer v-if="activeScene" class="atlas-preparation__validation"><AppIcon :name="validation?.passed?'check':'inspect'" :size="23"/><strong>场景校验：</strong><span>{{parametersDirty?'参数未保存，请先保存后校验':validation?validation.passed?(activeScene.status==='published'?'已发布版本校验通过':'当前版本校验通过，可以发布'):validation.issues.length+' 项需处理':isPreviewing?'正在校验已保存版本…':previewError?'预览未通过，请运行校验定位问题':'当前版本尚未检查'}}</span><p>{{validation?.issues[0] || (parametersDirty?'三维正在试算，尚未写入场景版本。':'预览与正式演练使用同一份场景数据。')}}</p><button :disabled="validating || parametersDirty" @click="validateCurrent">{{validating?'正在校验…':'运行校验'}}<AppIcon name="arrowRight" :size="17"/></button></footer>
     <ul v-if="validation && !validation.passed" class="configuration-issues"><li v-for="issue in validation.issue_details" :key="issue.key"><span>{{issue.message}}</span><button type="button" @click="locateIssue(issue)">定位修改<AppIcon name="arrowRight" :size="18"/></button></li></ul>
     <UiConfirmDialog :open="discardConfirmationOpen" title="放弃未保存参数" description="当前三维试算尚未写入场景版本。继续离开将丢弃这些参数修改。" confirm-label="放弃修改" danger @cancel="cancelDiscard" @confirm="confirmDiscard"/>
   </main>

@@ -188,6 +188,10 @@ def remove_draft(document_id: str, identity: AuthenticatedIdentity = Depends(get
     session.execute(delete(KnowledgeChunk).where(KnowledgeChunk.version_id.in_(ids)))
     session.execute(delete(KnowledgeVersion).where(KnowledgeVersion.document_id == document_id))
     session.execute(delete(KnowledgeExperience).where(KnowledgeExperience.document_id == document_id))
+    from sqlalchemy import update
+    from app.models.training import DrillArchive
+    session.execute(update(DrillArchive).where(DrillArchive.experience_document_id == document_id)
+                    .values(experience_document_id=None))
     session.delete(document)
     session.commit()
     return {'deleted': True}

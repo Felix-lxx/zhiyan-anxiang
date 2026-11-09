@@ -56,5 +56,6 @@ def validate_configuration(session, scene, parameter_override=None):
             if not any(item['key'] == 'fire_source_object_id' for item in details):
                 issue('fire_source_object_id', str(exc))
     return dict(passed=not details, issues=[item['message'] for item in details], issue_details=details,
+                version_id=version.id if version else None, version_number=version.version_number if version else None,
                 capabilities=contract.payload(),
                 message='场景运行参数校验通过，可发布。' if not details else '场景尚不能发布，请定位并修改下列配置。')

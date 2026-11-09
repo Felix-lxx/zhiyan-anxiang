@@ -1,3 +1,5 @@
+import type { KnowledgeDocument } from './knowledge'
+
 /** Server-owned training guidance. UI actions navigate; they never imply completion. */
 export interface TrainingAction {
   id: string
@@ -39,5 +41,24 @@ export interface TrainingJourney {
     staff_total: number
     robot_state: string | null
     vehicles: Array<{ id: string; name: string; state: string }>
+  }
+}
+
+export interface TrainingArchive {
+  id:string
+  drill_id:string
+  content_hash:string
+  created_at:string
+  experience:KnowledgeDocument|null
+  data:{
+    name:string
+    origin:'end_transaction'|'historical_reconstruction'
+    elapsed_seconds:number
+    scene_version_id:string|null
+    engine_revision:number|string|null
+    event_count:number
+    conversation_count_at_end:number
+    metrics:{population:number;arrived:number;counted:number;exposed:number;tasks_total:number;tasks_verified:number}
+    findings:string[]
   }
 }

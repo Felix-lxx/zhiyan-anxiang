@@ -78,6 +78,9 @@ def capture_world(session: Session, version: SceneVersion, parameters_override: 
     # Freeze identifiable resource slots along with the world, not on each command.
     response_staff = roster({"robot_origin": station["entry"]})
     world = add_spatial_layout({"scenario_contract": contract.payload(), "response_staff": response_staff, "scene_version_id": version.id, "community_version_id": version.community_version_id, "parameters": parameters, "objects": objects, "residents": residents, "fire_source": fire_source, "fire_origin": deepcopy(fire_source["position"]), "robot_origin": station["entry"], "inspection_target": deepcopy(fire_source["access_position"]), "broadcast_target": home["entry"], "tasks": tasks, "road_network": {"nodes": nodes, "edges": edges}}, home)
+    from app.services.water_resources import freeze_resources, vehicle_obstacles
+    world['water_resources'] = freeze_resources(world)
+    world['road_network']['vehicle_obstacles'] = vehicle_obstacles(world)
     if not kitchen:
         # This case models an exterior plume, not infiltration into apartments.
         # Freeze that domain explicitly; old worlds keep the radial model.

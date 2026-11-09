@@ -7,7 +7,7 @@ from copy import deepcopy
 import heapq
 import math
 from app.services.navigation_geometry import clear_segment
-from app.services.mobility_geometry import half_length, heading_between
+from app.services.mobility_geometry import half_length, heading_between, body_width
 from app.services.vehicle_trajectory import rounded_trajectory
 
 
@@ -47,20 +47,28 @@ def plan_vehicle(network: dict, vehicle: dict, target_id: str) -> dict:
     def distance(a, b):
         return math.hypot(a["x"] - b["x"], a["y"] - b["y"])
     body_half_length = half_length(vehicle)
-    obstacles = network.get("obstacles", [])
+    obstacles = network.get('vehicle_obstacles', network.get("obstacles", []))
+    fixtures = [item for item in obstacles if item.get('kind') == 'fire_hydrant']
+    structures = [item for item in obstacles if item.get('kind') != 'fire_hydrant']
     turn_radius = math.hypot(body_half_length, vehicle["minimum_width"] / 2) + .3
+    fixture_clearance = body_width(vehicle) / 2 + .05
+    fixture_turn_radius = math.hypot(body_half_length, body_width(vehicle) / 2) + .08
+
+    def turning_space(point):
+        return (clear_segment(point, point, structures, turn_radius)
+                and clear_segment(point, point, fixtures, fixture_turn_radius))
 
     def turn_allowed(a, b, c):
         first, second = heading_between(a, b), heading_between(b, c)
         if first is None or second is None or math.cos(second - first) >= .995:
             return True
-        return clear_segment((b["x"], b["y"]), (b["x"], b["y"]), obstacles, turn_radius)
+        return turning_space((b["x"], b["y"]))
 
     def departure_allowed(target):
         heading = vehicle.get("heading_radians")
         direction = heading_between(start, target)
         return (heading is None or direction is None or math.cos(direction - heading) >= .995
-                or clear_segment((start["x"], start["y"]), (start["x"], start["y"]), obstacles, turn_radius))
+                or turning_space((start["x"], start["y"])))
 
     def allowed(edge):
         a, b = nodes.get(edge["start_node_id"]), nodes.get(edge["end_node_id"])
@@ -70,8 +78,9 @@ def plan_vehicle(network: dict, vehicle: dict, target_id: str) -> dict:
         # Extend the swept centerline by the authored half-length. Width alone
         # misses a fire engine's nose/rear overhang near the end of a segment.
         dx, dy = (b["x"]-a["x"])/length*body_half_length, (b["y"]-a["y"])/length*body_half_length
-        return clear_segment((a["x"]-dx, a["y"]-dy), (b["x"]+dx, b["y"]+dy),
-                             obstacles, vehicle["minimum_width"]/2)
+        rear, front = (a["x"]-dx, a["y"]-dy), (b["x"]+dx, b["y"]+dy)
+        return (clear_segment(rear, front, structures, vehicle['minimum_width']/2)
+                and clear_segment(rear, front, fixtures, fixture_clearance))
     graph = {key: [] for key in nodes}
     for edge in edges.values():
         a, b = edge["start_node_id"], edge["end_node_id"]
@@ -117,7 +126,7 @@ def plan_vehicle(network: dict, vehicle: dict, target_id: str) -> dict:
                 costs[following] = cost + weight; previous[following] = (state, edge_id)
                 heapq.heappush(frontier, (cost + weight, following))
     if final is None:
-        return {**result, "notice": f"没有同时满足 {vehicle['minimum_width']} 米通行宽度、车身转角净距与道路状态的路线，请检查地图或改选目标。"}
+        return {**result, "notice": f"没有同时满足 {vehicle['minimum_width']} 米通行宽度、车身转角净距、楼体与消防设施避让的路线，请检查地图道路或改选目标。"}
     chain, state = [], final
     while state is not None:
         parent, edge_id = previous[state]

@@ -8,6 +8,22 @@ from copy import deepcopy
 import math
 from sqlalchemy import select
 from app.models.operations import DrillCommand, DrillEvent
+from app.services.vehicle_dispatch import plan_vehicle
+from app.services.vehicle_traffic import protect_plan
+from app.services.vehicle_rescue import action_plan
+from app.services.mobility_geometry import heading_between
+from app.services.water_resources import source_available
+
+
+def pending_escort_ids(session, drill_id):
+    """Approved future batches remain waiting when a building-wide notice arrives."""
+    from app.models.agent import AgentRun
+    steps = session.scalars(select(AgentRun.steps).where(
+        AgentRun.drill_session_id == drill_id, AgentRun.approved_revision.is_not(None),
+        AgentRun.status.in_(['executing', 'waiting', 'needs_review'])))
+    return sorted({resident_id for group in steps for step in group
+                   if step.get('action') == 'priority_assist' and step.get('status') in {'pending', 'waiting'}
+                   for resident_id in step.get('resident_ids', [])})
 
 
 def completed_broadcast(session, run):
@@ -39,6 +55,95 @@ def owned_steps(run):
     if run is None:
         return []
     return [*run.steps, *(step for archive in reversed(run.evidence) for step in archive.get("steps", []))]
+
+
+def vehicle_suppression_support(data):
+    """Compile one real fire-engine dispatch/spray branch for outdoor fires.
+
+    The planner does not invent a parking position.  It tests every frozen road
+    node with the same route, traffic-control, hydrant and line-of-sight rules
+    used by the authoritative vehicle command endpoints, then keeps the
+    quickest valid stop.  Indoor fires remain outside this branch because the
+    current vehicle domain deliberately cannot spray through a building.
+    """
+    state = data.get("simulation") or {}
+    world = state.get("world") or {}
+    vehicles = state.get("vehicles") or []
+    vehicle = next((item for item in vehicles if item.get("id") == "firetruck-1"), None)
+    info = {"vehicle_id": "firetruck-1", "name": "消防车 F-01", "can_apply": False,
+            "target_node_id": None, "target_name": None, "duration_seconds": None,
+            "spray_duration_seconds": 45, "already_active": False,
+            "notice": "本场没有可执行的室外消防车压制任务。"}
+    if world.get("indoor_environment"):
+        info["notice"] = "室内厨房火灾不能由室外消防车直接喷水；请执行房门、燃气与室内疏散任务。"
+        return info, []
+    if not vehicle:
+        info["notice"] = "本场没有可用消防车。"
+        return info, []
+    service = vehicle.get("service")
+    if service and service.get("action") == "spray" and source_available(state['environment'], service.get('water_source')):
+        info.update(can_apply=True, already_active=True, duration_seconds=0,
+                    spray_duration_seconds=max(0, service.get('remaining_seconds', 0)),
+                    target_name=vehicle.get("target_name") or "当前压制位置",
+                    water_source=deepcopy(service.get('water_source')),
+                    notice="消防车正在有效喷水，可按当前压制状态组织后续疏散。")
+        return info, []
+    if vehicle.get("state") in {"moving", "yielding", "blocked"} or service:
+        info["notice"] = "消防车已有未完成行程或处置；请等待回执后重新比较，不能覆盖当前任务。"
+        return info, []
+
+    # A fire engine that is already at a valid working position only needs the
+    # service step.  This also supports a resumed plan after a service restart.
+    direct = action_plan(world, state, vehicle, "spray")
+    candidates = []
+    if direct.get("can_apply"):
+        candidates.append((0, None, None, direct))
+    for node in state.get("road_network", {}).get("nodes", []):
+        route = protect_plan(plan_vehicle(state["road_network"], vehicle, node["id"]), state, vehicle["id"])
+        if not route.get("can_apply"):
+            continue
+        projected = deepcopy(state)
+        projected_vehicle = {**deepcopy(vehicle), "x": node["x"], "y": node["y"],
+                             "state": "arrived", "target_node_id": node["id"],
+                             "target_name": node["name"], "service": None}
+        if len(route.get('route_points', [])) > 1:
+            projected_vehicle['heading_radians'] = heading_between(*route['route_points'][-2:])
+        projected["vehicles"] = [projected_vehicle if item.get("id") == vehicle["id"] else deepcopy(item)
+                                 for item in vehicles]
+        spray = action_plan(world, projected, projected_vehicle, "spray")
+        if spray.get("can_apply"):
+            candidates.append((route.get("planned_duration_seconds") or 0, node, route, spray))
+    if not candidates:
+        info["notice"] = "当前路网中没有同时满足车身通行、消火栓接入、射程和楼体遮挡约束的喷水位置。"
+        return info, []
+
+    duration, node, route, spray = min(candidates, key=lambda item: (item[0], item[1]["id"] if item[1] else ""))
+    steps = []
+    dispatch_id = None
+    if node is not None:
+        dispatch_id = str(uuid4())
+        steps.append({"id": dispatch_id, "label": "消防车前往" + node["name"], "kind": "vehicle.command",
+                      "arguments": {"command": "dispatch", "vehicle_id": vehicle["id"],
+                                    "target_node_id": node["id"]},
+                      "depends_on": [], "resident_ids": [], "route_edge_ids": route["route_edge_ids"]})
+    spray_id = str(uuid4())
+    steps.append({"id": spray_id, "label": "消防车接入水源并开始喷水", "kind": "vehicle.command",
+                  "arguments": {"command": "spray", "vehicle_id": vehicle["id"],
+                                'water_source_id': spray['water_source']['id']},
+                  "depends_on": [dispatch_id] if dispatch_id else [], "resident_ids": [], "route_edge_ids": []})
+    info.update(can_apply=True, target_node_id=node["id"] if node else vehicle.get("target_node_id"),
+                _forecast_dispatch=deepcopy(route),
+                target_name=node["name"] if node else vehicle.get("target_name") or "当前压制位置",
+                duration_seconds=duration, spray_duration_seconds=spray["duration_seconds"],
+                water_source=deepcopy(spray['water_source']),
+                hose_points=deepcopy(spray['hose_points']), hose_length=spray['hose_length'],
+                route_points=route["route_points"] if route else [],
+                route_edge_ids=route["route_edge_ids"] if route else [],
+                spray_step_id=spray_id,
+                notice=(f"消防车预计 {duration} 秒到达{node['name']}，喷水真实开始后再放行居民；"
+                        "车辆行程、交通管控和供水状态均在执行前再次校验。" if node else
+                        "消防车已在有效压制位置；喷水真实开始后再放行居民。"))
+    return info, steps
 
 
 def remaining_robot_route(task, data):
@@ -109,7 +214,10 @@ def robot_support(operations, session, drill, data, scope, run=None):
     target = buildings[0]["entry"] if buildings else {"x": 0, "y": 0}
     robot = data.get("robot")
     target_label = buildings[0]["name"] + "楼门广播点" if len(buildings) == 1 else "依次广播：" + "、".join(item["name"] for item in buildings)
-    info = {"target": target_label, "target_count": len(buildings), "x": target["x"], "y": target["y"],
+    info = {"target": target_label, "target_count": len(buildings),
+            "building_id": buildings[0]["id"] if len(buildings) == 1 else None,
+            "building_ids": [building["id"] for building in buildings],
+            "x": target["x"], "y": target["y"],
             "can_apply": False, "route_points": [], "route_edge_ids": [], "duration_seconds": None,
             "battery_required": 0, "notice": "本场没有可用机器人。"}
     if not buildings:
@@ -152,10 +260,12 @@ def robot_support(operations, session, drill, data, scope, run=None):
         label = building["name"] + "楼门广播点"
         steps.extend([
             {"id": move_id, "label": "机器人前往" + label, "kind": "robot.command",
+             "building_id": building['id'], "planned_duration_seconds": segment_duration,
              "arguments": {"command": "move", "x": entry["x"], "y": entry["y"], "target": label},
              "depends_on": [previous_broadcast] if previous_broadcast else [], "resident_ids": [],
              "route_edge_ids": edges, "battery_required": move_energy + 3},
             {"id": broadcast_id, "label": building["name"] + "楼门到位广播", "kind": "robot.command",
+             "building_id": building['id'],
              "arguments": {"command": "broadcast"}, "depends_on": [move_id], "resident_ids": [],
              "target_position": {"x": entry["x"], "y": entry["y"]}, "route_edge_ids": [], "battery_required": 3},
         ])

@@ -20,11 +20,18 @@ export class IndoorFireVisuals {
   private doors = new Map<string, ResidentialDoor>()
   private doorFrames = new Map<string, THREE.Group>()
   private valves = new Map<string, GasValveVisual>()
-  private materials = new SceneMaterials()
+  private materials: SceneMaterials
   private roomObjects = new Map<string, THREE.Group>()
   private riskMarkers = new Map<string, THREE.Mesh<THREE.RingGeometry, THREE.MeshBasicMaterial>>()
   constructor(private initial: IndoorState, private point: (x: number, y: number, height: number) => THREE.Vector3,
-    private register: (object: THREE.Object3D, data: Record<string, unknown>) => void, private passages: Passage[] = []) {}
+    private register: (object: THREE.Object3D, data: Record<string, unknown>) => void, private passages: Passage[] = [],
+    changed: () => void = () => {}) {
+    this.materials = new SceneMaterials(changed)
+  }
+
+  setQuality(quality: 'low' | 'medium' | 'high') {
+    this.materials.setQuality(quality)
+  }
 
   private buildFloor(floor: number) {
     const layer = new THREE.Group(); this.group.add(layer); this.floors.set(floor, layer)

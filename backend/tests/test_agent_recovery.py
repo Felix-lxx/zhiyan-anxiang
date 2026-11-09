@@ -88,7 +88,7 @@ def test_recovery_preserves_active_escort_identity_and_position(exercise):
     ids = [p['id'] for p in data['simulation']['residents'] if p['vulnerable']][:2]
     assert ids
     run = proposal(client, headers, root, ids)
-    candidate = next(c for c in run['candidates'] if c['can_apply'])
+    candidate = next(c for c in run['candidates'] if c['can_apply'] and not c.get('vehicle_support'))
     url = root + '/agent/runs/' + run['id'] + '/actions'
     assert client.post(url, headers=headers, json={'action':'approve', 'revision':1, 'candidate_id':candidate['id']}).status_code == 200
     before = client.get(root, headers=headers).json()['simulation']

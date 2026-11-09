@@ -10,7 +10,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.models.domain import Community
-from app.models.knowledge import KnowledgeDocument, KnowledgeVersion, KnowledgeChunk, KnowledgeRetrieval, KnowledgeExperience
+from app.models.knowledge import KnowledgeDocument, KnowledgeVersion, KnowledgeChunk, KnowledgeRetrieval
 from app.services.knowledge_ingestion import chunks, digest
 from app.services.knowledge_ranking import rank_chunks
 
@@ -86,9 +86,11 @@ def document_payload(session, document, detail=False):
     value = {'id': document.id, 'title': document.title, 'category': document.category,
              'scenario': document.scenario, 'source_url': document.source_url, 'publisher': document.publisher,
              'community_id': document.community_id, 'builtin': document.builtin, 'versions': []}
-    source = session.scalar(select(KnowledgeExperience).where(KnowledgeExperience.document_id == document.id)) if detail and document.category == 'experience' else None
-    if source:
-        value['experience'] = {**source.basis, 'basis_hash': source.basis_hash}
+    if detail and document.category == 'experience':
+        from app.services.training_archive import experience_sources
+        source = experience_sources(session, [document.id]).get(document.id)
+        if source:
+            value['experience'] = source
     for version in versions:
         data = {key: getattr(version, key) for key in ('id', 'number', 'status', 'filename', 'extraction',
             'failure', 'reviewer', 'reviewed_at', 'embedding_model', 'content_hash', 'created_at', 'valid_until')}
@@ -126,11 +128,8 @@ def retrieve(session: Session, owner: str, query: str, *, community_id=None, sce
     ranked = rank_chunks(rows, query, vectors)
     # One bounded query for all source records, rather than one lookup per hit.
     experience_ids = {document.id for _, _, document in rows if document.category == 'experience'}
-    sources = {}
-    ordered_ids = sorted(experience_ids)
-    for offset in range(0, len(ordered_ids), 500):
-        sources.update({source.document_id: source for source in session.scalars(select(KnowledgeExperience).where(
-            KnowledgeExperience.document_id.in_(ordered_ids[offset:offset + 500])))})
+    from app.services.training_archive import experience_sources
+    sources = experience_sources(session, experience_ids)
     from app.services.knowledge_applicability import assess_experience, assessment
     hits, per_document = [], Counter()
     for score, vector_score, chunk, version, document, match in ranked:
@@ -144,11 +143,11 @@ def retrieve(session: Session, owner: str, query: str, *, community_id=None, sce
         if document.category == 'experience':
             source = sources.get(document.id)
             if source:
-                hits[-1]['experience'] = {key: source.basis.get(key) for key in ('drill_id', 'run_id', 'revision', 'observed_at',
+                hits[-1]['experience'] = {key: source.get(key) for key in ('kind', 'archive_id', 'drill_name', 'result_kind', 'drill_id', 'run_id', 'revision', 'observed_at',
                     'population', 'predicted', 'actual', 'scene_version_id', 'intervention_count', 'parameters',
                     'forecast_engine_revision', 'observed_engine_revision')}
-                hits[-1]['experience']['basis_hash'] = source.basis_hash
-            hits[-1]['applicability'] = assess_experience(source.basis if source else None, situation)
+                hits[-1]['experience']['basis_hash'] = source['basis_hash']
+            hits[-1]['applicability'] = assess_experience(source, situation)
         if len(hits) >= limit:
             break
     if not hits:

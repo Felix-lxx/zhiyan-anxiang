@@ -139,7 +139,7 @@ def build_preview(session: Session, scene: Scene, minute: int, parameter_overrid
     affected = [obj["name"] for obj in world["objects"] if math.dist((obj["x"], obj["y"]), (world["fire_origin"]["x"], world["fire_origin"]["y"])) <= radius]
     lane = parameters.get("south_lane_status", "restricted")
     route = "优先北侧出口，南门通道需现场复核。" if lane != "open" else "北、南两个出口均可作为候选撤离方向。"
-    return SimulationPreviewRead(simulation=simulation, minute=minute, fire_level=fire, smoke_level=smoke, risk_level=risk, affected_targets=affected, route_advice=route, explanation="预览与正式演练共用同一社区版本、连续空间和规则仿真；当前操作只试算，不写入场景，也不下达撤离指令。")
+    return SimulationPreviewRead(configuration_validation=validation, simulation=simulation, minute=minute, fire_level=fire, smoke_level=smoke, risk_level=risk, affected_targets=affected, route_advice=route, explanation="预览与正式演练共用同一社区版本、连续空间和规则仿真；当前操作只试算，不写入场景，也不下达撤离指令。")
 
 
 @router.get("/scenes/{scene_id}/preview", response_model=SimulationPreviewRead)

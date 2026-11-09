@@ -97,6 +97,7 @@ export class ActorAssets {
       body.position.y = -bounds.min.y * body.scale.y
       body.updateMatrixWorld(true)
       const palette = [0x527780, 0x836652, 0x66735d, 0x675d78, 0x8a5145, 0x536681]
+      const skinPalette=[0xc58f6e,0xb77f5d,0xd6a184,0xac765a]
       const clonedMaterials = new Map<string, THREE.Material>()
       body.traverse(child => {
         if (!(child instanceof THREE.Mesh)) return
@@ -112,6 +113,7 @@ export class ActorAssets {
             fabric.metalness = 0; fabric.roughness = .88
             if (!helper && isShirt) fabric.color.setHex(palette[seed % palette.length]!)
             if (vulnerable && source.name === 'Hair') fabric.color.setHex(0xaaa69d)
+            if (!helper && /skin/i.test(source.name)) fabric.color.setHex(skinPalette[seed%skinPalette.length]!)
             material = fabric; clonedMaterials.set(key, material)
           }
           return material
@@ -270,6 +272,17 @@ export class ActorAssets {
         const mesh = new THREE.Mesh(geometry, material); mesh.position.set(x, y, z); parent.add(mesh); return mesh
       }
       add(new RoundedBoxGeometry(.4, .16, .46, 2, .018), shell, 0, .49, .04)
+      // Service hatch, sealed vents and emergency-stop cap stay inside the
+      // existing chassis footprint; these details never widen navigation.
+      add(new RoundedBoxGeometry(.23,.014,.18,2,.008),metal,0,.58,.04)
+      for(const x of [-.09,.09])for(const z of [-.025,.105])
+        add(new THREE.CylinderGeometry(.007,.007,.006,6),metal,x,.591,z)
+      for(const side of [-1,1])for(let i=0;i<6;i++)
+        add(new THREE.BoxGeometry(.006,.008,.025),metal,side*.202,.475+i*.015,.11)
+      const stopBase=add(new THREE.CylinderGeometry(.022,.025,.012,12),metal,.14,.585,-.12)
+      stopBase.name='emergency-stop-base'
+      const stopCap=add(new THREE.CylinderGeometry(.018,.018,.017,12),new THREE.MeshStandardMaterial({color:0xb8362b,roughness:.5}),.14,.599,-.12)
+      stopCap.name='emergency-stop-cap'
       for (const x of [-.16, .16]) for (const z of [-.12, .2]) add(new THREE.CylinderGeometry(.012, .012, .012, 8), metal, x, .576, z)
       // Inspection mast, dual cameras, rotating lidar and sealed speaker housing.
       add(new THREE.CylinderGeometry(.026, .034, .38, 12), metal, 0, .73, -.17)

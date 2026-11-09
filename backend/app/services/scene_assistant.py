@@ -56,7 +56,7 @@ def build_context(data: dict, scene_name: str, historical: bool, question: str =
         service = vehicle.get("service")
         vehicles.append({**{k: vehicle.get(k) for k in ("id", "name", "kind", "state", "reason", "remaining_seconds")},
                          "passenger_id": (vehicle.get("passenger") or {}).get("id"),
-                         "service": {k: service.get(k) for k in ("action", "label", "status", "progress", "reason", "remaining_seconds")} if service else None,
+                         "service": {k: service.get(k) for k in ("action", "label", "status", "progress", "reason", "remaining_seconds", "water_source", "hose_length")} if service else None,
                          "options": {k: {"can_apply": v["can_apply"], "notice": v["notice"]} for k, v in vehicle.get("service_options", {}).items()}})
     tasks = [{k: t.get(k) for k in ("id", "title", "status", "responsible_role", "blockers")} for t in data.get("tasks", [])[:12]]
     robot = data.get("robot") or {}
@@ -82,6 +82,10 @@ def build_context(data: dict, scene_name: str, historical: bool, question: str =
         sources.append({"id": "S7", "title": "最近指令回执", "detail": f"{command_summary.get('label')}；状态 {command_summary.get('status')}；{command_summary.get('reason')}"})
     if vehicles:
         sources.append({"id": "S8", "title": "车辆与现场处置", "detail": "；".join(f"{v['name']}：{v['service']['reason'] if v['service'] else v['reason']}" for v in vehicles)})
+    hydrants = sim.get('environment', {}).get('hydrants', [])[:40]
+    if hydrants:
+        sources.append({'id':'S10', 'title':'本场独立水源状态',
+            'detail':'；'.join(f"{item['name']}：{'可用' if item['state']=='available' else '失效'}" for item in hydrants)})
     if sim.get('environment', {}).get('indoor'):
         indoor = sim['environment']['indoor']
         sources.append({'id':'S9', 'title':'楼内分区烟气与房门', 'detail':indoor['source_label']+'；'+'；'.join(f"{zone['name']}烟气{round(zone['smoke_density']*100)}%" for zone in sorted(indoor['zones'],key=lambda zone:-zone['smoke_density'])[:4])})
@@ -96,7 +100,18 @@ def build_context(data: dict, scene_name: str, historical: bool, question: str =
             "indoor": ({'source_label': sim['environment']['indoor']['source_label'],
                         'zones': sorted(sim['environment']['indoor']['zones'], key=lambda zone: -zone['smoke_density'])[:12],
                         'doors': sim['environment']['indoor']['doors'][:40]} if sim.get('environment', {}).get('indoor') else None),
+            'hydrants': hydrants,
             "fire": sim.get("fire"), "water_suppression": sim.get("environment", {}).get("water_suppression", False)}
+
+
+def water_reply(context):
+    states = '；'.join(f"{item['name']}：{'可用' if item['state']=='available' else '失效'}" for item in context['hydrants'])
+    supplies = [f"{vehicle['name']}正在使用{vehicle['service']['water_source']['name']}" for vehicle in context.get('vehicles', [])
+                if vehicle.get('service') and vehicle['service'].get('water_source')]
+    answer = f"本场水源：{states}。[S10]\n\n" + ('；'.join(supplies) + '。[S8]\n\n' if supplies else '')
+    answer += '在车辆调度中选择水源，预览水带连接后确认。可用水源仍须满足车辆停靠、射程和水带绕行距离；当前供水失效会停止喷水，不会自动切换另一水源。请调整部署并重新比较放行方案。[S4]'
+    return answer, [{'kind':'focus', 'object_kind':'vehicle', 'label':'查看消防车供水'},
+                    {'kind':'events', 'label':'查看水源与处置证据'}]
 
 
 def offline_reply(question: str, context: dict) -> tuple[str, list[dict]]:
@@ -118,7 +133,9 @@ def offline_reply(question: str, context: dict) -> tuple[str, list[dict]]:
     robot = any(word in question for word in ("机器人", "任务", "广播")) or (uses_focus and selection.get("kind") in {"robot", "command"})
     review = any(word in question for word in ("评分", "分数", "复盘", "重做", "比较", "分支")) or (uses_focus and selection.get("kind") in {"score", "replay"})
     # Resolve short follow-ups within the current scene without pretending this is an LLM.
-    if any(word in question for word in ("消防车", "救护车", "喷水", "接运", "转运", "移交", "车辆")):
+    if context.get('hydrants') and any(word in question for word in ('水源', '消火栓', '供水', '水带', '喷水')):
+        answer, actions = water_reply(context)
+    elif any(word in question for word in ("消防车", "救护车", "喷水", "接运", "转运", "移交", "车辆")):
         vehicles = context.get("vehicles", [])
         details = []
         for vehicle in vehicles:

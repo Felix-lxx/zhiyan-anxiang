@@ -129,8 +129,8 @@ html .operations-center--immersive.coach-open>.director-stage :is(.director-metr
   html .operations-center--immersive.assistant-open>.atlas-replay { right:var(--assistant-pane-width); }
   html .operations-center--immersive.assistant-open .atlas-replay__heading { flex-wrap:wrap; gap:12px; }
   html .operations-center--immersive.assistant-open .atlas-replay__heading-actions { flex-direction:row; flex-wrap:wrap; }
-  html .operations-center--immersive.assistant-open .atlas-replay__grid { grid-template-columns:minmax(180px,.7fr) minmax(0,1fr); grid-template-rows:minmax(300px,1fr) auto; overflow:auto; }
-  html .operations-center--immersive.assistant-open .atlas-replay__evidence { grid-column:1/-1; max-height:220px; }
+  html .operations-center--immersive.assistant-open .atlas-replay__grid { grid-template-columns:minmax(180px,.7fr) minmax(0,1fr); grid-template-rows:minmax(420px,1fr) max-content; overflow:auto; }
+  html .operations-center--immersive.assistant-open .atlas-replay__evidence { grid-column:1/-1; min-height:0; max-height:none; overflow:visible; }
   html .operations-center--immersive.assistant-open .atlas-replay__world>nav { position:static; transform:none; flex-wrap:wrap; justify-content:center; flex-shrink:0; }
   html .operations-center--immersive.assistant-open .atlas-replay__header small { display:none; }
 }
