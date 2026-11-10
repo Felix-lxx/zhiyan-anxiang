@@ -26,6 +26,7 @@ output/
 assets/plates/
 .impeccable/build/
 .impeccable/review/
+.impeccable/critique/
 
 # Local databases, logs and incremental compiler/browser caches
 *.db

@@ -30,6 +30,9 @@ SQLAlchemy 模型、事件与快照
 ## 提交前检查
 
 ```powershell
+# 根目录：链接、运行文件及常见凭据特征检查
+python scripts/check_repository.py
+
 # 后端
 Set-Location backend
 .\.venv\Scripts\python.exe -m pytest tests -q -p no:cacheprovider
@@ -43,6 +46,8 @@ npm run build
 若变更导演台、手机参演端或 Three.js 表现，还应检查 1440px、1024px、390px 宽度下的主操作路径；浮层应有独立滚动容器，不能遮挡当前必须操作的控件。
 
 ## Pull Request 要求
+
+文档按职责存放：`docs/architecture/` 保存当前架构与 ADR，`docs/guides/` 保存功能说明，`docs/operations/` 保存部署维护，`docs/reports/` 只保留当前交付证据。被替代的阶段日志从工作树移除，历史通过 Git 查询，不持续增加同主题日期副本。
 
 - 描述用户可观察到的行为改变，而不是只列出文件名。
 - 说明状态如何写入、实时如何同步、失败如何反馈或回滚。
