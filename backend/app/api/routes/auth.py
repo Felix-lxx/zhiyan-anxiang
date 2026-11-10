@@ -11,7 +11,8 @@ from sqlalchemy.orm import Session
 from app.core.config import get_settings
 from app.core.origins import verify_browser_origin
 from app.core.database import get_db
-from app.core.security import create_access_token, create_refresh_token, decode_access_claims, hash_password, hash_refresh_token, verify_password
+from app.core.security import create_access_token, create_refresh_token, decode_access_claims, hash_password, hash_refresh_token, verify_password, rotate_refresh_token
+from app.services.command_lock import serialized_command
 from app.models.auth import AuthSession, LoginSecurity
 from app.models.domain import Role, RoleCode, User, UserRole
 from app.services.access import ensure_development_user, ensure_role_catalog
@@ -119,6 +120,7 @@ def _record_failed_login(session: Session, username: str) -> None:
 
 
 @router.post("/login", response_model=LoginResponse, dependencies=[Depends(verify_browser_origin)])
+@serialized_command
 def login(payload: LoginRequest, response: Response, session: Session = Depends(get_db)) -> LoginResponse:
     """Authenticate the management endpoint; participant devices use drill invite codes."""
     settings = get_settings()
@@ -182,6 +184,7 @@ def get_current_identity(authorization: str | None = Header(default=None), sessi
 
 
 @router.post("/refresh", response_model=LoginResponse, dependencies=[Depends(verify_browser_origin)])
+@serialized_command
 def refresh_session(response: Response, refresh_token: str | None = Cookie(default=None, alias=REFRESH_COOKIE), session: Session = Depends(get_db), optional: bool = False) -> LoginResponse:
     if not refresh_token or "." not in refresh_token:
         if optional and not refresh_token:
@@ -189,23 +192,37 @@ def refresh_session(response: Response, refresh_token: str | None = Cookie(defau
         raise HTTPException(status_code=401, detail="刷新凭证缺失，请重新登录。")
     session_id = refresh_token.split(".", 1)[0]
     auth_session = session.scalar(select(AuthSession).where(AuthSession.id == session_id).with_for_update())
-    if auth_session is None or auth_session.revoked_at is not None or _aware(auth_session.expires_at) <= datetime.now(UTC) or auth_session.refresh_token_hash != hash_refresh_token(refresh_token):
+    now = datetime.now(UTC)
+    if auth_session is None or auth_session.revoked_at is not None or _aware(auth_session.expires_at) <= now:
         _clear_refresh_cookie(response)
+        raise HTTPException(status_code=401, detail="刷新凭证无效或已过期，请重新登录。")
+    supplied_hash = hash_refresh_token(refresh_token)
+    retry = (auth_session.previous_refresh_hash == supplied_hash
+             and auth_session.previous_refresh_until is not None
+             and _aware(auth_session.previous_refresh_until) > now)
+    rotated = rotate_refresh_token(refresh_token)
+    if supplied_hash != auth_session.refresh_token_hash and not (
+            retry and hash_refresh_token(rotated) == auth_session.refresh_token_hash):
         raise HTTPException(status_code=401, detail="刷新凭证无效或已过期，请重新登录。")
     user = session.get(User, auth_session.user_id)
     if user is None or not user.is_active:
         raise HTTPException(status_code=401, detail="账号不存在或已停用。")
     roles = _roles(session, user)
     identity = _management_identity(user, roles, auth_session.id)
-    rotated = create_refresh_token(auth_session.id)
-    claimed = session.execute(update(AuthSession).where(
-        AuthSession.id == auth_session.id,
-        AuthSession.refresh_token_hash == hash_refresh_token(refresh_token),
-        AuthSession.revoked_at.is_(None), AuthSession.expires_at > datetime.now(UTC),
-    ).values(refresh_token_hash=hash_refresh_token(rotated), last_used_at=datetime.now(UTC)).execution_options(synchronize_session=False))
-    if not claimed.rowcount:
-        session.rollback()
-        raise HTTPException(401, "刷新会话已变化，请重试登录。")
+    if not retry:
+        claimed = session.execute(update(AuthSession).where(
+            AuthSession.id == auth_session.id,
+            AuthSession.refresh_token_hash == supplied_hash,
+            AuthSession.revoked_at.is_(None), AuthSession.expires_at > now,
+        ).values(refresh_token_hash=hash_refresh_token(rotated), last_used_at=now,
+                 previous_refresh_hash=supplied_hash,
+                 previous_refresh_until=now + timedelta(seconds=10)).execution_options(synchronize_session=False))
+        if not claimed.rowcount:
+            session.rollback()
+            raise HTTPException(401, "刷新会话已变化，请重试登录。")
+    # A dropped HTTP response can leave the browser holding the previous
+    # cookie. Reissue the exact same successor for ten seconds, without
+    # extending that window or the session's absolute lifetime.
     session.commit()
     _set_refresh_cookie(response, rotated)
     settings = get_settings()
@@ -217,6 +234,7 @@ def refresh_session(response: Response, refresh_token: str | None = Cookie(defau
 
 
 @router.post("/logout", status_code=204)
+@serialized_command
 def logout(response: Response, identity: AuthenticatedIdentity = Depends(get_current_identity), session: Session = Depends(get_db)) -> Response:
     if identity.session_id:
         auth_session = session.get(AuthSession, identity.session_id)
@@ -261,6 +279,7 @@ def list_sessions(
 
 
 @router.delete("/sessions/{session_id}", status_code=204)
+@serialized_command
 def revoke_session(
     session_id: str,
     response: Response,

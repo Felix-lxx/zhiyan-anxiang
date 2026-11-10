@@ -28,6 +28,31 @@ const { displayHeight, SceneMaterials } = await load('sceneMaterials')
 const { createFiretruckEquipment } = await load('firetruckEquipment')
 const { supplyHoseCurve, HOSE_RADIUS } = await load('supplyHose')
 const { ROAD_SURFACE_Y } = await load('roadSurface')
+const { BuildingReleaseVisuals } = await load('buildingReleaseVisuals')
+
+test('building annotations reuse textures and release removed state without changing geometry',()=>{
+ const originalDocument=globalThis.document
+ const context=new Proxy({}, {get:()=>()=>{},set:()=>true})
+ globalThis.document={createElement:()=>({width:0,height:0,getContext:()=>context})}
+ const visual=new BuildingReleaseVisuals()
+ try{
+  const building={id:'b',x:60,y:55,floors:6,entry:{x:53,y:55}}
+  const signal={id:'b',name:'一号楼',wave:1,state:'waiting',total:4,arrived:0,reason:'等待喷水'}
+  visual.sync([signal],[building])
+  const group=visual.layer.children[0],sprite=group.children.find(item=>item.isSprite),texture=sprite.material.map
+  assert.ok(Math.abs(sprite.position.y-23)<1e-9)
+  let disposed=0;texture.addEventListener('dispose',()=>disposed++)
+  visual.sync([signal],[building]);assert.equal(sprite.material.map,texture)
+  visual.sync([{...signal,state:'executing'}],[building]);assert.equal(disposed,1)
+  visual.sync([signal,{...signal,id:'b2'}],[building,{...building,id:'b2'}])
+  const camera=new THREE.PerspectiveCamera(50,1.5,.1,500)
+  camera.position.set(10,40,50);camera.lookAt(10,23,5);camera.updateMatrixWorld()
+  visual.step(camera,true)
+  assert.equal(visual.layer.children.filter(group=>group.children.find(item=>item.isSprite)?.visible).length,1,'overlapping roof labels must not stack')
+  visual.sync([],[]);assert.equal(visual.layer.children.length,0)
+  assert.equal(building.entry.x,53)
+ }finally{visual.dispose();if(originalDocument===undefined)delete globalThis.document;else globalThis.document=originalDocument}
+})
 
 test('building facade clones follow quality changes and release their materials once', t => {
   const originalDocument = globalThis.document

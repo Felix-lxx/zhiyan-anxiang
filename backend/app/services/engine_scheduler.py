@@ -7,11 +7,34 @@ from time import perf_counter
 async def serve():
     from app.api.routes import operations
     from app.core.database import SessionLocal
+    from app.services.command_lock import serialized_command
+
+    @serialized_command
+    def tick_drill(drill_id):
+        from app.services.engine_lease import acquire_engine_lease
+        from app.models.operations import DrillSession
+        # The lease write and first read belong inside the same local gate as
+        # domain writes. Otherwise SQLite may open a stale read transaction
+        # before advance_engine obtains the gate and fail its later upgrade.
+        with SessionLocal() as lease_session:
+            acquired = acquire_engine_lease(lease_session, drill_id)
+            if acquired:
+                lease_session.commit()
+            else:
+                lease_session.rollback()
+        if not acquired:
+            return 0, None
+        with SessionLocal() as work_session:
+            drill = work_session.get(DrillSession, drill_id)
+            if drill is None or drill.status != 'running':
+                return 0, None
+            started = perf_counter()
+            operations.advance_engine(work_session, drill)
+            return perf_counter() - started, drill.time_scale
 
     def tick():
         from sqlalchemy import select
         from app.models.operations import DrillSession
-        from app.services.engine_lease import acquire_engine_lease
         # Discovery is read-only. Each lease and simulation step owns a short,
         # independent transaction so one drill cannot hold SQLite's writer lock
         # while the scheduler iterates over every other running drill.
@@ -19,24 +42,10 @@ async def serve():
             drill_ids = list(discovery.scalars(select(DrillSession.id).where(DrillSession.status == "running")))
         for drill_id in drill_ids:
             try:
-                with SessionLocal() as lease_session:
-                    acquired = acquire_engine_lease(lease_session, drill_id)
-                    if acquired:
-                        lease_session.commit()
-                    else:
-                        lease_session.rollback()
-                if not acquired:
-                    continue
-                with SessionLocal() as work_session:
-                    drill = work_session.get(DrillSession, drill_id)
-                    if drill is None or drill.status != "running":
-                        continue
-                    started = perf_counter()
-                    operations.advance_engine(work_session, drill)
-                    duration = perf_counter() - started
-                    if duration > 1:
-                        logging.getLogger(__name__).warning('演练推进较慢 drill=%s wall_seconds=%.3f time_scale=%.1f active_drills=%d',
-                            drill_id, duration, drill.time_scale, len(drill_ids))
+                duration, time_scale = tick_drill(drill_id)
+                if duration > 1:
+                    logging.getLogger(__name__).warning('演练推进较慢 drill=%s wall_seconds=%.3f time_scale=%.1f active_drills=%d',
+                        drill_id, duration, time_scale, len(drill_ids))
             except Exception:
                 # Session context managers roll back this drill. A malformed world
                 # must not starve every subsequent running drill on every tick.

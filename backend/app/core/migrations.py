@@ -15,6 +15,15 @@ def run_schema_migrations(engine: Engine) -> None:
             "version VARCHAR(64) PRIMARY KEY, applied_at TIMESTAMP NOT NULL)"
         ))
         applied = {row[0] for row in connection.execute(text("SELECT version FROM schema_migrations"))}
+        if '20261110_refresh_retry' not in applied and inspect(connection).has_table('auth_sessions'):
+            columns = {c['name'] for c in inspect(connection).get_columns('auth_sessions')}
+            if 'previous_refresh_hash' not in columns:
+                connection.execute(text('ALTER TABLE auth_sessions ADD COLUMN previous_refresh_hash VARCHAR(64)'))
+            if 'previous_refresh_until' not in columns:
+                kind = 'TIMESTAMP WITH TIME ZONE' if connection.dialect.name == 'postgresql' else 'TIMESTAMP'
+                connection.execute(text('ALTER TABLE auth_sessions ADD COLUMN previous_refresh_until ' + kind))
+            connection.execute(text('INSERT INTO schema_migrations(version, applied_at) VALUES (:version, :applied_at)'),
+                {'version': '20261110_refresh_retry', 'applied_at': datetime.now(UTC).isoformat()})
         if '20261102_knowledge_validity' not in applied and inspect(connection).has_table('knowledge_versions'):
             columns = {c['name'] for c in inspect(connection).get_columns('knowledge_versions')}
             if 'valid_until' not in columns:

@@ -11,7 +11,7 @@ import AgentRevisionView from './AgentRevisionView.vue'
 import SpeechPlayback from './SpeechPlayback.vue'
 
 const props = defineProps<{ apiBaseUrl:string;accessToken:string;drillId:string;active:boolean;historical:boolean;modelAvailable:boolean;focusId?:string;liveFeed?:AgentLiveState|null;connection?:'connecting'|'live'|'stale';goalDraft?:{id:number;text:string}|null;planFocus?:{id:string;request:number}|null }>()
-const emit = defineEmits<{ preview:[people:AgentAssignment[]];residentFocus:[id:string];robot:[];vehicle:[];rollcall:[];missions:[];task:[id:string];indoor:[doorId?:string];replay:[at:number];knowledge:[id:string,version?:string,chunk?:string] }>()
+const emit = defineEmits<{ preview:[people:AgentAssignment[]];residentFocus:[id:string];buildingFocus:[id:string];robot:[];vehicle:[];rollcall:[];missions:[];task:[id:string];indoor:[doorId?:string];replay:[at:number];knowledge:[id:string,version?:string,chunk?:string] }>()
 const api = createApiClient(props.apiBaseUrl, () => props.accessToken)
 const goal = ref('将目标居民分流疏散，重点人员安排护送'), building = ref(''), assist = ref(true), useModel = ref(false)
 const robotBroadcast = ref(false)
@@ -193,7 +193,7 @@ onBeforeUnmount(()=>{disposed=true;generation++;pollEpoch++;clearTimeout(timer);
         <details><summary>查看责任人与截止时间</summary>
         <button v-for="task in run.task_graph.case_tasks" :key="task.id" type="button" :data-ready="task.verification_ready||undefined" :data-overdue="task.overdue||undefined" @click="emit('task',task.id)">
           <strong>{{task.label}}</strong>
-          <span>{{task.state==='completed'?'已核验':task.verification_ready?'立即核验':task.overdue?'已超时，可补救':`剩余 ${task.remaining_seconds ?? '—'} 秒`}} · {{task.responsible_role}}</span>
+          <span>{{task.state==='completed'?(task.completed_on_time===false?'超时核验 · 证据已留存':'已核验'):task.verification_ready?'立即核验':task.overdue?'已超时，可补救':`剩余 ${task.remaining_seconds ?? '—'} 秒`}} · {{task.responsible_role}}</span>
           <small v-if="task.state!=='completed'">下一步：{{task.next_required_action}}</small>
           <small v-if="task.depends_on?.length">关联行动：{{dependencyLabel(task)}}</small>
         </button>
@@ -227,7 +227,7 @@ onBeforeUnmount(()=>{disposed=true;generation++;pollEpoch++;clearTimeout(timer);
         <p class="agent-workspace__meta">{{run.scope.building_name}} · {{run.summary.total}} 人 · {{run.planner_notice}}</p>
         <button v-if="run.scope.resident_ids.length" type="button" @click="emit('residentFocus',run.scope.resident_ids[0]!)"><AppIcon name="target" :size="18"/>查看目标现场</button>
         <p v-if="run.scope.floors?.length || run.scope.forbidden_exits?.length" class="agent-workspace__meta">{{run.scope.floors?.length?`目标楼层：${run.scope.floors.join('、')}层。`:''}}{{run.scope.forbidden_exits?.length?`禁用：${run.scope.forbidden_exits.map(exit=>exit==='north'?'北侧出口':'南侧出口').join('、')}。`:''}}</p>
-        <AgentPlanningEvidence v-if="run.planning" :report="run.planning"/>
+        <AgentPlanningEvidence v-if="run.planning" :report="run.planning" :approved="Boolean(run.approved_revision)"/>
         <details v-if="run.knowledge" class="agent-workspace__knowledge"><summary>方案参考资料 · {{run.knowledge.hits.length}} 条</summary><p>以下是制定目标时检索到的资料；路线、资源和动作可行性由仿真工具校验。</p><KnowledgeEvidence :result="run.knowledge" @open="source=>emit('knowledge',source.documentId,source.versionId,source.chunkId)"/></details>
         <section v-if="coordination" class="agent-workspace__coordination" aria-label="智能体协同状态">
           <div class="agent-workspace__coordination-heading"><h4>当前协同</h4><span>现场 {{clock(coordination.at_seconds)}}</span></div>
@@ -291,6 +291,11 @@ onBeforeUnmount(()=>{disposed=true;generation++;pollEpoch++;clearTimeout(timer);
                 <p>{{item.release_policy.notice}}<template v-if="item.release_policy.mode==='building_waves'">共 {{item.release_policy.waves}} 批。每栋放行前核对或接续喷水；水源失效或接续失败时，后续批次进入待复核。</template></p>
                 <dl><div v-if="item.metrics.cumulative_exposure!==undefined"><dt>预演累计暴露</dt><dd>{{item.metrics.cumulative_exposure}} 模型单位</dd></div><div><dt>{{item.metrics.all_arrived?'预计全员到场时刻':'预演内末位到场时刻'}}</dt><dd>{{item.metrics.last_arrival_at!=null?clock(item.metrics.last_arrival_at):'预演内无人到场'}}</dd></div></dl>
                 <p v-if="!item.metrics.all_arrived" class="agent-workspace__meta">尚未覆盖全员到场，以上时刻不代表最终疏散耗时。</p>
+                <template v-if="item.schedule_assessment">
+                  <p><strong>完整批次时序估算：</strong>{{item.schedule_assessment.estimated_completion_at!=null?`末批约 ${clock(item.schedule_assessment.estimated_completion_at)} 到场`:'当前条件不足，无法估计末批到场时刻'}}。</p>
+                  <p class="agent-workspace__meta">{{item.schedule_assessment.notice}}</p>
+                  <p v-for="risk in item.schedule_assessment.deadline_risks" :key="risk.task_id" class="agent-workspace__notice">时限风险：{{risk.title}} 截止 {{clock(risk.deadline_at)}}，按当前时序预计 {{clock(risk.estimated_ready_at)}} 才具备核验条件；尚未计入人工提交耗时。</p>
+                </template>
               </section>
               <section v-if="item.robot_support" class="agent-workspace__resource" aria-label="机器人协同条件">
                 <h4><AppIcon name="robot" :size="18" />{{ item.robot_support.target }}</h4>
@@ -348,7 +353,10 @@ onBeforeUnmount(()=>{disposed=true;generation++;pollEpoch++;clearTimeout(timer);
           </section>
           <section v-if="coordination?.release_waves?.length" class="agent-workspace__release" aria-label="楼栋分批放行进展">
             <h4>楼栋放行进展</h4><p class="agent-workspace__meta">后一批等待前批真实到场；每批下令前核对有效喷水，火势与烟气均消退后直接满足放行条件。</p>
-            <ol><li v-for="wave in coordination.release_waves" :key="wave.wave"><div><strong>第 {{wave.wave}} 批 · {{labels[wave.state]||wave.state}}</strong><span>到场 {{wave.arrived}} / {{wave.total}} 人</span></div><p>{{wave.reason}}</p><button v-if="wave.resident_id" type="button" @click="emit('residentFocus',wave.resident_id)">查看这批居民</button></li></ol>
+            <ol><li v-for="wave in coordination.release_waves" :key="wave.wave">
+              <div><strong>第 {{wave.wave}} 批 · {{labels[wave.state]||wave.state}}</strong><span>到场 {{wave.arrived}} / {{wave.total}} 人</span></div><p>{{wave.reason}}</p>
+              <div class="agent-workspace__building-actions"><button v-for="home in wave.buildings??[]" :key="home.id" type="button" :disabled="historical" @click="emit('buildingFocus',home.id)">定位 {{home.name}} · {{home.arrived}}/{{home.total}} 人到场</button><button v-if="wave.resident_id" type="button" @click="emit('residentFocus',wave.resident_id)">查看这批居民</button></div>
+            </li></ol>
           </section>
           <p v-if="run.execution" class="agent-workspace__meta">现场同步 {{clock(run.execution.at_seconds)}} · 事件 {{run.execution.event_sequence}}。展开步骤可定位受阻人员与查看执行依据。</p>
           <p v-if="['stopped','taken_over'].includes(run.status)" class="agent-workspace__notice">自动下令已停止；下方继续显示已受理指令的实际进展。</p>
@@ -396,7 +404,7 @@ onBeforeUnmount(()=>{disposed=true;generation++;pollEpoch++;clearTimeout(timer);
           <AgentOutcomeReview v-if="run.outcomes?.length" :outcomes="run.outcomes" :elapsed="run.at_seconds" :api-base-url="apiBaseUrl" :access-token="accessToken" :run-id="run.id" @replay="at=>emit('replay',at)" @knowledge="id=>emit('knowledge',id)" />
           <p>{{run.scope.completion}}</p><ol class="agent-workspace__evidence"><li v-for="item in run.history" :key="item.id"><time>{{clock(item.at_seconds)}}</time><p>{{item.message}}</p></li></ol>
         </section>
-        <div v-if="!canCreate" class="agent-workspace__stop">
+        <div v-if="!canCreate && !historical && drillStatus!=='ended' && ['awaiting_approval','needs_review','executing','waiting','paused','awaiting_rollcall'].includes(run.status)" class="agent-workspace__stop">
           <div class="agent-workspace__control-actions">
             <button v-if="['executing','waiting','paused'].includes(run.status)" type="button" :disabled="busy||!!syncError" @click="act('review')"><AppIcon name="route" :size="18" />调整剩余行动</button>
             <button type="button" :disabled="busy" @click="act('stop')">{{run.steps.length?'停止后续自动下令':'取消未执行方案'}}</button>
@@ -506,4 +514,8 @@ onBeforeUnmount(()=>{disposed=true;generation++;pollEpoch++;clearTimeout(timer);
 .agent-workspace__constraints fieldset{margin:12px 0;padding:12px;border:1px solid var(--border-default);border-radius:8px;}
 .agent-workspace__constraints legend{font-size:14px;}.agent-workspace__constraints input:not([type=checkbox]){width:100%;box-sizing:border-box;min-height:44px;padding:10px;font:inherit;background:var(--surface-panel);color:var(--text-primary);border:1px solid var(--border-default);border-radius:6px;}
 @media(max-width:540px){.agent-workspace__constraint-fields{grid-template-columns:minmax(0,1fr);}}
+</style>
+<style scoped>
+.agent-workspace__building-actions{display:flex!important;flex-wrap:wrap;gap:8px;}
+.agent-workspace__building-actions button{min-height:44px;font-size:16px;white-space:normal;overflow-wrap:anywhere;flex:1 1 160px;}
 </style>

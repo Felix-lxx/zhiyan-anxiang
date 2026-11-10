@@ -41,7 +41,10 @@ def test_replan_reuses_owned_robot_receipt_without_recharging(exercise, arrive_d
         tick(clock['t'] + 2)
     current = client.get(root, headers=headers).json()
     compared = action('replan', 2)
-    selected = next(c for c in compared['candidates'] if c['can_apply'])
+    # Keep the original immediate-evacuation policy. Replanning may rank a
+    # suppression-first alternative higher; that alternative intentionally
+    # waits for a vehicle/spray receipt before broadcasting.
+    selected = next(c for c in compared['candidates'] if c['can_apply'] and not c.get('vehicle_support'))
     support = selected['robot_support']
     assert support['reusing_task'] and support['battery_required'] == 3
     assert support['already_arrived'] == arrive_during_review

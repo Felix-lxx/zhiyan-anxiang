@@ -33,7 +33,7 @@ def test_score_distinguishes_fast_and_congested_complete_runs():
     ]
     fast = score_frozen_world(world, history, completed_simulation(100, 4))
     congested = score_frozen_world(world, history, completed_simulation(170, 34))
-    assert fast["version"] == 3
+    assert fast["version"] == 4
     assert fast["total_score"] > congested["total_score"]
     assert next(item for item in congested["details"] if item["name"] == "决策效率")["score"] < 10
 
@@ -65,6 +65,19 @@ def test_forecast_uses_remaining_time_not_distance_already_travelled():
     assert forecast_horizon(routes) == 30
     routes['north']['r']['remaining_seconds'] = 0
     assert forecast_horizon(routes) == 30
+
+
+def test_late_partial_evacuation_cannot_outscore_finishing_at_same_time():
+    complete = completed_simulation(710, 0)
+    complete['elapsed_seconds'] = 711
+    partial = completed_simulation(665, 0)
+    partial['elapsed_seconds'] = 711
+    partial['residents'][-1].update(status='waiting', counted=False)
+    partial['summary'].update(evacuated=3, counted=3)
+    score = lambda sim: next(row['score'] for row in score_frozen_world(
+        {'tasks': []}, [], sim)['details'] if row['name'] == '决策效率')
+    assert score(partial) <= score(complete)
+    assert score(complete) == 4
 
 
 def test_new_efficiency_reference_tracks_route_length_and_escort_approach():

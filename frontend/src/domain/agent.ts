@@ -23,6 +23,7 @@ export interface AgentCandidate {
   vehicle_support?:AgentVehicleSupport|null
   suppression_notice?:string|null
   release_policy?:{mode:'building_waves'|'immediate';waves:number;requires_active_suppression:boolean;notice:string}
+  schedule_assessment?:{kind:'queue_free_schedule';complete:boolean;estimated_completion_at:number|null;notice:string;waves:Array<{wave:number;building_id:string;release_at:number|null;arrival_at:number|null}>;deadline_risks:Array<{task_id:string;title:string;deadline_at:number;estimated_ready_at:number;delay_seconds:number}>}|null
   assist_resource?:{capacity:number;busy:number;required:number;waves:number|null}
   geometry_issues?:Array<{edge_id:string;name:string;reason:string}>
   metrics:{ north:number;south:number;unreachable:number;arrived:number;exposed:number;queue_seconds:number;score:number;score_delta:number;cumulative_exposure?:number;last_arrival_at?:number|null;all_arrived?:boolean }
@@ -41,11 +42,11 @@ export interface AgentCoordination {
   bottlenecks:Array<{edge_id:string;name:string;waiting:number;resident_id:string;max_wait_seconds:number}>
   robot:{included:boolean;state:string|null;battery:number|null;reason:string|null;steps_completed:number;steps_total:number}
   vehicle:{included:boolean;state:string|null;reason:string|null;service:string|null;target:string|null;steps_completed:number;steps_total:number}
-  release_waves?:Array<{wave:number;total:number;arrived:number;resident_id:string|null;state:string;reason:string}>
+  release_waves?:Array<{wave:number;total:number;arrived:number;resident_id:string|null;state:string;reason:string;buildings?:Array<{id:string;name:string;total:number;arrived:number}>}>
   case_tasks?:{total:number;completed:number;waiting:number;pending:number;verification_ready:number;overdue:number;next:AgentCaseTask|null}
   next_action:{kind:'review'|'replan'|'rollcall'|'focus'|'robot'|'vehicle'|'observe'|'missions'|'indoor';label:string;reason:string;resident_id?:string|null;door_id?:string;task_id?:string}
 }
-export interface AgentCaseTask { id:string;kind?:string;label:string;state:string;responsible_role:string;remaining_seconds:number|null;overdue:boolean;blockers:string[];verification_ready:boolean;operation_phase?:string|null;depends_on:string[];next_required_action:string;completion_rule:string;automation:'human_verified' }
+export interface AgentCaseTask { id:string;kind?:string;label:string;state:string;responsible_role:string;remaining_seconds:number|null;overdue:boolean;completed_on_time?:boolean|null;blockers:string[];verification_ready:boolean;operation_phase?:string|null;depends_on:string[];next_required_action:string;completion_rule:string;automation:'human_verified' }
 export interface AgentRun {
   impact?:AgentImpact
   revision_context?:{from_revision:number;baseline:'approved'|'draft';at_seconds:number;impact:AgentImpact;previous_objective:string;previous_forbidden_exits:string[];new_objective?:string;new_forbidden_exits?:string[];candidates:Array<{candidate_id:string;changed_count:number;residents:Array<{resident_id:string;label:string;old_exit:string;new_exit:string;exit_changed:boolean;route_changed:boolean}>}>}|null
@@ -97,6 +98,28 @@ export interface AgentOutcome {
 export interface AgentLiveState {
   id:string;state_version:string;source_version:string;drill_status:string
   buildings:Array<{id:string;name:string}>;runs:AgentRun[]
+}
+
+export interface BuildingReleaseSignal { id:string;name:string;wave:number;state:string;total:number;arrived:number;reason:string }
+/** Display only a matching authoritative projection, never a draft or a past view. */
+export function buildingReleaseSignals(feed:AgentLiveState|null,drillId:string,sourceVersion:string|undefined,historical:boolean):BuildingReleaseSignal[]{
+  if(historical||!feed||feed.id!==drillId||feed.source_version!==sourceVersion)return []
+  const result=new Map<string,BuildingReleaseSignal>()
+  const priority:Record<string,number>={blocked:5,stopped:4,waiting:3,executing:2,completed:1}
+  for(const run of feed.runs){
+    if(!run.approved_revision||!['executing','waiting','needs_review','awaiting_rollcall','completed'].includes(run.status))continue
+    for(const wave of run.execution?.coordination?.release_waves??[]){
+      for(const building of wave.buildings??[]){
+        const existing=result.get(building.id)
+        const incoming={...building,wave:wave.wave,state:wave.state,reason:wave.reason}
+        if(existing){
+          const dominant=(priority[incoming.state]??0)>(priority[existing.state]??0)?incoming:existing
+          result.set(building.id,{...dominant,total:existing.total+incoming.total,arrived:existing.arrived+incoming.arrived})
+        }else result.set(building.id,incoming)
+      }
+    }
+  }
+  return [...result.values()]
 }
 
 /** HTTP confirmation wins over delayed socket projections of the same plan. */

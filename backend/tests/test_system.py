@@ -53,6 +53,34 @@ def test_refresh_rotates_session_and_logout_revokes_access(client) -> None:
     assert client.get("/api/v1/auth/me", headers=headers).status_code == 401
 
 
+def test_lost_refresh_response_retries_same_successor_without_extending_grace(client):
+    from datetime import UTC, datetime, timedelta
+    from app.models.auth import AuthSession
+    login = client.post('/api/v1/auth/login', json={'username':'admin', 'password':'Zhiyan@2026'})
+    assert login.status_code == 200
+    old = client.cookies.get('zhiyan_refresh_token')
+    assert client.post('/api/v1/auth/refresh').status_code == 200
+    successor = client.cookies.get('zhiyan_refresh_token')
+    with operations.SessionLocal() as session:
+        record = session.get(AuthSession, old.split('.')[0])
+        until = record.previous_refresh_until
+        absolute_expiry = record.expires_at
+    retried = client.post('/api/v1/auth/refresh', headers={'Cookie':'zhiyan_refresh_token='+old})
+    assert retried.status_code == 200, retried.text
+    assert client.cookies.get('zhiyan_refresh_token') == successor
+    with operations.SessionLocal() as session:
+        record = session.get(AuthSession, old.split('.')[0])
+        assert record.previous_refresh_until == until and record.expires_at == absolute_expiry
+        record.previous_refresh_until = datetime.now(UTC) - timedelta(seconds=1)
+        session.commit()
+    assert client.post('/api/v1/auth/refresh', headers={'Cookie':'zhiyan_refresh_token='+old}).status_code == 401
+    refreshed = client.post('/api/v1/auth/refresh', headers={'Cookie':'zhiyan_refresh_token='+successor})
+    assert refreshed.status_code == 200
+    headers = {'Authorization':'Bearer '+refreshed.json()['access_token']}
+    assert client.post('/api/v1/auth/logout', headers=headers).status_code == 204
+    assert client.post('/api/v1/auth/refresh', headers={'Cookie':'zhiyan_refresh_token='+successor}).status_code == 401
+
+
 def test_user_can_review_and_revoke_another_login_session(client) -> None:
     first = client.post("/api/v1/auth/login", json={"username": "admin", "password": "Zhiyan@2026"})
     assert first.status_code == 200, first.text

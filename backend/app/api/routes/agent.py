@@ -87,10 +87,7 @@ def create_run(drill_id: str, payload: GoalCreate, identity: AuthenticatedIdenti
         # Local interpretation performs no external I/O. Keep pause, scope
         # validation and proposal creation in the same transaction so a rejected
         # range cannot leave a committed review pause behind.
-        pause_review(session, drill, payload.pause_for_review)
-        data = operations.snapshot(session, drill)
-        interpretation, planner, notice = interpret_goal(payload.goal, buildings_for(data), False)
-        return _create_after_interpretation(session, drill_id, payload, interpretation, planner, notice, identity)
+        return _create_local(session, drill_id, payload, identity)
     frozen_data = freeze_for_review(session, drill_id, identity, payload) if payload.pause_for_review else None
     data = frozen_data or operations.snapshot(session, drill)
     buildings = buildings_for(data)
@@ -102,6 +99,22 @@ def create_run(drill_id: str, payload: GoalCreate, identity: AuthenticatedIdenti
     session.rollback()  # Provider calls must never retain a scene or resource lock.
     report = recommend(proposal, True)
     return _save_recommendation(session, drill_id, proposal['id'], proposal['revision'], report, identity)
+
+
+@operations.serialized_command
+def _create_local(session, drill_id, payload, identity):
+    # Never flush a review pause before acquiring the local command gate.
+    # Otherwise the engine holds the gate while waiting for SQLite's writer,
+    # and this request holds the writer while waiting for that same gate.
+    try:
+        drill = operations.require_drill(session, drill_id, identity.username)
+        pause_review(session, drill, payload.pause_for_review)
+        data = operations.snapshot(session, drill)
+        interpretation, planner, notice = interpret_goal(payload.goal, buildings_for(data), False)
+        return _create_after_interpretation(session, drill_id, payload, interpretation, planner, notice, identity)
+    except Exception:
+        session.rollback()
+        raise
 
 
 @operations.serialized_command

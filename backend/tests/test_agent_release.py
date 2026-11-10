@@ -9,7 +9,27 @@ from app.models.operations import DrillCommand
 from app.services.agent_release import staged_release, suppression_blocker
 from app.services.agent_task_graph import compile_graph
 from app.services.agent_workflow import advance_run
+from app.services.agent_schedule import release_schedule
 from test_exercise_world import exercise
+
+
+def test_serial_schedule_exposes_late_tasks_and_does_not_invent_outcomes():
+    groups = [{'release_wave': n, 'building_id': str(n), 'resident_ids':[str(n)], 'exit':'north'}
+              for n in (1, 2)]
+    routes = {'north': {str(n): {'route_reachable':True, 'remaining_seconds':100} for n in (1, 2)}}
+    robot = [{'building_id':str(n), 'planned_duration_seconds':10, 'arguments':{'command':'move'}} for n in (1, 2)]
+    data = {'elapsed_seconds':20, 'events':[{'event_type':'robot.alarm_confirmed', 'elapsed_seconds':10}],
+            'tasks':[{'id':'escort', 'title':'护送清点', 'kind':'escort', 'status':'pending', 'deadline_seconds':180}]}
+    view = release_schedule(groups, routes, robot, {'duration_seconds':30}, data)
+    assert view['estimated_completion_at'] == 262
+    assert view['waves'][1]['release_at'] == 162
+    assert view['deadline_risks'][0]['deadline_at'] == 190
+    assert view['deadline_risks'][0]['estimated_ready_at'] == 262
+    routes['north']['2']['route_reachable'] = False
+    unknown = release_schedule(groups, routes, robot, {'duration_seconds':30}, data)
+    assert not unknown['complete'] and unknown['estimated_completion_at'] is None
+    assert unknown['deadline_risks'] == []
+    assert release_schedule([], routes, robot, {}, data) is None
 
 
 def test_building_waves_share_notification_dependencies_without_cycles():
@@ -32,7 +52,12 @@ def test_building_waves_share_notification_dependencies_without_cycles():
     assert waves[0]['resident_ids'] == ['b']  # same order as route/battery preview
     assert 'broadcast-b' in waves[0]['depends_on']
     assert waves[0]['id'] in waves[1]['depends_on']
-    assert waves[0]['id'] in next(s for s in commands if s['id']=='move-a')['depends_on']
+    move_a = next(s for s in commands if s['id']=='move-a')
+    broadcast_a = next(s for s in commands if s['id']=='broadcast-a')
+    assert move_a['depends_on'] == ['broadcast-b']
+    assert waves[0]['id'] not in move_a['depends_on']
+    assert waves[0]['id'] in broadcast_a['depends_on']
+    assert 'move-a' in broadcast_a['depends_on']
     assert len(graph) == 8 and groups[0]['resident_ids'] == ['a','b']
     assert robot[-2]['depends_on'] == ['broadcast-b']
 

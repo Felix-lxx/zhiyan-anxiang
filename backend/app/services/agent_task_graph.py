@@ -92,6 +92,7 @@ def case_task_view(steps, data):
             'responsible_role': task.get('responsible_role', '现场责任人'),
             'remaining_seconds': task.get('remaining_seconds'),
             'overdue': task.get('overdue', False),
+            'completed_on_time': task.get('completed_on_time'),
             'blockers': task.get('blockers', []),
             'verification_ready': task.get('verification_ready', False),
             'operation_phase': (task.get('operation') or {}).get('phase'),

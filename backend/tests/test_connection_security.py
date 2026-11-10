@@ -23,6 +23,12 @@ def test_production_rejects_defaults_and_permissive_origins():
     assert settings.cors_origin_list == ["https://training.example.org"]
 
 
+def test_event_target_typo_is_rejected_instead_of_sealing_another_road():
+    from app.schemas.operations import EventInject
+    with pytest.raises(ValidationError):
+        EventInject(event_type='channel_blocked', edge_id='wrong-field', x=50, y=50, target='道路')
+
+
 def test_invitation_hash_ticket_reuse_revocation_and_participant_logout(exercise):
     client, headers, demo, root, public, code, *_ = exercise
     assert len(code) == 32

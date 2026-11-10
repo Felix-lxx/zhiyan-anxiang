@@ -90,6 +90,11 @@ def coordination_view(run, data, steps):
         automatic_stopped = run.status in {'stopped','taken_over','unfinished'} and waiting is not None
         release_waves.append({'wave': wave['wave'], 'total': len(selected),
             'arrived': sum(p['status'] == 'evacuated' for p in selected),
+            'buildings': [{'id': building_id,
+                'name': next((obj['name'] for obj in data['simulation'].get('world', {}).get('objects', []) if obj['id'] == building_id), building_id),
+                'total': sum(p.get('building_id') == building_id for p in selected),
+                'arrived': sum(p.get('building_id') == building_id and p['status'] == 'evacuated' for p in selected)}
+                for building_id in sorted({p['building_id'] for p in selected if p.get('building_id')})],
             'resident_id': next(iter(wave['resident_ids']), None),
             'state': 'stopped' if automatic_stopped else wave_state,
             'reason': '本批已实际到集合点，清点结果以集合核验为准。' if done else

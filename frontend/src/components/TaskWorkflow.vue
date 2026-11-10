@@ -18,7 +18,7 @@ const visibleBlockers=computed(()=>(props.task.blockers??[]).filter(reason=>!(pr
   <article class="task-workflow" :data-completed="task.status === 'completed'" :data-urgency="urgency">
     <p v-if="running && !task.verification_ready && ['warning','critical'].includes(urgency)" class="task-workflow__deadline" role="status"><AppIcon name="clock" />{{urgency==='critical'?'即将超时':'注意时限'}}：还剩 {{task.remaining_seconds}} 秒。先完成当前到位或处置步骤。</p>
     <p v-if="task.verification_ready && running && !readonly" class="task-workflow__verification" role="status">操作条件已满足，请提交核验证据。{{task.overdue?'已超时，仍可补救。':`剩余 ${task.remaining_seconds} 秒；动作完成不等于任务已核验。`}}</p>
-    <header><span>{{ task.responsible_role ?? '历史处置任务' }}</span><strong :data-overdue="task.overdue">{{ task.status === 'completed' ? '已核验' : task.overdue ? '已超时 · 可补救' : `${task.remaining_seconds ?? task.deadline_seconds} 秒` }}</strong></header>
+    <header><span>{{ task.responsible_role ?? '历史处置任务' }}</span><strong :data-overdue="task.overdue || task.completed_on_time===false">{{ task.status === 'completed' ? (task.completed_on_time===false?'超时核验':'已核验') : task.overdue ? '已超时 · 可补救' : `${task.remaining_seconds ?? task.deadline_seconds} 秒` }}</strong></header>
     <h3>{{ task.title }}</h3><p>{{ task.target }}</p>
     <div class="task-workflow__state"><AppIcon :name="task.status === 'completed' ? 'tasks' : 'target'" /><span>{{ label }}<template v-if="task.assignee"> · {{ task.assignee }}</template></span></div>
     <ol v-if="task.kind" class="task-workflow__steps" aria-label="任务处置步骤"><li :data-done="!['waiting','pending'].includes(task.status)">接收</li><li :data-done="['verifying','completed'].includes(task.status)">到位</li><li :data-done="task.status === 'completed'">核验</li></ol>

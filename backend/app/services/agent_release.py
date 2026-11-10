@@ -44,8 +44,17 @@ def staged_release(groups, population, resource_steps, spray_id, water_source_id
                           and step.get('arguments', {}).get('command') == 'broadcast'), None)
         for step in robot:
             if step.get('building_id') == building_id and step.get('arguments', {}).get('command') == 'move':
-                step['depends_on'] = list(dict.fromkeys([*previous,
-                                                       *([wave_spray_id] if wave_spray_id else [])]))
+                # Travel may overlap the previous building's evacuation. Keep
+                # the original preceding broadcast dependency so the same robot
+                # cannot leave before it has finished its current announcement.
+                # The next broadcast, rather than travel, owns the release gate.
+                step['depends_on'] = list(dict.fromkeys([
+                    *step.get('depends_on', []),
+                    *([spray_id] if not wave_index and spray_id else [])]))
+        if broadcast:
+            broadcast['depends_on'] = list(dict.fromkeys([
+                *broadcast.get('depends_on', []), *previous,
+                *([wave_spray_id] if wave_spray_id else [])]))
         for group in wave_groups.values():
             group['label'] = f"第 {wave_index + 1} 批 · {group['label'].rsplit(' · ', 1)[0]} · {len(group['resident_ids'])} 人"
             if broadcast:

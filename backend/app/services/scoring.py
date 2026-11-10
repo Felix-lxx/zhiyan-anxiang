@@ -43,13 +43,15 @@ def score_frozen_world(world: dict[str, Any], history: list[Any], simulation: di
     if reference_applied:
         target_seconds = max(1, int(reference['target_seconds']))
     evacuated_ratio = min(1.0, summary["evacuated"] / total)
-    if evacuated_ratio < 1:
-        speed_score = round(6 * evacuated_ratio)
-    elif all_arrived:
-        delay = max(0, (completion_seconds or target_seconds) - target_seconds)
-        speed_score = max(0, 6 - (delay + 14) // 15)
-    else:
-        speed_score = 0
+    # Apply the same delay penalty to unfinished runs: leaving one person
+    # behind must not earn more speed points than finally bringing them out.
+    observed_seconds = (float(simulation['elapsed_seconds']) if simulation.get('elapsed_seconds') is not None
+                        else max((float(event.elapsed_seconds) for event in history), default=0))
+    observed_seconds = max([observed_seconds, *arrivals])
+    efficiency_seconds = completion_seconds if all_arrived else observed_seconds
+    delay = max(0, efficiency_seconds - target_seconds)
+    available_speed = max(0, 6 - int((delay + 14) // 15))
+    speed_score = round(available_speed * evacuated_ratio) if arrivals else 0
     average_queue = round(sum(float(person.get("queue_seconds", 0)) for person in residents) / total, 1)
     # A stationary population has no queue, but has not demonstrated efficiency.
     queue_score = round(evacuated_ratio * max(0, 4 - max(0, int(average_queue) - 10 + 9) // 10))
@@ -123,7 +125,7 @@ def score_frozen_world(world: dict[str, Any], history: list[Any], simulation: di
             recommendations = [item for item in recommendations if not item.startswith("烟气与失联控制：")]
             recommendations.insert(0, timing)
     return {
-        "version": 3,
+        "version": 4,
         "total_score": sum(item["score"] for item in details),
         "details": details,
         "metrics": metrics,

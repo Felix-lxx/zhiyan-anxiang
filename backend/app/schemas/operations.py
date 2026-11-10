@@ -1,6 +1,6 @@
 from typing import Any, Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 
 class DrillCreate(BaseModel):
@@ -14,6 +14,7 @@ class DrillAction(BaseModel):
 
 
 class EventInject(BaseModel):
+    model_config = ConfigDict(extra='forbid')
     hydrant_id: str | None = Field(default=None, max_length=64)
     resident_id: str | None = Field(default=None, max_length=64)
     event_type: str = Field(pattern=r"^(channel_blocked|hydrant_failure|resident_missing)$")

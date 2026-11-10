@@ -41,6 +41,13 @@ def create_refresh_token(session_id: str) -> str:
     return f"{session_id}.{secrets.token_urlsafe(48)}"
 
 
+def rotate_refresh_token(token: str) -> str:
+    """Reconstruct one rotation for a bounded retry without storing credentials."""
+    derived = hmac.new(get_settings().jwt_secret.encode('utf-8'),
+                       ('refresh-rotation-v1:' + token).encode('utf-8'), hashlib.sha256).digest()
+    return token.split('.', 1)[0] + '.' + base64.urlsafe_b64encode(derived).decode().rstrip('=')
+
+
 def create_access_token(subject: str, session_id: str | None = None, roles: list[str] | tuple[str, ...] = ()) -> str:
     settings = get_settings()
     now = datetime.now(UTC)

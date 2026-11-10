@@ -27,6 +27,7 @@ from app.services import agent_claims
 from app.services.agent_task_graph import compile_graph, distinct_candidates, graph_view, validate_graph
 from app.services.agent_contract import goal_constraints, rank_candidate
 from app.services.agent_release import staged_release, suppression_blocker, hazard_cleared
+from app.services.agent_schedule import release_schedule
 from app.services.water_resources import effective_spray, affected_release_steps
 
 ACTIVE = {"awaiting_approval", "executing", "waiting", "needs_review"}
@@ -283,6 +284,7 @@ def build_candidates(session, drill, data, scope, run=None):
                             'waves': max((g.get('release_wave', 1) for g in groups), default=0),
                             'requires_active_suppression': staged,
                             'notice': '逐栋放行；后一栋等待前栋实际到场，每批核对有效喷水。' if staged else '批准后立即分流；护送仍按岗位容量执行。'},
+                        "schedule_assessment": release_schedule(groups, routes, candidate_robot_steps, suppression, data) if staged else None,
                         "can_apply": release_in_window and not unresolved and (not assist_required or capacity > 0) and (not support or support["can_apply"]) and (not staged or suppression["can_apply"]),
                         "assist_resource": {"capacity": capacity, "busy": busy_staff, "required": assist_required,
                                             "waves": math.ceil(assist_required / capacity) if capacity else None},

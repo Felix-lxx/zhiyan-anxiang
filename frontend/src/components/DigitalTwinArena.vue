@@ -1,5 +1,7 @@
 <script setup lang="ts">
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import { BuildingReleaseVisuals } from '../three/buildingReleaseVisuals'
+import type { BuildingReleaseSignal } from '../domain/agent'
 import { useSceneOverlayLayout } from '../composables/useSceneOverlayLayout'
 
 const sceneUtilities = useSceneOverlayLayout()
@@ -60,6 +62,7 @@ type OperationPreview = Omit<SpatialPreview, 'intent' | 'expected_sequence' | 'r
 }
 
 const props = defineProps<{
+  buildingSignals?:BuildingReleaseSignal[]
   routePreview?: Array<{id:string;exit?:'north'|'south';route_kind?:'robot';route_points?: Array<{x:number;y:number;height?:number}>}>
   robotRoutePreview?: Array<{ x: number; y: number; height?: number }>
   operationPreview?: OperationPreview | null
@@ -156,6 +159,7 @@ const quality = ref<'low' | 'medium' | 'high'>(window.innerWidth < 760 ? 'low' :
 const residentMeshes = new Map<string, THREE.Group>()
 let crowdRenderer: CrowdRenderer | undefined
 const buildingMeshes = new Map<string, THREE.Object3D>()
+const buildingReleaseVisuals=new BuildingReleaseVisuals()
 const fireSourceMarkers = new Map<string, THREE.Mesh<THREE.RingGeometry, THREE.MeshBasicMaterial>>()
 let fireCore: THREE.Mesh
 let indoorFireVisuals: IndoorFireVisuals | undefined
@@ -809,6 +813,16 @@ function focusPoint(x: number, y: number): void {
   viewMode.value = 'director'; controls.enabled = true
   targetLookAt.copy(worldPoint(x, y)); targetCameraPosition.copy(targetLookAt).add(new THREE.Vector3(15, 28, 26)); renderDirty = true
 }
+function focusBuilding(id:string):void{
+  const building=props.simulation?.world?.objects.find(item=>item.id===id&&item.type==='building')
+  if(!building)return
+  focusPoint(building.x,building.y)
+  const height=building.floors*3.2
+  // Keep the roof status and entrance inside the central viewing area on
+  // phones, where the view tools occupy the upper part of the canvas.
+  targetLookAt.y=height*.8
+  targetCameraPosition.copy(targetLookAt).add(new THREE.Vector3(24,height+30,38))
+}
 function focusTaskTarget(task: {title:string;kind?:string;target_device_id?:string;target_floor?:number;target_position?:{x:number;y:number}}): void {
   const indoor=props.simulation?.environment.indoor
   if(indoor&&['gas_off','containment'].includes(task.kind??'')){
@@ -856,7 +870,7 @@ function selectCurrentResident(): void {
   selectedResidents.value = [id]; toolMode.value = 'residents'; controls.enabled = false
   emit('selection', selectedResidents.value); updateEntities()
 }
-defineExpose({ focusPoint, focusResident, showIndoor, selectResidents, focusIndoorFloor, focusKitchen, focusTaskTarget })
+defineExpose({ focusPoint, focusBuilding, focusResident, showIndoor, selectResidents, focusIndoorFloor, focusKitchen, focusTaskTarget })
 
 function animate(time = 0): void {
   animationFrame = requestAnimationFrame(animate)
@@ -916,8 +930,9 @@ function animate(time = 0): void {
   for(const child of scene.children)if(child instanceof THREE.Sprite && child.userData.buildingLabel) {
     const distance=child.position.distanceTo(camera.position)
     const width=Math.min(7,Math.max(2,distance*.09));child.scale.set(width,width*72/384,1)
-    child.visible=viewMode.value!=='resident' && distance>12 && !indoorView.value
+    child.visible=viewMode.value!=='resident' && distance>12 && !indoorView.value && !props.buildingSignals?.some(signal=>signal.id===child.userData.buildingLabel)
   }
+  buildingReleaseVisuals.step(camera,!indoorView.value&&viewMode.value!=='resident'&&!props.compact)
   if(indoorFireVisuals?.group.visible)indoorFireVisuals.step(effectTime,camera,qualityFactor,roomInspection.value,delta,activelyAnimating&&!reducedMotion&&props.effectsEnabled!==false)
   renderer.render(scene, camera)
   frameCount++
@@ -1013,6 +1028,10 @@ function updateStairHeat(): void {
 }
 
 function updateEntities(): void {
+  if(scene){
+    if(buildingReleaseVisuals.layer.parent!==scene)scene.add(buildingReleaseVisuals.layer)
+    buildingReleaseVisuals.sync(props.buildingSignals??[],props.simulation?.world?.objects.filter(item=>item.type==='building')??[])
+  }
   if (scene && props.simulation?.world) {
     const anchor = props.simulation.world.fire_source?.ignition_position
     const origin = anchor ?? props.simulation.world.fire_origin
@@ -1501,6 +1520,7 @@ function onContextRestored(): void { recoveringContext.value = false; renderErro
 // and frozen model twice for each population tick.
 watch(() => [props.robot, props.simulation, props.highContrast, props.status, props.elapsedSeconds], () => { void nextTick(updateEntities) })
 watch(() => props.fireSourceSelection, () => updateEntities(), { deep: true })
+watch(()=>props.buildingSignals,()=>{updateEntities();renderDirty=true})
 watch(()=>props.simulation?.environment.indoor?.source_zone_id,()=>{if(roomInspection.value&&scene)focusKitchen()})
 watch(()=>props.indoorFloor,value=>{if(value!==undefined&&scene)focusIndoorFloor(value)})
 let syncingResidentView = false
@@ -1552,6 +1572,7 @@ onBeforeUnmount(() => {
   actorAssets.dispose()
   actorMotion.clear()
   roadVisuals.dispose()
+  buildingReleaseVisuals.dispose()
   assemblyModels.clear()
   exitModels.length=0
   scene?.traverse((object) => {

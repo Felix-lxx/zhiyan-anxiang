@@ -1,12 +1,12 @@
 <script setup lang="ts">
 import type { AgentPlanningReport } from '../domain/agent'
-defineProps<{report:AgentPlanningReport}>()
+defineProps<{report:AgentPlanningReport;approved?:boolean}>()
 </script>
 <template>
   <section class="planning-evidence" aria-label="知识与工具规划记录">
-    <h4>本次规划依据</h4>
+    <h4>{{approved?'批准前规划依据':'本次规划依据'}}</h4>
     <p>{{report.objective_label}} · {{report.mode==='model_tools'?'模型已调用只读工具核对':'领域工具约束规划'}}</p>
-    <p>{{report.explanation||report.notice}}</p>
+    <p>{{report.explanation||(approved?'方案已由组织者确认；本区保存批准前的工具检查结果。':report.notice)}}</p>
     <p v-if="report.knowledge_assessment?.experience_count">{{report.knowledge_assessment.notice}}</p>
     <p v-if="report.citations?.length" class="planning-evidence__meta">参考 {{report.citations.map(id=>'['+id+']').join('、')}}，原文见本计划参考资料。</p>
     <details><summary>查看工具记录 · 事件 {{report.event_sequence}}</summary>

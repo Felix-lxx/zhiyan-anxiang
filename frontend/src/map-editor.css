@@ -509,7 +509,7 @@
 .map-editor .map-marker { font-size:14px; }
 .map-editor .map-nearby-picker { display:flex; flex-wrap:wrap; align-items:center; gap:10px; padding:12px 16px; background:var(--surface-muted,#e8ede7); font-size:14px; line-height:1.6; }
 .map-editor .map-nearby-picker select { flex:1 1 180px; min-width:0; max-width:100%; min-height:44px; }
-.map-editor .map-marker :is(span,small),.map-editor .road-node { font-size:14px; }
+.map-editor .map-marker :is(span,small,strong),.map-editor .road-node { font-size:14px; }
 .map-editor .map-diagnostic-pin { font-size:14px; }
 @media (max-width: 620px) {
   .map-editor .workspace-content { width:calc(100% - 24px); }

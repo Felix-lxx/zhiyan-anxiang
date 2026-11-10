@@ -95,11 +95,13 @@ def test_ready_verification_links_to_specific_task_before_routine_work():
 def test_release_wave_completion_and_manual_takeover_do_not_overwrite_drill_state():
     run, data, steps = fixture()
     steps[0].update(release_wave=1, status='completed')
+    data['simulation']['residents'][0]['building_id'] = 'building-1'
     data['simulation']['residents'][0]['status'] = 'evacuated'
     view = coordination_view(run, data, steps)
     assert view['status'] == 'executing'
     assert view['release_waves'][0]['state'] == 'completed'
     assert view['release_waves'][0]['arrived'] == 1
+    assert view['release_waves'][0]['buildings'] == [{'id':'building-1','name':'building-1','total':1,'arrived':1}]
     assert '集合核验' in view['release_waves'][0]['reason']
 
     run.status = 'taken_over'
