@@ -188,9 +188,24 @@ def simulate(world, events, elapsed, strategy=None, branch_at=None, *, checkpoin
         route_cache[key] = result
         return result
 
+    def preparation_end(person):
+        if person.get('notification_confirmed_at') is not None:
+            return max(person['release_at'], person['notification_confirmed_at']+person.get('preparation_seconds', 3))
+        return person['release_at']+person.get('preparation_seconds', 3)
+
+    def last_staff_node(previous):
+        # Escorted walkers retain their approach node while following the
+        # resident's trail. Reuse the completed assembly berth, not that stale
+        # room node; visitors stop on their own graph node.
+        node_id = (previous['node_id'] if previous.get('purpose')=='household_visit'
+                   else by_id[previous['resident_id']]['node_id'])
+        return nodes[node_id]
+
     def helper_for(person, responsible, assigned_staff=None):
         if person["id"] in helpers and helpers[person["id"]]["state"] != "completed": return
         busy = {h.get("staff_id") for h in helpers.values() if h["state"] != "completed"}
+        from app.services.task_staff import occupations
+        busy.update(t["staff_id"] for t in occupations(history[:index+1]).values())
         slot = next((s for s in staff if s.get("available", True) and s["id"] not in busy
                      and (assigned_staff is None or s['id'] == assigned_staff)), None)
         if slot is None: return
@@ -199,13 +214,19 @@ def simulate(world, events, elapsed, strategy=None, branch_at=None, *, checkpoin
         start = min(outdoor, key=lambda n: math.dist(xyz(n), xyz(origin))) if outdoor else next(n for n in nodes.values() if n["kind"] == "door" and n.get("building_id") == person.get("building_id"))
         previous = next((h for h in reversed(list(helpers.values())) if h.get("staff_id") == slot["id"] and h["state"] == "completed"), None)
         if previous:
-            start = nodes[by_id[previous["resident_id"]]["node_id"]]
+            start = last_staff_node(previous)
         binding = next((e["payload"] for e in reversed(history[:index+1]) if e["event_type"] == "staff.bound" and e["payload"].get("staff_id") == slot["id"]), None)
         responsible = (binding or {}).get("responsible") or responsible
-        helpers[person["id"]] = dict(id="helper-"+person["id"], staff_id=slot["id"], staff_name=slot["name"], participant_id=(binding or {}).get("participant_id"), resident_id=person["id"], node_id=start["id"], x=start["x"], y=start["y"], height=start.get("height", 0.), edge_id=None, edge_progress=0., state="approaching", responsible=responsible, travelled=0., queue_seconds=0., congestion=0.)
+        helpers[person["id"]] = dict(id="helper-"+person["id"], staff_id=slot["id"], staff_name=slot["name"], participant_id=(binding or {}).get("participant_id"), resident_id=person["id"], node_id=start["id"], x=start["x"], y=start["y"], height=start.get("height", 0.), edge_id=None, edge_progress=0., state="approaching", responsible=responsible, travelled=0., queue_seconds=0., congestion=0., started_at_seconds=now)
         person["search_responsible"] = responsible
 
     def destination(person): return graph.get("berths", {}).get(person["exit"], {}).get(person["id"], graph["destinations"].get(person["exit"]))
+
+    def visit_goal(actor):
+        if actor.get('cancelling'):
+            return (actor['edge_from'] if edges[actor['edge_id']]['status']=='blocked'
+                    else actor['edge_to']) if actor.get('edge_id') else actor['node_id']
+        return actor['target_node_id']
 
     def suffix(actor, goal):
         # An occupied blocked edge retreats continuously to the node it entered.
@@ -231,6 +252,11 @@ def simulate(world, events, elapsed, strategy=None, branch_at=None, *, checkpoin
                     p.update(exit=payload["exit"], forced_exit=True, awaiting_escort=False, release_at=min(p["release_at"], now))
                     if payload.get("action") == "priority_assist": helper_for(p, "护送员 · "+p["label"], payload.get('staff_assignments', {}).get(pid))
             elif kind == "robot.broadcast_completed":
+                if world.get('community_training'):
+                    # Coverage is not receipt; only a reported confirmation or
+                    # an explicit resident command releases these households.
+                    index += 1
+                    continue
                 # A robot broadcasting at one building entrance must not wake
                 # every building in the community.  Old events without an
                 # explicit scope remain global for replay compatibility.
@@ -247,6 +273,38 @@ def simulate(world, events, elapsed, strategy=None, branch_at=None, *, checkpoin
             elif kind == "inject.resident_missing":
                 p = by_id.get(payload.get("resident_id", "resident-3"))
                 if p and p["status"] != "evacuated": p["status"] = "missing"
+            elif kind == 'participant.household_confirmed':
+                for p in people:
+                    if p.get('household_id') == payload.get('household_id'):
+                        p.setdefault('notification_confirmed_at', now)
+                for visitor in helpers.values():
+                    if visitor.get('household_id') == payload.get('household_id') and visitor['state']!='completed':
+                        if not visitor.get('edge_id'):
+                            visitor.update(state='completed', completed_at_seconds=now)
+                        else:
+                            visitor['cancelling'] = True
+            elif kind == 'participant.household_visit':
+                p = by_id.get(payload.get('resident_id'))
+                slot = next((s for s in staff if s['id']==payload.get('staff_id')), None)
+                if p and slot and payload.get('target_node_id') in nodes:
+                    previous = next((h for h in reversed(list(helpers.values()))
+                                     if h.get('staff_id')==slot['id'] and h['state']=='completed'), None)
+                    outdoor = [n for n in nodes.values() if n['kind']=='outdoor']
+                    start = last_staff_node(previous) if previous else min(outdoor,
+                        key=lambda n: math.dist(xyz(n), xyz(slot.get('origin', world['robot_origin']))))
+                    vid = 'visit:'+str(event['sequence'])
+                    helpers[vid] = dict(id=vid, purpose='household_visit', household_id=payload['household_id'],
+                        target_node_id=payload['target_node_id'], resident_id=p['id'], building_id=p['building_id'],
+                        staff_id=slot['id'], staff_name=slot['name'], participant_id=payload.get('participant_id'),
+                        responsible=payload.get('responsible'), node_id=start['id'], x=start['x'], y=start['y'],
+                        height=start.get('height', 0), state='approaching', edge_id=None, edge_progress=0.,
+                        travelled=0., queue_seconds=0., congestion=0., started_at_seconds=now)
+            elif kind == 'participant.household_visit_cancel':
+                visitor = helpers.get(payload.get('visit_id'))
+                if visitor and visitor['state']!='completed':
+                    visitor['cancelling'] = True
+                    if not visitor.get('edge_id'):
+                        visitor.update(state='completed', completed_at_seconds=now)
             elif kind == "resident.search_assigned":
                 p = by_id.get(payload["resident_id"])
                 if p and p["status"] != "evacuated":
@@ -261,6 +319,10 @@ def simulate(world, events, elapsed, strategy=None, branch_at=None, *, checkpoin
         dt = min(.5, elapsed-now, history[index]["elapsed_seconds"]-now if index < len(history) else .5)
         fire, env = environment_at(now)
         sync_doors()
+        visit_smoke_limit = (world.get('community_training') or {}).get('visit_smoke_limit', .15)
+        for visitor in helpers.values():
+            if visitor.get('purpose')=='household_visit' and visitor['state']=='at_door' and zone_density(env, visitor['node_id']) > visit_smoke_limit:
+                visitor.update(state='blocked', risk_blocked=True)
         reserved_roads = traffic_at(now)
         # Dormant sessions can be days old. Once smoke has saturated, waiting
         # actors have constant exposure and no positional changes. Integrate that
@@ -273,7 +335,7 @@ def simulate(world, events, elapsed, strategy=None, branch_at=None, *, checkpoin
             and not any(h["state"] == "approaching" or h.get("edge_id") for h in helpers.values())
             and all(not p.get("edge_id") and (
                 p["status"] in {"evacuated", "missing"}
-                or now < p["release_at"] + p.get("preparation_seconds", 3)
+                or now < preparation_end(p)
                 or p.get('awaiting_escort')
                 or (helpers.get(p["id"], {}).get("state") == "blocked")
                 or not destination(p) or route(p["node_id"], destination(p)) is None
@@ -282,7 +344,7 @@ def simulate(world, events, elapsed, strategy=None, branch_at=None, *, checkpoin
         if stationary:
             boundary = min(float(elapsed), float(history[index]["elapsed_seconds"]) if index < len(history) else float(elapsed))
             for person in people:
-                ready_at = person["release_at"] + person.get("preparation_seconds", 3)
+                ready_at = preparation_end(person)
                 if person["status"] not in {"evacuated", "missing"} and ready_at > now:
                     boundary = min(boundary, ready_at)
             skipped = math.floor((boundary-now)/.5)*.5
@@ -318,11 +380,19 @@ def simulate(world, events, elapsed, strategy=None, branch_at=None, *, checkpoin
                 if person.get('awaiting_escort') and not person.get('edge_id'):
                     person['status'] = 'waiting'
                     continue
-                if person["status"] == "missing" or (helper and helper["state"] in {"approaching", "blocked"} and not person.get('edge_id')) or now < person["release_at"]+person.get("preparation_seconds", 3): continue
+                if person["status"] == "missing" or (helper and helper["state"] in {"approaching", "blocked"} and not person.get('edge_id')) or now < preparation_end(person): continue
                 goal = destination(person)
             else:
-                goal = person.get("edge_from") if person.get("edge_id") else person["node_id"]
-                if can_meet(actor, person, edges):
+                is_visit = actor.get('purpose') == 'household_visit'
+                goal = visit_goal(actor) if is_visit else person.get("edge_from") if person.get("edge_id") else person["node_id"]
+                if is_visit and not actor.get('edge_id') and actor['node_id']==goal:
+                    if not actor.get('cancelling') and zone_density(env, goal) > visit_smoke_limit:
+                        actor.update(state='blocked', risk_blocked=True)
+                        continue
+                    actor.pop('risk_blocked', None)
+                    actor.update(state='completed' if actor.get('cancelling') else 'at_door', arrived_at_seconds=now)
+                    continue
+                if not is_visit and can_meet(actor, person, edges):
                     if actor.get('edge_id') and actor in occupied[actor['edge_id']]:
                         occupied[actor['edge_id']].remove(actor)
                     actor.update(state="escorting", met_at_seconds=now, edge_id=None)
@@ -356,6 +426,10 @@ def simulate(world, events, elapsed, strategy=None, branch_at=None, *, checkpoin
                         continue
                     else: continue
                 eid, to = path[0]; edge = edges[eid]
+                if is_helper and actor.get('purpose')=='household_visit' and not actor.get('cancelling') and zone_density(env, edge=edge) > visit_smoke_limit:
+                    actor.update(state='blocked', risk_blocked=True)
+                    continue
+                actor.pop('risk_blocked', None)
                 actor.pop("yielding_vehicle", None)
                 if eid in reserved_roads:
                     actor.update(yielding_vehicle=reserved_roads[eid], waiting_for_edge=eid, congestion=100.)
@@ -383,7 +457,7 @@ def simulate(world, events, elapsed, strategy=None, branch_at=None, *, checkpoin
                 invalidate_flow()
             edge = edges[actor["edge_id"]]
             retreat = edge["status"] == "blocked"
-            speed = 1.6 if is_helper else (.8 if person["vulnerable"] else 1.3)*(1.2 if person["assisted"] else 1)
+            speed = 1.6 if is_helper else person.get('walking_speed', .8 if person["vulnerable"] else 1.3)*(1.2 if person["assisted"] else 1)
             if edge["kind"] == "stairs": speed *= .65
             lanes = lane_count(edge)
             actor["congestion"] = round(min(100., pressure(actor["edge_id"])*100))
@@ -397,7 +471,7 @@ def simulate(world, events, elapsed, strategy=None, branch_at=None, *, checkpoin
                 if other["edge_from"] == actor["edge_from"]:
                     if not retreat and other["edge_progress"] > actor["edge_progress"]: progress = min(progress, max(actor["edge_progress"], other["edge_progress"]-footprint(other)))
                     if retreat and other["edge_progress"] < actor["edge_progress"]: progress = max(progress, min(actor["edge_progress"], other["edge_progress"]+footprint(actor)))
-            if is_helper and person.get("edge_id") == actor["edge_id"] and person["edge_from"] == actor["edge_from"]:
+            if is_helper and actor.get('purpose')!='household_visit' and person.get("edge_id") == actor["edge_id"] and person["edge_from"] == actor["edge_from"]:
                 progress = min(progress, person["edge_progress"])
             moved = abs(progress-actor["edge_progress"])
             if moved < travel*.5: actor["queue_seconds"] += dt; actor["congestion"] = 100.
@@ -451,15 +525,34 @@ def simulate(world, events, elapsed, strategy=None, branch_at=None, *, checkpoin
             points.append(nodes[end]); remaining += math.dist(xyz(person), xyz(nodes[end]))
         if path:
             for eid, to in path: points.append(nodes[to]); remaining += edges[eid]["length"]
-        person.update(route_reachable=path is not None, route_points=points, route_edge_ids=([person["edge_id"]] if person.get("edge_id") else [])+[eid for eid, _ in path or []], current_edge_id=person.get("edge_id"), route_distance=remaining, remaining_seconds=round(remaining/(.8 if person["vulnerable"] else 1.3)) if path is not None else 9999, estimated_seconds=round((remaining+person["travelled"])/1.3), progress=round(person["travelled"]/max(.01, person["travelled"]+remaining), 3), speed_factor=.6 if person["vulnerable"] else 1.)
+        person.update(route_reachable=path is not None, route_points=points, route_edge_ids=([person["edge_id"]] if person.get("edge_id") else [])+[eid for eid, _ in path or []], current_edge_id=person.get("edge_id"), route_distance=remaining, remaining_seconds=round(remaining/person.get("walking_speed", .8 if person["vulnerable"] else 1.3)) if path is not None else 9999, estimated_seconds=round((remaining+person["travelled"])/1.3), progress=round(person["travelled"]/max(.01, person["travelled"]+remaining), 3), speed_factor=person["walking_speed"]/1.3 if "walking_speed" in person else .6 if person["vulnerable"] else 1.)
         if person["status"] == "evacuated": person["indoor_stage"] = "outdoor"
         person["last_location"] = nodes[person.get("edge_from") if person.get("edge_id") else person["node_id"]]["name"] + (" → "+nodes[person["edge_to"]]["name"] if person.get("edge_id") else "")
         helper = helpers.get(person["id"])
-        person["behavior"] = "集合点已核验" if person["counted"] else "已到集合点，等待清点" if person["status"] == "evacuated" else "失联，等待搜索会合" if person["status"] == "missing" else "等待护送员入楼会合" if helper and helper["state"] in {"approaching", "blocked"} else "通道排队，前人通过后前进" if person["congestion"] else "所选集合点不可达，请改道" if not person["route_reachable"] else "等待通知" if now < person["release_at"] else "准备离开房间" if now < person["release_at"]+person.get("preparation_seconds", 3) else "护送同行" if person["assisted"] else "沿连续通道撤离"
+        person["behavior"] = "集合点已核验" if person["counted"] else "已到集合点，等待清点" if person["status"] == "evacuated" else "失联，等待搜索会合" if person["status"] == "missing" else "等待护送员入楼会合" if helper and helper["state"] in {"approaching", "blocked"} else "通道排队，前人通过后前进" if person["congestion"] else "所选集合点不可达，请改道" if not person["route_reachable"] else "等待通知" if now < person["release_at"] else "准备离开房间" if now < preparation_end(person) else "护送同行" if person["assisted"] else "沿连续通道撤离"
+        if person.get('notification_confirmed_at') is not None and not person.get('forced_exit') and person['status']=='waiting':
+            person['behavior']='已核实收到通知，等待总控安排撤离或重点接应'
         if person.get('awaiting_escort') and not person.get('edge_id') and person['status'] not in {'evacuated', 'missing'}:
             person['behavior'] = '已接到通知，等待护送批次或人工重新安排'
         if person.get("yielding_vehicle") and person.get("waiting_for_edge") in traffic_at(elapsed): person["behavior"] = "应急车辆通行管控，在路段入口等待放行"
     for helper in helpers.values():
+        if helper.get('purpose') == 'household_visit':
+            goal = visit_goal(helper)
+            path = suffix(helper, goal)
+            points = [{key:helper[key] for key in ('x','y','height')}]
+            if helper.get('edge_id'):
+                end = helper['edge_from'] if edges[helper['edge_id']]['status']=='blocked' else helper['edge_to']
+                points.append(nodes[end])
+            if path: points.extend(nodes[to] for _,to in path)
+            helper.update(route_points=points, route_reachable=path is not None)
+            helper['behavior'] = ('本次核查已结束' if helper['state']=='completed' else
+                '已到户门，等待核查回执' if helper['state']=='at_door' else
+                '撤回中，先走完当前通道再释放岗位' if helper.get('cancelling') else
+                '前方烟气风险超出到户核查条件，请改用电话或调整处置' if helper.get('risk_blocked') else
+                '到户通道受阻，请恢复通道或撤回核查' if path is None else
+                '前方排队，等待通道释放' if helper.get('congestion',0)>55 else '沿楼梯与走廊前往户门')
+            if path is None and helper['state'] not in {'completed','at_door'}: helper['state']='blocked'
+            continue
         person = by_id[helper["resident_id"]]
         if helper["state"] in {"escorting", "completed"}:
             helper["route_points"] = [dict(zip(('x','y','height'),point)) for point in helper.get('escort_trail', [xyz(helper)])] + person["route_points"][1:]
@@ -514,10 +607,18 @@ def simulate(world, events, elapsed, strategy=None, branch_at=None, *, checkpoin
         e["reserved_by_vehicle"] = traffic_at(elapsed).get(e["id"])
     south = [e for e in roads["edges"] if "南" in e["name"]]
     env["response_staff"] = staff_projection(world, helpers, history)
+    from app.services.community_training import project_community
+    from types import SimpleNamespace
+    community = project_community(world, [SimpleNamespace(**e) for e in history], people)
+    if community:
+        community['visits'] = [h for h in helpers.values() if h.get('purpose')=='household_visit']
+        notices = {h['id']:h['notification_state'] for h in community['households']}
+        for person in people:
+            person['notification_state'] = notices.get(person.get('household_id'), 'unnotified')
     env.update(south_lane="blocked" if any(e["status"] == "blocked" for e in south) else "restricted" if any(e["status"] == "restricted" for e in south) else "open", visibility=max(8, round(100-fire["smoke_radius"]*1.8)), blockages=[{"x": (e["start"]["x"]+e["end"]["x"])/2, "y": (e["start"]["y"]+e["end"]["y"])/2, "target": e["name"], "road_edge_id": e["id"]} for e in roads["edges"] if e["status"] == "blocked"])
     if env.get('indoor'):
         from app.services.indoor_safety import project_door_safety
         env = {**env, 'indoor': project_door_safety(env['indoor'], world['indoor_environment'], people, list(helpers.values()))}
         env['visibility'] = min(zone['visibility'] for zone in env['indoor']['zones'])
     congested_edges = sorted((edge for edge in runtime_edges.values() if edge["density_percent"] >= 55), key=lambda edge: (-edge["density_percent"], -edge["waiting_count"], edge["id"]))
-    return dict(elapsed_seconds=elapsed, fire=fire, environment=env, sensors={"temperature": fire["temperature"], "smoke_ppm": round(45+fire["smoke_radius"]*31), "alarm": fire["intensity"] >= 35}, residents=people, helpers=list(helpers.values()), world=world, spatial_network=graph, road_network=roads, strategy=strategy or "live_commands", parallel_strategy=strategy, summary=dict(total=len(people), evacuated=sum(p["status"] == "evacuated" for p in people), counted=sum(p["counted"] for p in people), moving=sum(p["status"] == "moving" for p in people), vulnerable=sum(p["vulnerable"] for p in people), missing=sum(p["status"] == "missing" for p in people), smoke_exposed=sum(p["smoke_exposure"] > 5 for p in people), congested=sum(p["congestion"] > 55 for p in people), congested_edges=len(congested_edges), critical_edge=({key: congested_edges[0][key] for key in ("id", "name", "density_percent", "waiting_count")} if congested_edges else None), north_load=sum(p["exit"] == "north" for p in people), south_load=sum(p["exit"] == "south" for p in people)))
+    return dict(community=community, elapsed_seconds=elapsed, fire=fire, environment=env, sensors={"temperature": fire["temperature"], "smoke_ppm": round(45+fire["smoke_radius"]*31), "alarm": fire["intensity"] >= 35}, residents=people, helpers=[h for h in helpers.values() if h.get('purpose')!='household_visit'], world=world, spatial_network=graph, road_network=roads, strategy=strategy or "live_commands", parallel_strategy=strategy, summary=dict(total=len(people), evacuated=sum(p["status"] == "evacuated" for p in people), counted=sum(p["counted"] for p in people), moving=sum(p["status"] == "moving" for p in people), vulnerable=sum(p["vulnerable"] for p in people), missing=sum(p["status"] == "missing" for p in people), smoke_exposed=sum(p["smoke_exposure"] > 5 for p in people), congested=sum(p["congestion"] > 55 for p in people), congested_edges=len(congested_edges), critical_edge=({key: congested_edges[0][key] for key in ("id", "name", "density_percent", "waiting_count")} if congested_edges else None), north_load=sum(p["exit"] == "north" for p in people), south_load=sum(p["exit"] == "south" for p in people)))

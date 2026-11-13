@@ -55,6 +55,18 @@ def command_feedback(events, simulation, robot, elapsed, drill_status):
                 helper = next((h for h in simulation.get("helpers", []) if h["resident_id"] == payload["resident_id"]), None)
                 if helper and helper["state"] == "approaching" and helper.get('route_reachable') is not False:
                     status, reason = "executing", "搜索员正在沿通道寻找目标，会合后共同撤离。"
+        elif kind == 'participant.feedback' and payload.get('action') == 'household_visit':
+            visit_event = next((e for e in events if e.id in data.get('event_ids', [])
+                                and e.event_type == 'participant.household_visit'), None)
+            visit = next((v for v in (simulation.get('community') or {}).get('visits', [])
+                          if visit_event and v['id']=='visit:'+str(visit_event.sequence)), None)
+            if visit:
+                status = 'completed' if visit['state']=='completed' else 'blocked' if visit['state']=='blocked' else 'executing'
+                progress = 1. if status=='completed' else .9 if visit['state']=='at_door' else 0.
+                reason, remaining = visit['behavior'], None
+                if visit.get('cancelling') and status=='completed': status='cancelled'
+            else:
+                status, progress, remaining, reason = 'accepted', 0., None, '核查已受理，等待值守员执行状态。'
         elif kind == "robot.command" and payload.get("command") == "move":
             task = next((queue[i] for i in data.get("event_ids", []) if i in queue), None)
             if task:

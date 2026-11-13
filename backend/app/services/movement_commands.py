@@ -22,6 +22,12 @@ def assign_residents(runtime, session, drill, payload, identity):
     exit_name = '北门' if payload.exit == 'north' else '南门'
     action_name = '重点护送' if payload.action == 'priority_assist' else '分流疏散'
     before = runtime.simulation(session, drill, events, runtime.elapsed(drill))
+    if world and world.get('community_training'):
+        confirmed = {h['id'] for h in (before.get('community') or {}).get('households', []) if h['notification_state']=='confirmed'}
+        waiting = [p['label'] for p in before['residents'] if p['id'] in payload.resident_ids
+                   and p.get('household_id') not in confirmed and p['status']!='evacuated']
+        if waiting:
+            raise CommandRejected(409, '请先在当前任务中核实住户收到通知：'+'、'.join(waiting[:5]))
     from app.services.agent_claims import manual_takeover, staff_assignments
     origin = session.info.get('command_origin')
     agent_id = origin.plan_id if origin and origin.kind == 'agent' else None

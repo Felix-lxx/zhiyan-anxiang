@@ -66,7 +66,13 @@ class SceneRead(BaseModel):
     capabilities: ScenarioCapabilitiesRead | None = None
 
 
-class ChargingShedParametersUpdate(BaseModel):
+class CommunityTrainingParameters(BaseModel):
+    community_profile: Literal['legacy', 'night_shift'] = 'legacy'
+    duty_staff_count: int = Field(default=4, ge=1, le=8)
+    simulation_seed: int = Field(default=2026, ge=0, le=2147483647)
+
+
+class ChargingShedParametersUpdate(CommunityTrainingParameters):
     fire_source_type: Literal['charging_shed'] = 'charging_shed'
     fire_source_object_id: str = Field(min_length=1, max_length=64)
     start_time: str = Field(pattern=r"^([01]\d|2[0-3]):[0-5]\d$")
@@ -84,7 +90,7 @@ class FireSourceCandidateRead(BaseModel):
     floors: int = 1
 
 
-class KitchenParametersUpdate(BaseModel):
+class KitchenParametersUpdate(CommunityTrainingParameters):
     fire_source_type: Literal['kitchen']
     fire_source_object_id: str = Field(min_length=1, max_length=64)
     fire_floor: int = Field(ge=1, le=20)

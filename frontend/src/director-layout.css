@@ -64,7 +64,10 @@ html .operations-center--immersive>.director-stage :is(.twin-inspector,.resident
 html .operations-center--immersive>.director-stage :is(.training-panel,.experience-guide) { position:absolute; inset:var(--scene-panel-top,84px) auto var(--scene-bottom) var(--scene-left); width:min(380px,calc(100% - var(--scene-left) - 20px)); min-height:0; max-height:none; overflow:auto; overscroll-behavior:contain; box-sizing:border-box; }
 html .operations-center--immersive>.director-stage .training-panel { display:flex; flex-direction:column; padding:0; overflow:hidden; }
 html .operations-center--immersive>.director-stage .director-drawer { inset:var(--scene-panel-top,84px) 20px calc(var(--director-timeline) + 82px) auto; width:min(440px,calc(100% - var(--scene-left) - 20px)); max-height:none; }
-html .operations-center--immersive>.director-stage .director-drawer>header { flex:0 0 auto; }
+html .operations-center--immersive>.director-stage .director-drawer>header { flex:0 0 auto; position:sticky; top:0; z-index:3; background:var(--surface-panel,#102d26); }
+.director-training-body { flex:1 1 auto; min-height:0; overflow:auto; padding:0 20px 20px; overscroll-behavior:contain; scrollbar-gutter:stable; }
+.director-training-body>.community-operations { margin-top:0; border-top:0; }
+.director-training-body>.training-journey { padding-inline:0; }
 html .operations-center--immersive>.scene-assistant { position:fixed; z-index:120; inset:calc(var(--director-topbar) + var(--scene-panel-top,84px)) 20px calc(var(--director-timeline) + 82px) auto; width:min(480px,calc(100vw - var(--scene-left) - 40px)); max-height:none; }
 html .operations-center--immersive[data-mode=replay]>.scene-assistant { inset:16px 16px 16px auto; }
 html .operations-center--immersive .exercise-timeline { height:var(--director-timeline); min-height:var(--director-timeline); display:flex; flex-wrap:wrap; padding:12px 24px; align-content:center; gap:8px; }

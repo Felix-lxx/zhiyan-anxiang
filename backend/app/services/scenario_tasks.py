@@ -17,9 +17,14 @@ def task_kind(title, kitchen=False):
             else 'escort' if '重点' in title else 'manual')
 
 
+def resolved_kind(task, kitchen=False):
+    """Only legacy rows infer semantics from display text."""
+    return task.kind if task.kind is not None else task_kind(task.title, kitchen)
+
+
 def missing_tasks(session, version, code):
-    kinds = {task_kind(t, code == 'kitchen_fire') for t in session.scalars(
-        select(DecisionTask.title).where(DecisionTask.scene_version_id == version.id))}
+    kinds = {resolved_kind(t, code == 'kitchen_fire') for t in session.scalars(
+        select(DecisionTask).where(DecisionTask.scene_version_id == version.id))}
     return [item for item in STANDARD.get(code, []) if item[0] not in kinds]
 
 
@@ -27,6 +32,9 @@ def ensure_standard_tasks(session, version, code):
     # Production sessions disable autoflush. Include cloned/pending tasks in
     # the existence check so saving a published scene cannot duplicate them.
     session.flush()
+    for task in session.scalars(select(DecisionTask).where(DecisionTask.scene_version_id == version.id)):
+        if task.kind is None and getattr(version.status, 'value', version.status) != 'published':
+            task.kind = task_kind(task.title, code == 'kitchen_fire')
     missing = missing_tasks(session, version, code)
     if not missing:
         return 0
@@ -36,8 +44,8 @@ def ensure_standard_tasks(session, version, code):
         point = DecisionPoint(scene_version_id=version.id, name='案例标准处置', trigger_condition='火情确认',
                               responsible_role='物业/网格员', time_limit_seconds=180)
         session.add(point); session.flush()
-    for _, title, deadline in missing:
+    for kind, title, deadline in missing:
         session.add(DecisionTask(scene_version_id=version.id, decision_point_id=point.id, title=title,
-                                target='按冻结火源、楼门及人员定位', deadline_seconds=deadline, status='pending'))
+                                kind=kind, target='按冻结火源、楼门及人员定位', deadline_seconds=deadline, status='pending'))
     session.flush()
     return len(missing)

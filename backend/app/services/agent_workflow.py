@@ -100,6 +100,7 @@ def resolve_scope(data, request, interpretation):
 def build_candidates(session, drill, data, scope, run=None):
     operations = ops()
     capacity = staff_capacity(data["simulation"].get("world") or {})
+    capacity = max(0, capacity-sum(s['state']=='task' or s.get('activity')=='household_visit' for s in data['simulation'].get('environment', {}).get('response_staff', [])))
     ids = scope["resident_ids"]
     id_set = set(ids)
     at = data["elapsed_seconds"]
@@ -303,6 +304,12 @@ def build_candidates(session, drill, data, scope, run=None):
     # the plan: keep the best forecast and one materially different fallback;
     # equivalent rules remain visible in ``equivalent_rules``.
     candidates = distinct_candidates(sorted(results, key=lambda p: rank_candidate(p, scope.get('objective', 'balanced'))))
+    if data['simulation'].get('community'):
+        pending = [h for h in data['simulation']['community']['households']
+                   if h['notification_state']!='confirmed' and id_set.intersection(h['resident_ids'])]
+        if pending:
+            for item in candidates:
+                item.update(can_apply=False, reason=f'{len(pending)} 户尚未确认收到通知，请先到当前任务核实住户，再重新比较。')
     staged_candidate = next((item for item in candidates if item.get('allocation', {}).get('rule') == 'suppression_staged'), None)
     immediate = next((item for item in candidates if not item.get('vehicle_support')), None)
     if staged_candidate and immediate:
@@ -442,7 +449,8 @@ def approve(session, drill, run, candidate_id, revision, identity):
         run.status, run.reason = "needs_review", "现场或方案时效已变化，尚未执行。请重新预演。"
         note(session, run, "invalidated", run.reason, at); session.commit()
         raise HTTPException(409, run.reason)
-    escort_capacity = staff_capacity(operations.snapshot(session, drill)['simulation'].get('world') or {})
+    approval_state = operations.snapshot(session, drill)['simulation']
+    escort_capacity = max(0, staff_capacity(approval_state.get('world') or {})-sum(s['state']=='task' or s.get('activity')=='household_visit' for s in approval_state.get('environment', {}).get('response_staff', [])))
     run.scope = {**run.scope, 'escort_parallel_capacity': escort_capacity}
     run.steps = compile_graph(candidate['groups'], at, escort_capacity=escort_capacity)
     run.evidence = [*run.evidence, {"decision": {"revision": revision, "candidate_id": candidate_id,
@@ -525,6 +533,7 @@ def _advance_run(session, run, identity, controlled):
     people = {p["id"]: p for p in data["simulation"]["residents"]}
     receipts = {c["id"]: c for c in data.get("commands", [])}
     active = {h["resident_id"] for h in data["simulation"].get("helpers", []) if h["state"] != "completed"}
+    active.update('task:'+s['id'] for s in data['simulation'].get('environment', {}).get('response_staff', []) if s['state']=='task' or s.get('activity')=='household_visit')
     capacity = staff_capacity(data["simulation"].get("world") or {})
     outcome = None
     for step in steps:
@@ -674,6 +683,8 @@ def _advance_run(session, run, identity, controlled):
         receipt = next((c for c in data["commands"] if c["id"] == step["command_id"]), None)
         step.update(status=receipt["status"] if receipt else "accepted", reason=receipt["reason"] if receipt else "已受理", progress=receipt["progress"] if receipt else 0)
         active = {h["resident_id"] for h in data["simulation"].get("helpers", []) if h["state"] != "completed"}
+        active.update('task:'+s['id'] for s in data['simulation'].get('environment', {}).get('response_staff', [])
+                      if s['state']=='task' or s.get('activity')=='household_visit')
         people = {p["id"]: p for p in data["simulation"]["residents"]}
     if not controlled(): return
     previous = {s["id"]: s["status"] for s in run.steps}

@@ -104,8 +104,9 @@ def update_scene_parameters(session: Session, *, scene: Scene, parameters: dict)
         for task in session.scalars(select(DecisionTask).where(DecisionTask.scene_version_id == version.id)):
             point = cloned_points.get(task.decision_point_id)
             if point is not None:
+                from app.services.scenario_tasks import resolved_kind
                 session.add(DecisionTask(scene_version_id=draft.id, decision_point_id=point.id,
-                    title=task.title, target=task.target, deadline_seconds=task.deadline_seconds, status='pending'))
+                    title=task.title, kind=resolved_kind(task, expected_type=='kitchen'), target=task.target, deadline_seconds=task.deadline_seconds, status='pending'))
         scene.status = SceneStatus.DRAFT
         target_version = draft
     else:

@@ -15,6 +15,12 @@ def run_schema_migrations(engine: Engine) -> None:
             "version VARCHAR(64) PRIMARY KEY, applied_at TIMESTAMP NOT NULL)"
         ))
         applied = {row[0] for row in connection.execute(text("SELECT version FROM schema_migrations"))}
+        if '20261113_task_kind' not in applied and inspect(connection).has_table('decision_tasks'):
+            columns = {c['name'] for c in inspect(connection).get_columns('decision_tasks')}
+            if 'kind' not in columns:
+                connection.execute(text('ALTER TABLE decision_tasks ADD COLUMN kind VARCHAR(32)'))
+            connection.execute(text('INSERT INTO schema_migrations(version, applied_at) VALUES (:version, :applied_at)'),
+                {'version': '20261113_task_kind', 'applied_at': datetime.now(UTC).isoformat()})
         if '20261110_refresh_retry' not in applied and inspect(connection).has_table('auth_sessions'):
             columns = {c['name'] for c in inspect(connection).get_columns('auth_sessions')}
             if 'previous_refresh_hash' not in columns:

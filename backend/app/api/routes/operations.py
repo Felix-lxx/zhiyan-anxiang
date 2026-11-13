@@ -78,6 +78,10 @@ def validate_feedback(session: Session, drill: DrillSession, payload: Participan
     world = frozen_world(session, drill)
     if not world:
         return
+    if payload.action in {'household_notified', 'household_confirmed'}:
+        from app.services.community_training import validate_notice
+        events = list(session.scalars(select(DrillEvent).where(DrillEvent.drill_session_id == drill.id).order_by(DrillEvent.sequence)))
+        validate_notice(world, events, payload)
     if payload.action == "resource_ready" and payload.role != "物业/网格员":
         raise HTTPException(403, "资源就绪由物业处置组确认。")
     if payload.action == "resident_counted":
@@ -228,14 +232,18 @@ def perform_task(session: Session, drill: DrillSession, task_id: str, payload: T
         return data
     if payload.action == "arrive" and task["status"] != "executing":
         raise HTTPException(409, "请先接收此任务。")
+    if payload.action == 'release' and task['status'] not in {'executing', 'verifying'}:
+        raise HTTPException(409, '只能撤回已接收但尚未核验的任务。')
     if payload.action == "submit":
         if not task["can_submit"]:
             raise HTTPException(409, "；".join(task["blockers"]))
         if len(payload.evidence.strip()) < 6:
             raise HTTPException(422, "请填写至少 6 个字的处置结果证据。")
-    kind = {"accept": "accepted", "arrive": "arrived", "submit": "completed"}[payload.action]
-    label = {"accept": "已接收", "arrive": "已回执到位", "submit": "核验完成"}[payload.action]
-    append_event(session, drill, f"task.{kind}", member["name"], f"{task['title']}：{label}", {"task_id": task_id, "kind": task["kind"], "participant_id": member["participant_id"], "role": member["role"], "evidence": payload.evidence.strip(), "target_object_id": task["target_object_id"]})
+    from app.services.task_staff import select_staff
+    staff_id = select_staff(session, drill, data, task, member) if payload.action=='accept' else task.get('staff_id')
+    kind = {"accept": "accepted", "arrive": "arrived", "submit": "completed", 'release':'released'}[payload.action]
+    label = {"accept": "已接收", "arrive": "已回执到位", "submit": "核验完成", 'release':'已撤回接收并释放岗位'}[payload.action]
+    append_event(session, drill, f"task.{kind}", member["name"], f"{task['title']}：{label}", {"task_id": task_id, "kind": task["kind"], "staff_id":staff_id, "participant_id": member["participant_id"], "role": member["role"], "evidence": payload.evidence.strip(), "target_object_id": task["target_object_id"]})
     commit_changes(session)
     return snapshot(session, drill)
 
@@ -836,7 +844,8 @@ def snapshot(session: Session, drill: DrillSession) -> dict:
     participant_state = []
     action_labels = {"acknowledge": "已确认警报", "arrived": "已到达岗位", "resource_ready": "资源已就绪", "resident_counted": "已完成清点"}
     for participant in drill.participants:
-        role_events = [event for event in participant_events if event.actor == participant.get("role")]
+        role_events = [event for event in participant_events
+                       if event.payload.get('role', event.actor) == participant.get('role')]
         latest = role_events[-1] if role_events else None
         action = latest.event_type.removeprefix("participant.") if latest else None
         role_sessions = [item for item in participant_sessions if item.role == participant.get("role")]
@@ -1219,6 +1228,8 @@ def bind_response_staff(drill_id: str, staff_id: str, payload: StaffBinding,
     if staff_id not in {s["id"] for s in staff_roster(world)}:
         raise HTTPException(404, "值守岗位不存在。")
     data = snapshot(session, drill)
+    if any(s['id']==staff_id and (s.get('state')=='task' or s.get('activity')=='household_visit') for s in data['simulation'].get('environment', {}).get('response_staff', [])):
+        raise HTTPException(409, '该岗位正在承担责任任务，请完成或撤回接收后交接。')
     if any(h.get("staff_id") == staff_id and h["state"] != "completed" for h in data["simulation"].get("helpers", [])):
         raise HTTPException(409, "该值守员正在执行任务，完成后才能交接责任。")
     member = session.get(ParticipantSession, payload.participant_id) if payload.participant_id else None
@@ -1287,10 +1298,28 @@ def participant_action(drill_id: str, payload: ParticipantAction, identity: Auth
     if payload.role not in {item["role"] for item in drill.participants} - {"演练总控/导演"}:
         raise HTTPException(status_code=422, detail="请选择当前演练配置的参演角色。")
     validate_feedback(session, drill, payload)
-    action_labels = {"acknowledge": "确认警报", "arrived": "到达岗位", "resource_ready": "资源就绪", "resident_counted": "居民清点", "report": "异常报告"}
-    append_event(session, drill, f"participant.{payload.action}", payload.role, f"{action_labels[payload.action]}：{payload.message}", payload.model_dump(exclude={"participant_token"}))
+    append_feedback(session, drill, payload, {'participant_id':'director:'+identity.username,
+                    'name':identity.username, 'role':payload.role})
     commit_changes(session)
     return snapshot(session, drill)
+
+
+def append_feedback(session, drill, payload, member):
+    from app.services.household_visits import VISIT_ACTIONS, prepare, check_knock
+    fields = payload.model_dump(exclude={'participant_token'})
+    if payload.action in VISIT_ACTIONS or payload.action in {'household_notified', 'household_confirmed'}:
+        data = snapshot(session, drill)
+        if payload.action in VISIT_ACTIONS:
+            fields.update(prepare(session, drill, payload, member, data))
+        else:
+            check_knock(data['simulation'].get('community'), payload, member)
+    labels = {'acknowledge':'确认警报', 'arrived':'到达岗位', 'resource_ready':'资源就绪',
+              'resident_counted':'居民清点', 'report':'异常报告', 'household_notified':'住户通知已发出',
+              'household_confirmed':'住户收到通知回执', 'household_visit':'已派出到户核查',
+              'household_visit_cancel':'已请求结束到户核查'}
+    fields['reported_by'] = member['participant_id']
+    append_event(session, drill, 'participant.'+payload.action, member['name'],
+                 labels[payload.action]+'：'+payload.message, fields)
 
 
 @router.post("/drills/{drill_id}/participant-invite")
@@ -1378,8 +1407,7 @@ def public_participant_action(drill_id: str, code: str, payload: ParticipantActi
     if member["role"] != payload.role:
         raise HTTPException(403, "不能以其他身份提交反馈。")
     validate_feedback(session, drill, payload)
-    action_labels = {"acknowledge": "确认警报", "arrived": "到达岗位", "resource_ready": "资源就绪", "resident_counted": "居民清点", "report": "异常报告"}
-    append_event(session, drill, f"participant.{payload.action}", payload.role, f"{action_labels[payload.action]}：{payload.message}", payload.model_dump(exclude={"participant_token"}))
+    append_feedback(session, drill, payload, member)
     commit_changes(session)
     return snapshot(session, drill)
 

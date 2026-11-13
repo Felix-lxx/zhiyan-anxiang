@@ -1,4 +1,6 @@
 <script setup lang="ts">
+import CommunityOperations from './CommunityOperations.vue'
+import type {CommunityTraining,DutyStaff,HouseholdNotice} from '../domain/community'
 import { createApiClient } from '../api/client'
 import { connectLive, isNewerState } from '../api/live'
 
@@ -14,7 +16,7 @@ import type { ExerciseTask } from '../domain/task'
 interface Scene { id: string; name: string; status: string }
 type Task = ExerciseTask
 interface EventItem { id: string; sequence: number; message: string; actor: string; event_type: string; elapsed_seconds: number }
-interface Drill { state_version?: string; id: string; name: string; status: string; elapsed_seconds: number; tasks: Task[]; events: EventItem[]; engine_version?: number; simulation: { residents?: Array<{ id: string; label: string; status: string; counted?: boolean; last_location?: string; search_responsible?: string }>; fire: { intensity: number }; summary: { total: number; evacuated: number; moving: number; missing: number; smoke_exposed?: number } } }
+interface Drill { state_version?: string; id: string; name: string; status: string; elapsed_seconds: number; tasks: Task[]; events: EventItem[]; engine_version?: number; simulation: { community?:CommunityTraining|null;environment?:{response_staff?:DutyStaff[]}; residents?: Array<{ id: string; label: string; status: string; counted?: boolean; last_location?: string; search_responsible?: string }>; fire: { intensity: number }; summary: { total: number; evacuated: number; moving: number; missing: number; smoke_exposed?: number } } }
 
 const props = defineProps<{ apiBaseUrl: string; accessToken?: string | null; community?: Community | null; drillId?: string; inviteCode?: string }>()
 const api = createApiClient(props.apiBaseUrl, () => props.accessToken)
@@ -128,10 +130,19 @@ async function action(actionName: 'acknowledge' | 'arrived' | 'resource_ready' |
   try { const path = invite.value ? `/participant/drills/${current.value.id}/actions?code=${encodeURIComponent(invite.value)}` : `/drills/${current.value.id}/participant-actions`; applyCurrent(await api.request<Drill>(`${props.apiBaseUrl}${path}`, { method: 'POST', headers: { ...headers(), 'Content-Type': 'application/json' }, body: JSON.stringify({ role: role.value, action: actionName, message, resident_ids: countedResidents.value, participant_token: member.value?.token }) })); notice.value='反馈已写入本场证据，导演台将同步更新'; if(actionName==='report'){reportOpen.value=false;reportText.value=''} }
   catch (cause) { error.value = cause instanceof Error ? cause.message : '反馈提交失败。' } finally { busy.value = false }
 }
-async function completeTask(taskId: string, taskAction: 'accept' | 'arrive' | 'submit', evidence: string): Promise<void> {
+async function completeTask(taskId: string, taskAction: 'accept' | 'arrive' | 'submit' | 'release', evidence: string): Promise<void> {
   if (!current.value) return; busy.value = true; error.value='';notice.value=''
-  try { const path = `/participant/drills/${current.value.id}/tasks/${taskId}/actions?code=${encodeURIComponent(invite.value)}`; applyCurrent(await api.request<Drill>(`${props.apiBaseUrl}${path}`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ action: taskAction, evidence, participant_token: member.value?.token }) })); notice.value = taskAction === 'submit' ? '处置已核验，现场与过程评分同步更新' : taskAction === 'accept' ? '已接收任务，请到目标位置后回执到位' : '到位回执已记录，请完成处置后提交证据' }
+  try { const path = `/participant/drills/${current.value.id}/tasks/${taskId}/actions?code=${encodeURIComponent(invite.value)}`; applyCurrent(await api.request<Drill>(`${props.apiBaseUrl}${path}`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ action: taskAction, evidence, participant_token: member.value?.token }) })); notice.value = taskAction==='release'?'已撤回接收并释放岗位':taskAction === 'submit' ? '处置已核验，现场与过程评分同步更新' : taskAction === 'accept' ? '已接收任务，请到目标位置后回执到位' : '到位回执已记录，请完成处置后提交证据' }
   catch (cause) { error.value = cause instanceof Error ? cause.message : '任务提交失败。' } finally { busy.value = false }
+}
+async function householdNotice(payload:HouseholdNotice){
+  if(!current.value||!canAct.value||busy.value)return
+  busy.value=true;error.value='';notice.value=''
+  try{
+    const path=invite.value?`/participant/drills/${current.value.id}/actions?code=${encodeURIComponent(invite.value)}`:`/drills/${current.value.id}/participant-actions`
+    applyCurrent(await api.request<Drill>(`${props.apiBaseUrl}${path}`,{method:'POST',headers:{...headers(),'Content-Type':'application/json'},body:JSON.stringify({...payload,role:role.value,participant_token:member.value?.token})}))
+    notice.value=payload.action==='household_visit'?'到户核查已受理，请查看值守员进度。':payload.action==='household_visit_cancel'?'结束请求已受理，岗位按实际行程释放。':'住户回执已写入证据，导演台同步更新。'
+  }catch(cause){error.value=cause instanceof Error?cause.message:'回执失败，请重试。'}finally{busy.value=false}
 }
 function syncWhenVisible(): void { if (document.visibilityState === 'visible') void heartbeat() }
 onMounted(() => { document.addEventListener('visibilitychange', syncWhenVisible); void load() })
@@ -158,7 +169,8 @@ onBeforeUnmount(() => { disposed = true; stopLive?.(); if (heartbeatTimer !== nu
         <p v-if="!myTasks.length">{{current.tasks.length?'本场尚无分配给此身份的任务。请联系导演核对责任角色。':'本场未配置处置任务。请导演在场景准备的“任务策略”中配置、执行选项并新建场次，已冻结场次不会自动加入任务。'}} 仍可在下方提交告警回执与居民清点。</p>
       </section>
       <section v-if="member&&current.status!=='ended'" class="atlas-participant-report"><button :aria-expanded="reportOpen" @click="reportOpen=!reportOpen"><AppIcon name="alert"/>报告异常 <small>遇到危险、无法到达等</small></button><form v-if="reportOpen" @submit.prevent="action('report',reportText)"><label>具体位置与异常情况<textarea v-model="reportText" minlength="6" maxlength="240" required placeholder="请说明所在位置、遇到的阻碍及需要的支援"/></label><button :disabled="!canAct||reportText.trim().length<6">发送给导演</button></form></section>
-      <section v-if="current.status !== 'ended'" v-show="participantView === 'feedback' || participantView === 'rollcall'" id="participant-feedback" class="participant-feedback"><h2>{{participantView === 'rollcall' ? '集合清点' : '现场回执'}}</h2><div v-show="participantView === 'feedback'" class="participant-actions"><button type="button" :disabled="!canAct" @click="action('acknowledge', '已收到火情告警，开始履行本角色职责')"><AppIcon name="pulse" /><strong>确认警报</strong><span>记录本次响应时间</span></button><button v-if="role === '物业/网格员'" type="button" :disabled="!canAct" @click="action('resource_ready', '已核对灭火器材与引导物资，资源准备就绪')"><AppIcon name="tasks" /><strong>资源就绪</strong><span>回执后影响处置模型</span></button></div>
+      <CommunityOperations v-if="current.simulation.community && participantView==='feedback' && member" :key="current.id" :community="current.simulation.community" :staff="current.simulation.environment?.response_staff" :running="canAct" :busy="busy" :can-report="['物业/网格员','居民代表','应急指挥人员'].includes(role)" :can-visit="role==='物业/网格员'" @notice="householdNotice"/>
+      <section v-if="current.status !== 'ended'" v-show="participantView === 'feedback' || participantView === 'rollcall'" id="participant-feedback" class="participant-feedback"><h2>{{participantView === 'rollcall' ? '集合清点' : '现场回执'}}</h2><div v-show="participantView === 'feedback'" class="participant-actions"><button type="button" :disabled="!canAct" @click="action('acknowledge', '已收到火情告警，开始履行本角色职责')"><AppIcon name="pulse" /><strong>确认警报</strong><span>记录本次响应时间</span></button><button v-if="role === '物业/网格员'" type="button" :disabled="!canAct" @click="action('resource_ready', '已核对灭火器材与引导物资，资源准备就绪')"><AppIcon name="tasks" /><strong>资源就绪</strong><span>记录资源可用，不等于已开始灭火</span></button></div>
         <form v-if="role !== '应急指挥人员'" id="participant-rollcall" class="resident-rollcall" @submit.prevent="action('resident_counted', '已在集合点核验所选居民身份')"><label for="rollcall">选择本次已核验居民（可多选）<select id="rollcall" v-model="countedResidents" multiple size="4"><option v-for="person in current.simulation.residents" :disabled="(current.engine_version ?? 1) >= 3 && (person.status !== 'evacuated' || person.counted)" :key="person.id" :value="person.id">{{ person.label }} · {{ person.status === 'evacuated' ? person.counted ? '已核验' : '已到集合点' : person.status === 'missing' ? '失联待核验' : '尚未到达' }}</option></select></label><button type="submit" :disabled="!canAct || !countedResidents.length">提交 {{ countedResidents.length }} 人核验结果</button><p>只能核验已经到达集合点的居民。未到人员需由导演指派搜索员，实际会合后继续撤离；清点不会解除失联。</p></form>
       </section>
       <section v-show="participantView === 'result'" id="participant-result" class="participant-situation" aria-label="本场结果"><div><span>已疏散</span><strong>{{ current.simulation.summary.evacuated }}/{{ current.simulation.summary.total }}</strong></div><div><span>失联</span><strong>{{ current.simulation.summary.missing }}</strong></div></section>

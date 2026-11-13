@@ -17,8 +17,8 @@ def build_briefing(world: dict) -> dict:
     return {
         "version": 1,
         "case_title": world.get("scenario_contract", {}).get("title", "社区消防训练"),
-        "objective": "组织居民撤离并逐人清点，完成重点人员护送，核验燃气与房门处置。" if kitchen
-                     else "组织居民撤离并逐人清点，完成重点人员护送，核验断电与广播处置。",
+        "objective": ("先核实分户收到通知，安排有限夜班岗位；" if world.get("community_training") else "") + ("组织居民撤离并逐人清点，完成重点人员护送，核验燃气与房门处置。" if kitchen
+                     else "组织居民撤离并逐人清点，完成重点人员护送，核验断电与广播处置。"),
         "mode": world.get("parameters", {}).get("training_mode", "assessment"),
         "fire_location": address,
         "population": len(people),
@@ -74,6 +74,10 @@ def project_journey(*, world: dict | None, status: str, elapsed: int,
         blockers.append("尚无响应确认记录")
 
     actions = []
+    community = simulation.get('community')
+    if community and community['summary']['confirmed'] < community['summary']['total']:
+        blockers.append(f"{community['summary']['total']-community['summary']['confirmed']} 户尚未确认收到通知")
+
 
     def offer(key, label, detail, kind, target_id=None, severity="normal"):
         actions.append(dict(id=key, label=label, detail=detail, kind=kind,
@@ -88,6 +92,8 @@ def project_journey(*, world: dict | None, status: str, elapsed: int,
     else:
         phase = "detect" if not alarm else "respond" if remaining else "verify"
         title = {"detect": "确认火情与响应", "respond": "组织撤离，处理受阻事项", "verify": "清点到场居民，补齐处置证据"}[phase]
+        if community and community['summary']['confirmed'] < community['summary']['total']:
+            offer('households', '核实住户通知', '先记录联系过程并核实收到，再安排本户人员；广播覆盖不能替代确认。', 'households', severity='urgent')
         if missing or blocked:
             person = (missing or blocked)[0]
             offer("locate", f"定位{person['label']}", "人员失联或当前路线不可达，请核对位置与通道。", "locate", person["id"], "urgent")

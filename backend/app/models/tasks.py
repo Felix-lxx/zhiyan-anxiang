@@ -9,6 +9,7 @@ class DecisionTask(Base):
     decision_point_id:Mapped[str]=mapped_column(ForeignKey('decision_points.id',ondelete='CASCADE'),nullable=False)
     scene_version_id:Mapped[str]=mapped_column(ForeignKey('scene_versions.id',ondelete='CASCADE'),nullable=False)
     title:Mapped[str]=mapped_column(String(160),nullable=False)
+    kind:Mapped[str|None]=mapped_column(String(32),nullable=True)
     target:Mapped[str]=mapped_column(String(160),nullable=False)
     deadline_seconds:Mapped[int]=mapped_column(Integer,nullable=False)
     status:Mapped[str]=mapped_column(String(32),default='pending',nullable=False)

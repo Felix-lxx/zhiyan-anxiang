@@ -48,7 +48,9 @@ class ResidentCommand(BaseModel):
 
 class ParticipantAction(BaseModel):
     role: str = Field(min_length=2, max_length=64)
-    action: str = Field(pattern=r"^(acknowledge|arrived|resource_ready|resident_counted|report)$")
+    action: str = Field(pattern=r"^(acknowledge|arrived|resource_ready|resident_counted|report|household_notified|household_confirmed|household_visit|household_visit_cancel)$")
+    household_id: str | None = Field(default=None, max_length=64)
+    channel: Literal['broadcast', 'phone', 'knock'] | None = None
     message: str = Field(min_length=2, max_length=240)
     task_id: str | None = Field(default=None, max_length=36)
     resident_ids: list[str] = Field(default_factory=list, max_length=1000)
@@ -65,7 +67,7 @@ class ParticipantHeartbeat(BaseModel):
 
 
 class TaskAction(BaseModel):
-    action: str = Field(pattern=r"^(accept|arrive|submit)$")
+    action: str = Field(pattern=r"^(accept|arrive|submit|release)$")
     evidence: str = Field(default="", max_length=500)
     participant_token: str | None = Field(default=None, max_length=128)
 

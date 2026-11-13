@@ -55,7 +55,7 @@ def build_scoring_reference(world: dict[str, Any]) -> dict[str, Any]:
         start = person['start_node_id']
         distance = min((route.get(start, math.inf) for route in exits), default=math.inf)
         approach = (staff_routes.get(start, math.inf) + staff_connector) / 1.6 if person['vulnerable'] else 0
-        travel = distance / (.8*1.2 if person['vulnerable'] else 1.3)
+        travel = distance / (person.get('walking_speed', .8 if person['vulnerable'] else 1.3)*(1.2 if person['vulnerable'] else 1))
         if not math.isfinite(travel + approach):
             unreachable.append(person['id'])
             continue

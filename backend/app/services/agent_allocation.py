@@ -13,7 +13,7 @@ def route_profile(person, resident, edges):
     # A current blocked edge can be traversed backwards to retreat. The spatial
     # planner already validates that suffix; do not reject its first edge twice.
     reachable = bool(person.get("route_reachable"))
-    speed = (.8 if resident.get("vulnerable") else 1.3) * (1.2 if resident.get("assisted") else 1)
+    speed = resident.get("walking_speed", .8 if resident.get("vulnerable") else 1.3) * (1.2 if resident.get("assisted") else 1)
     travel, smoke = 0., 0.
     for index, eid in enumerate(ids):
         edge = edges.get(eid, {})

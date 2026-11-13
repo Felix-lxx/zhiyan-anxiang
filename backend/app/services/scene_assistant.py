@@ -89,11 +89,19 @@ def build_context(data: dict, scene_name: str, historical: bool, question: str =
     if sim.get('environment', {}).get('indoor'):
         indoor = sim['environment']['indoor']
         sources.append({'id':'S9', 'title':'楼内分区烟气与房门', 'detail':indoor['source_label']+'；'+'；'.join(f"{zone['name']}烟气{round(zone['smoke_density']*100)}%" for zone in sorted(indoor['zones'],key=lambda zone:-zone['smoke_density'])[:4])})
+    community = sim.get('community')
+    if community:
+        sources.append({'id':'S20', 'title':'本场分户通知与夜班岗位',
+            'detail':f"{community['summary']['confirmed']}/{community['summary']['total']} 户有收到通知回执；广播覆盖不等于确认收到。模拟画像，不是实测居民数据。"})
     if not spatial_supported:
         sources[0]["detail"] = f"历史模型：居民 {counts['total']} 人；记录撤离 {counts['arrived']} 人；未提供集合点核验数据，不能将撤离计数当作真实清点。"
     return {"drill_id": data["id"], "scene_name": scene_name[:160], "drill_name": data["name"][:160],
             "status": data["status"], "at_seconds": data["elapsed_seconds"], "historical": historical,
             "counts": counts, "residents": residents, "resident_details_limited": len(people) > len(residents),
+            "community": {'summary':community['summary'], 'households':community['households'][:12],
+                          'notice':community['notice'], 'staff':sim.get('environment', {}).get('response_staff', []),
+                          'visits':[{'household_id':v['household_id'],'staff_name':v['staff_name'],
+                              'state':v['state'],'behavior':v['behavior']} for v in community.get('visits', [])[-12:]]} if community else None,
             "roads": roads[:40], "tasks": tasks, "robot": robot_summary, "events": events,
             "score": score, "sources": sources, "spatial_supported": spatial_supported, "requested_residents": sorted(requested),
             "selection": selection, "latest_command": command_summary, "vehicles": vehicles,
@@ -115,6 +123,16 @@ def water_reply(context):
 
 
 def offline_reply(question: str, context: dict) -> tuple[str, list[dict]]:
+    if context.get('community') and any(word in question for word in ('通知', '哪户', '夜班', '值守', '敲门', '到户', '核查')):
+        community = context['community']
+        summary = community['summary']
+        waiting = [h['label'] for h in community['households'] if h['notification_state']!='confirmed']
+        occupied = sum(s['state']!='available' for s in community['staff'])
+        visits = [v for v in community.get('visits', []) if v['state']!='completed']
+        visit_detail = ('\n到户核查：'+'；'.join(v['staff_name']+' · '+v['behavior'] for v in visits[:3])+'。') if visits else ''
+        return (f"本场 {summary['total']} 户中，{summary['confirmed']} 户已回执收到；{summary['awaiting_confirmation']} 户仅有通知覆盖，尚未确认。[S20]\n"
+                + ('当前待核实：'+'、'.join(waiting[:3])+'。\n' if waiting else '当前记录中的住户均已确认。\n')
+                + f"夜班岗位 {len(community['staff'])} 个，{occupied} 个正在执行。请在当前任务的分户通知中核实回执；广播不能替代需直接联系住户的电话或敲门核查。"+visit_detail, context['sources'])
     if context.get('indoor') and any(word in question for word in ('厨房', '房门', '烟气', '楼层')):
         indoor = context['indoor']
         zones = '；'.join(f"{zone['name']}烟气{round(zone['smoke_density']*100)}%" for zone in indoor['zones'][:4])

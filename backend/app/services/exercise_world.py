@@ -62,8 +62,8 @@ def capture_world(session: Session, version: SceneVersion, parameters_override: 
                         indoor_remaining=float(floor * 6), preparation_seconds=3 + i % 7)
     for task in session.scalars(select(DecisionTask).where(DecisionTask.scene_version_id == version.id).order_by(DecisionTask.created_at)):
         point = session.get(DecisionPoint, task.decision_point_id)
-        from app.services.scenario_tasks import task_kind
-        kind = task_kind(task.title, kitchen)
+        from app.services.scenario_tasks import resolved_kind
+        kind = resolved_kind(task, kitchen)
         target = source if kind in {'power_off', 'gas_off', 'containment'} else home
         tasks.append({"id": task.id, "title": task.title, "target": source["name"] if kind == "power_off" else task.target, "kind": kind, "responsible_role": "应急指挥人员" if kind == "broadcast" else "物业/网格员" if kind in {"power_off", "escort"} else point.responsible_role if point else "物业/网格员", "deadline_seconds": task.deadline_seconds, "duration_seconds": 8 if kind == "power_off" else 3, "target_object_id": target.get("id"), "target_position": target["entry"], "trigger": "alarm_confirmed", "steps": ["接收任务并核对目标", "到达目标位置（演练回执）", "完成处置并提交文字证据"]})
     # Teaching budgets are frozen only for new runs. Published deadlines and
@@ -78,6 +78,8 @@ def capture_world(session: Session, version: SceneVersion, parameters_override: 
     # Freeze identifiable resource slots along with the world, not on each command.
     response_staff = roster({"robot_origin": station["entry"]})
     world = add_spatial_layout({"scenario_contract": contract.payload(), "response_staff": response_staff, "scene_version_id": version.id, "community_version_id": version.community_version_id, "parameters": parameters, "objects": objects, "residents": residents, "fire_source": fire_source, "fire_origin": deepcopy(fire_source["position"]), "robot_origin": station["entry"], "inspection_target": deepcopy(fire_source["access_position"]), "broadcast_target": home["entry"], "tasks": tasks, "road_network": {"nodes": nodes, "edges": edges}}, home)
+    from app.services.community_training import freeze_community
+    freeze_community(world)
     from app.services.water_resources import freeze_resources, vehicle_obstacles
     world['water_resources'] = freeze_resources(world)
     world['road_network']['vehicle_obstacles'] = vehicle_obstacles(world)
@@ -104,6 +106,8 @@ def projected_tasks(world: dict, events: list, elapsed: int, simulation: dict, r
     result = []
     for source in world["tasks"]:
         history = [e for e in events if e.payload.get("task_id") == source["id"]]
+        released = max((e.sequence for e in history if e.event_type=='task.released'), default=0)
+        history = [e for e in history if e.sequence > released]
         assigned = next((e for e in reversed(history) if e.event_type == "task.assigned"), None)
         accepted = next((e for e in history if e.event_type == "task.accepted"), None)
         arrived = next((e for e in history if e.event_type == "task.arrived"), None)
@@ -122,6 +126,9 @@ def projected_tasks(world: dict, events: list, elapsed: int, simulation: dict, r
         elif elapsed - arrived.elapsed_seconds < source["duration_seconds"]:
             blockers.append(f"处置还需 {source['duration_seconds'] - (elapsed - arrived.elapsed_seconds)} 秒")
         owner = accepted or assigned
+        staff_id = accepted.payload.get('staff_id') if accepted else None
+        source = {**source, 'staff_id':staff_id,
+                  'staff_name':next((s['name'] for s in world.get('response_staff', []) if s['id']==staff_id), None)}
         operation_elapsed = max(0, (done.elapsed_seconds if done else elapsed) - arrived.elapsed_seconds) if arrived else 0
         operation = {'mode': 'arrival_receipt', 'duration_seconds': source['duration_seconds'],
                      'elapsed_seconds': min(source['duration_seconds'], operation_elapsed),

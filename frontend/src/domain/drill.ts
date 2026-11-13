@@ -1,3 +1,4 @@
+import type {CommunityTraining,DutyStaff} from './community'
 import type { ExerciseTask } from './task'
 import type { IndoorState } from './indoor'
 import type { TrainingJourney } from './training'
@@ -12,7 +13,7 @@ export interface Resident { id: string; label: string; vulnerable: boolean; coun
 
 export interface RoadEdge { id: string; name: string; start: { x: number; y: number }; end: { x: number; y: number }; width_meters: number; status: 'open' | 'restricted' | 'blocked'; blocked_by_event: boolean; risk_score: number; smoke_risk?: number; density_percent?: number; live_occupancy?: number; waiting_count?: number; capacity_persons?: number; flow_capacity_per_second?: number }
 
-export interface Simulation { fire: { intensity: number; smoke_radius: number; temperature: number }; environment: { indoor?:IndoorState; south_lane: string; east_hydrant: string; visibility: number; blockages?: Array<{ x: number; y: number; target: string }> }; sensors: { temperature: number; smoke_ppm: number; alarm: boolean }; residents: Resident[]; road_network?: { nodes: Array<{ id: string; name: string; x: number; y: number; is_exit: boolean }>; edges: RoadEdge[] }; summary: { total: number; evacuated: number; moving: number; vulnerable: number; missing: number; smoke_exposed?: number; congested?: number; congested_edges?: number; critical_edge?: { id: string; name: string; density_percent: number; waiting_count: number } | null; north_load?: number; south_load?: number } }
+export interface Simulation { community?:CommunityTraining|null; fire: { intensity: number; smoke_radius: number; temperature: number }; environment: { response_staff?:DutyStaff[]; indoor?:IndoorState; south_lane: string; east_hydrant: string; visibility: number; blockages?: Array<{ x: number; y: number; target: string }> }; sensors: { temperature: number; smoke_ppm: number; alarm: boolean }; residents: Resident[]; road_network?: { nodes: Array<{ id: string; name: string; x: number; y: number; is_exit: boolean }>; edges: RoadEdge[] }; summary: { total: number; evacuated: number; moving: number; vulnerable: number; missing: number; smoke_exposed?: number; congested?: number; congested_edges?: number; critical_edge?: { id: string; name: string; density_percent: number; waiting_count: number } | null; north_load?: number; south_load?: number } }
 
 export interface RobotTask { id: string; label: string; status: string; progress: number; route_edge_ids: string[]; route_points: Array<{ x: number; y: number }>; planned_duration_seconds: number; starts_at_seconds: number; ends_at_seconds: number }
 
@@ -108,6 +109,6 @@ export interface WaterConnection {
   can_connect?:boolean; notice?:string; hose_length?:number|null
 }
 export interface TransferCandidate { id: string; label: string; exit: string; eligible: boolean; reason: string }
-export interface Simulation { vehicles?: Vehicle[]; rescue_actions?: RescueAction[]; transfer_candidates?: TransferCandidate[] }
+export interface Simulation { community?:CommunityTraining|null; vehicles?: Vehicle[]; rescue_actions?: RescueAction[]; transfer_candidates?: TransferCandidate[] }
 
 export interface ResponseStaff { id: string; name: string; source: string; state: string; resident_id?: string | null; participant_id?: string | null; responsible?: string | null; completed_count: number }

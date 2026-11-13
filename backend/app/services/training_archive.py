@@ -86,11 +86,20 @@ def archive_drill(session, drill, data, owner, *, backfill=False):
         'vehicles': [fields(vehicle, ('id','name','state','x','y','mission_id','target_node_id','reason','service'))
                      for vehicle in sim.get('vehicles', [])],
     }
+    if sim.get('community'):
+        notification = sim['community']['summary']
+        metrics['households_confirmed'] = notification['confirmed']
+        unresolved['households_unconfirmed'] = notification['total'] - notification['confirmed']
+        visits = sim['community'].get('visits', [])
+        metrics['household_visits'] = len(visits)
+        unresolved['household_visits_active'] = sum(v['state']!='completed' for v in visits)
+        findings.append(f"分户通知：{notification['confirmed']}/{notification['total']} 户有收到回执；广播覆盖不等于住户确认。")
     payload = {'version':2, 'name':drill.name, 'scene_name':scene.name, 'scene_id':scene.id,
         'community_id':scene.community_id, 'elapsed_seconds':drill.elapsed_seconds,
         'scene_version_id':drill.scene_version_id, 'engine_revision':None if backfill else ENGINE_REVISION,
         'origin':'historical_reconstruction' if backfill else 'end_transaction',
         'score':deepcopy(data['score']), 'metrics':metrics, 'unresolved':unresolved, 'findings':findings,
+        'community':deepcopy(sim.get('community')),
         'events':evidence, 'event_count':len(events), 'conversation_count_at_end':conversation_count,
         'experience_basis':basis, 'final_state':final_state}
     record = DrillArchive(id=archive_id, drill_session_id=drill.id, owner=owner, payload=payload,

@@ -76,6 +76,7 @@ def acquire(session, run, data):
     helpers = [h for h in data['simulation'].get('helpers', []) if h['state'] != 'completed']
     own_helpers = {h.get('staff_id') for h in helpers if h['resident_id'] in run.scope['resident_ids']}
     foreign_helpers = {h.get('staff_id') for h in helpers if h['resident_id'] not in run.scope['resident_ids']}
+    foreign_helpers.update(s['id'] for s in data['simulation'].get('environment', {}).get('response_staff', []) if s['state']=='task' or s.get('activity')=='household_visit')
     available = []
     for slot in roster(data['simulation']['world']):
         owner = by_key.get('staff:' + slot['id'])
@@ -138,6 +139,7 @@ def staff_assignments(session, drill_id, data, resident_ids, run_id=None):
     claims = {row.resource_key: row.run_id for row in claims_for(session, drill_id) if row.run_id}
     helpers = {h['resident_id']: h for h in data.get('helpers', []) if h['state'] != 'completed'}
     busy = {h.get('staff_id') for h in helpers.values()}
+    busy.update(s['id'] for s in data.get('environment', {}).get('response_staff', []) if s['state']=='task' or s.get('activity')=='household_visit')
     available = [s['id'] for s in roster(data['world']) if s.get('available', True) and s['id'] not in busy
                  and (claims.get('staff:' + s['id']) == run_id if run_id else claims.get('staff:' + s['id']) is None)]
     result = {}

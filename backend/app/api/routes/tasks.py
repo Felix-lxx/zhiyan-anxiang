@@ -19,7 +19,7 @@ def execute(option_id:str,identity:AuthenticatedIdentity=Depends(get_current_ide
  opt=session.get(DecisionOption,option_id)
  if not opt:raise HTTPException(404,'未找到决策选项。')
  p=point_for_user(session,opt.decision_point_id,identity.username)
- task=DecisionTask(decision_point_id=p.id,scene_version_id=p.scene_version_id,title=f'处置：{opt.label}',target=opt.consequence,deadline_seconds=p.time_limit_seconds)
+ task=DecisionTask(decision_point_id=p.id,scene_version_id=p.scene_version_id,title=f'处置：{opt.label}',kind='manual',target=opt.consequence,deadline_seconds=p.time_limit_seconds)
  session.add(task);session.commit();return {'id':task.id,'title':task.title,'target':task.target,'deadline_seconds':task.deadline_seconds,'status':task.status}
 @router.get('/scenes/{scene_id}/tasks')
 def list_tasks(scene_id:str,identity:AuthenticatedIdentity=Depends(get_current_identity),session:Session=Depends(get_db)):

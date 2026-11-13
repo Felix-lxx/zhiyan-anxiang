@@ -43,7 +43,28 @@ flowchart LR
 
 首页历史查询只选择最近待继续与已结束场次；进度另由受资源鉴权保护的单场 `/drills/{id}/journey` 读取，避免对每条历史运行仿真。旧世界使用标识为 `legacy_derived` 的只读简报，不重写历史。新增字段保存在既有 JSON 世界中，无数据库迁移。详见[实施与验证记录](../../DESIGN.md)。
 
-### 厨房空间与运动表现
+### 社区住户、到户核查与岗位共享
+
+新世界可选 `community_profile=night_shift`，与 `duty_staff_count`、`simulation_seed` 一同经过准备、预览、发布和冻结。当前社区契约为 v2，未启用时保持原规则，已冻结的 v1 保留人工敲门回执兼容。
+
+| 模块 | 边界 |
+| --- | --- |
+| `community_training` | 冻结匿名住户和画像；从已发生事件投影覆盖、收到回执、来源及未确认数量 |
+| `household_visits` | 校验住户、责任人与岗位，选择冻结户门外节点；新世界核对到位后才允许敲门回执 |
+| `task_staff`、`response_staff` | 责任任务占用、撤回释放及岗位投影，与护送和到户核查共用人员身份 |
+| `spatial_simulation` | 接入核查行走、排队、风险受阻及连续撤回，复用原空间图和轨迹，不创建直线运动旁路 |
+| `agent_claims`、`agent_workflow` | 比较、批准及后续执行均核对岗位，活动计划归属与现场占用共同约束再次派遣 |
+| `CommunityOperations`、`domain/community` | 两端共用的分户/岗位交互及类型；只提交动作，不在客户端确认成功 |
+
+`participant.feedback` 统一承载 `household_notified`、`household_confirmed`、`household_visit` 和 `household_visit_cancel`。组织者通过命令事务下达；参演端通过登记会话与固定角色提交。服务端选择岗位与空间目标，客户端不能指定任意员工或位置。未收到通知不自动放行；到门不等于收到通知；收到通知不等于护送、撤离或集合清点完成。
+
+内部行走器共享通道容量与位置历史，外部投影将核查保存为 `simulation.community.visits`，护送保留为 `simulation.helpers`，避免把一次到户误计为护送完成。Three.js 合并同一岗位的当前视觉实例，任务及档案仍保留不同执行记录。版本 15 检查点只缓存可重建状态。
+
+`DecisionTask.kind` 自 `20261113_task_kind` 迁移起为可空稳定类型，新任务不再依靠标题决定环境效果；旧任务保留读取适配，可编辑草稿固定原语义。显示名称变更不能把普通任务变成断电、断气或广播事件。
+
+当前部分服务仍使用 FastAPI 异常作为旧入口适配；并未完成全部领域错误反向依赖清理。此轮不为目录整齐而重新实现一套命令或寻路层。操作及验收见[社区指南](../guides/community-training.md)和[交付记录](../reports/2026-11-13-community-upgrade.md)。
+
+### 厨房几何契约
 
 厨房空间契约：新世界的 `indoor_environment.doors[].portal` 冻结门洞位置、方向与净距，供三维表现和共享门控占用检查使用。`motion_trace` 只记录已执行的行走坐标，最多 18 点，通过既有实体差量传输；它不能代替命令、证据或评分事件。显示层遇到已关闭门洞时取消跨门插值并对齐权威位置。旧世界不回写，旧检查点按引擎版本失效重建。详见[厨房空间升级记录](../guides/scenarios-and-simulation.md)。
 

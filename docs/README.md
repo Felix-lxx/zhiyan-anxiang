@@ -17,6 +17,7 @@
 
 ## 功能
 
+- [社区夜班训练](guides/community-training.md)：分户通知、居民画像、有限人手及两端回执。
 - [场景与仿真](guides/scenarios-and-simulation.md)：火点、运动、供水与模型。
 - [知识与智能体](guides/knowledge-and-agent.md)：资料、RAG、规划、工具、批准和修订。
 - [助手配置](guides/assistant.md)：离线、兼容模型、Ollama 及授权。
@@ -30,10 +31,11 @@
 
 ## 最新证据
 
+- [社区夜班与到户核查](reports/2026-11-13-community-upgrade.md)：分户、岗位互斥、连续移动、敲门到位、两端回执、截图及验证范围。
 - [决策与联动验收](reports/2026-11-10-acceptance.md)：三条完整流程、成绩、修复和未覆盖项。
 - [楼栋空间呈现](reports/2026-11-10-building-release.md)：投影、标记、定位和资源释放。
 - [三维材质与消防设备](reports/2026-11-09-model-assets.md)：来源、许可与实现。
-- [仓库整理与发布](reports/2026-11-10-repository-release.md)：清理清单、检查和升级说明。
+- [仓库整理与发布](reports/2026-11-14-repository-release.md)：清理清单、检查和升级说明。
 
 [UI 设计参考](ui-design/UI界面样式图索引.md)只保留六个核心页面的参考图，不作为当前功能验收截图。README 图片来自实际运行。
 

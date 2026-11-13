@@ -16,6 +16,8 @@ def capacity(world):
 
 def projection(world, helpers, events):
     staff = roster(world)
+    from app.services.task_staff import occupations
+    tasks = {item['staff_id']:item for item in occupations(events).values()}
     for person in staff:
         binding = next((e["payload"] for e in reversed(events)
             if e["event_type"] == "staff.bound" and e["payload"].get("staff_id") == person["id"]), None)
@@ -26,4 +28,10 @@ def projection(world, helpers, events):
         person.update(state=active["state"] if active else "available" if person.get("available", True) else "off_duty",
                       resident_id=active["resident_id"] if active else None,
                       completed_count=sum(h["state"] == "completed" for h in assignments))
+        if active and active.get('purpose') == 'household_visit':
+            person.update(activity='household_visit', household_id=active['household_id'],
+                          task_participant_id=active.get('participant_id'))
+        if person['id'] in tasks:
+            task = tasks[person['id']]
+            person.update(state='task', task_id=task['task_id'], task_participant_id=task.get('participant_id'))
     return staff

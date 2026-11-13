@@ -5,7 +5,7 @@ export interface TrainingAction {
   id: string
   label: string
   detail: string
-  kind: 'start' | 'resume' | 'finish' | 'plan' | 'task' | 'rollcall' | 'locate' | 'indoor' | 'missions' | 'review' | 'acknowledge'
+  kind: 'households' | 'start' | 'resume' | 'finish' | 'plan' | 'task' | 'rollcall' | 'locate' | 'indoor' | 'missions' | 'review' | 'acknowledge'
   target_id: string | null
   severity: 'normal' | 'urgent'
 }

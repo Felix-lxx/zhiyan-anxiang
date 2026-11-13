@@ -69,6 +69,9 @@ export function posePerson(group: THREE.Group, moving: boolean, seconds: number,
   if(group.userData.helper && group.userData.behaviorState==='escorting') {
     limbs[0]!.rotation.x=-.35;limbs[0]!.rotation.z=-.18
   }
+  if(group.userData.helper && group.userData.behaviorState==='at_door') {
+    limbs[0]!.rotation.x=-.65;limbs[0]!.rotation.z=-.2
+  }
   const torso=group.userData.torso as THREE.Group
   torso.rotation.x=exposed?-.22:group.userData.vulnerable?-.08:0
   if(exposed)limbs[2]!.rotation.x=-1.25

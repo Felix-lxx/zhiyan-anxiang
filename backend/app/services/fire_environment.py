@@ -5,6 +5,7 @@ from bisect import bisect_right
 class EnvironmentTimeline:
     def __init__(self, world, events):
         self.kitchen = bool(world.get('indoor_environment'))
+        self.causal = bool(world.get('community_training'))
         self.indoor = None
         self.times, self.knots = [], []
         failed = world["parameters"].get("hydrant_status") in {"faulty", "failed"}
@@ -15,6 +16,7 @@ class EnvironmentTimeline:
         if sources is not None:
             failed = sources.get(primary_id, {}).get('state') == 'failed'
         resource, power, intensity, smoke, previous = False, False, 18., 7., 0.
+        electric_off, gas_off = False, False
         active = {}
         changes = []
         for event in events:
@@ -26,13 +28,14 @@ class EnvironmentTimeline:
         def rates():
             water = (any(sources.get(source_id, {}).get('state') == 'available' for source_id in active.values())
                      if sources is not None else bool(active) and not failed) and not self.kitchen
-            growth = (1.15 if failed else .82) * (.55 if resource else 1) * (.35 if power else 1)
+            growth = (.82 * (.45 if gas_off else 1) if self.kitchen else .82 * (.7 if electric_off else 1)) if self.causal else (1.15 if failed else .82) * (.55 if resource else 1) * (.35 if power else 1)
             return (-3.2 if water else growth if intensity > 0 else 0), (-.35 if water else .34 * growth / .82 if intensity > 0 else -.15), water
         def knot(at):
             rate, smoke_rate, water = rates()
             self.times.append(at)
             self.knots.append((intensity, smoke, rate, smoke_rate, failed, resource, power, water,
-                               [dict(item) for item in sources.values()] if sources is not None else None))
+                               [dict(item) for item in sources.values()] if sources is not None else None,
+                               electric_off, gas_off))
         knot(0.)
         for at, _, kind, data in sorted(changes, key=lambda item: (item[0], item[1])):
             rate, smoke_rate, _ = rates()
@@ -48,7 +51,10 @@ class EnvironmentTimeline:
                         sources[source_id]['state'] = 'failed'
                     failed = sources.get(primary_id, {}).get('state') == 'failed'
             elif kind == "participant.resource_ready": resource = True
-            elif kind == "task.completed" and data.get("kind") in {"power_off", "gas_off"}: power = True
+            elif kind == "task.completed" and data.get("kind") in {"power_off", "gas_off"}:
+                power = True
+                if data['kind'] == 'power_off': electric_off = True
+                if data['kind'] == 'gas_off': gas_off = True
             elif kind == "vehicle.action_started" and data.get("action") == "spray":
                 active[data['action_id']] = (data.get('water_source') or {}).get('id') or primary_id
             elif kind in {"vehicle.action_stopped", "spray.expired"}: active.pop(data.get("action_id"), None)
@@ -59,14 +65,15 @@ class EnvironmentTimeline:
 
     def _base_at(self, elapsed):
         index = max(0, bisect_right(self.times, elapsed) - 1)
-        intensity, smoke, rate, smoke_rate, failed, resource, power, water, sources = self.knots[index]
+        intensity, smoke, rate, smoke_rate, failed, resource, power, water, sources, electric_off, gas_off = self.knots[index]
         delta = max(0, elapsed - self.times[index])
         intensity = max(0., min(100., intensity + delta * rate))
         smoke = max(0., min(48., smoke + delta * smoke_rate))
         return ({"intensity": round(intensity, 1), "smoke_radius": round(smoke, 2), "temperature": round(34 + intensity * 3.8, 1)},
-                {"east_hydrant": "failed" if failed else "available", "resource_ready": resource, "power_off": power and not self.kitchen, "water_suppression": water,
+                {"east_hydrant": "failed" if failed else "available", "resource_ready": resource, "power_off": electric_off if self.causal else power and not self.kitchen, "water_suppression": water,
                  **({'hydrants': [dict(item) for item in sources], 'primary_hydrant_id': self.primary_id} if sources is not None else {}),
-                 **({'gas_off':power} if self.kitchen else {})})
+                 **({'gas_off':gas_off if self.causal else power} if self.kitchen else {}),
+                 'model':'causal_training_v2' if self.causal else 'legacy_training_v1'})
 
     def at(self, elapsed):
         fire, environment = self._base_at(elapsed)

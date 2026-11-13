@@ -25,7 +25,7 @@ const emit = defineEmits<{
   dispatch: [task: ExerciseTask]; locate: [task: ExerciseTask]; broadcast: []; assist: [ids: string[]]
   assign: [taskId: string, participantId: string]
   evacuate: [ids: string[], exit: 'north' | 'south']; focus: [id: string]
-  task: [id: string, action: 'accept' | 'arrive' | 'submit', evidence: string]
+  task: [id: string, action: 'accept' | 'arrive' | 'submit' | 'release', evidence: string]
   block: [id: string]; reopen: [id: string]; seek: [time: number]
 }>()
 const selectedRoad = ref(''), selectedPerson = ref('')

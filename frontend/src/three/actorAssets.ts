@@ -214,10 +214,12 @@ export class ActorAssets {
       rig.armPose = rig.arm.quaternion.clone()
       if (root.userData.exposed) rig.arm.rotateX(-.65)
       else if (root.userData.behaviorState === 'escorting') { rig.arm.rotateZ(-.18); rig.arm.rotateX(-.25) }
+      else if (root.userData.behaviorState === 'at_door') { rig.arm.rotateZ(-.2); rig.arm.rotateX(-.65) }
     }
     if (rig.forearm) {
       rig.forearmPose = rig.forearm.quaternion.clone()
       if (root.userData.exposed) rig.forearm.rotateX(-.85)
+      else if (root.userData.behaviorState === 'at_door') rig.forearm.rotateX(-.6)
     }
     for(const leg of rig.legs){
       [leg.hip,leg.knee,leg.foot].forEach((bone,i)=>leg.poses[i]!.copy(bone.quaternion))

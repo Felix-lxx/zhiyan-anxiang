@@ -58,7 +58,7 @@ def patch_charging_shed_parameters(scene_id: str, payload: ChargingShedParameter
         if scene is None:
             raise HTTPException(status_code=404, detail="未找到该场景草稿。")
         owned_community(session, scene.community_id, identity.username)
-        updated = update_scene_parameters(session, scene=scene, parameters=payload.model_dump())
+        updated = update_scene_parameters(session, scene=scene, parameters=payload.model_dump(exclude_unset=True))
         if updated is None:
             raise HTTPException(status_code=422, detail="起火点必须是该场景社区版本中的充电棚对象。")
         return serialize(updated)
@@ -156,7 +156,7 @@ def post_preview(scene_id: str, payload: ChargingShedParametersUpdate | KitchenP
     if scene is None:
         raise HTTPException(status_code=404, detail="未找到该场景草稿。")
     owned_community(session, scene.community_id, identity.username)
-    return build_preview(session, scene, minute, payload.model_dump())
+    return build_preview(session, scene, minute, payload.model_dump(exclude_unset=True))
 
 @router.post('/scenes/{scene_id}/validate')
 def validate_scene(scene_id:str,identity:AuthenticatedIdentity=Depends(get_current_identity),session:Session=Depends(get_db)):

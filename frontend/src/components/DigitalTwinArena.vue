@@ -34,9 +34,10 @@ import AppIcon from './AppIcon.vue'
 
 interface Resident extends RescueResident { height?: number; building_id?: string; floor?: number; current_floor?: number; indoor_stage?: string; current_edge_id?: string | null; id: string; label: string; vulnerable: boolean; status: string; x: number; y: number; progress: number; exit?: 'north' | 'south'; behavior?: string; smoke_exposure?: number; congestion?: number; queue_seconds?: number; last_location?: string; assisted?: boolean; search_responsible?: string; speed_factor?: number; route_points?: Array<{ x: number; y: number; height?: number }>; route_edge_ids?: string[]; route_reachable?: boolean; estimated_seconds?: number }
 interface SpatialEdgeState { id: string; kind: string; start: { x: number; y: number; height: number }; end: { x: number; y: number; height: number }; width_meters: number; density_percent?: number; live_occupancy?: number; waiting_count?: number; capacity_persons?: number }
-interface Resident { motion_trace?: Array<{ x:number; y:number; height:number; at_seconds:number }> }
+interface Resident { household_label?:string;profile_label?:string;notification_state?:'unnotified'|'sent'|'confirmed'; motion_trace?: Array<{ x:number; y:number; height:number; at_seconds:number }> }
 interface RoadEdgeState { geometry_blocked?: boolean; blocked_reason?: string; reserved_by_vehicle?: string | null; id: string; name: string; start: { x: number; y: number }; end: { x: number; y: number }; width_meters: number; status: 'open' | 'restricted' | 'blocked'; blocked_by_event: boolean; risk_score: number; smoke_risk?: number; density_percent?: number; live_occupancy?: number; waiting_count?: number; capacity_persons?: number; flow_capacity_per_second?: number }
 interface Simulation {
+  community?: import('../domain/community').CommunityTraining | null
   vehicles?: Vehicle[]
   spatial_network?: { nodes: Array<{id:string;name:string;x:number;y:number;height:number;kind:string;floor:number;is_exit?:boolean;building_id?:string}>; edges: SpatialEdgeState[] }
   world?: { schema_version?: number; spatial_units?:{height_mode?:string}; parameters?: { start_time?: string; wind_direction?: string; fire_floor?:number }; fire_source?: { location: { object_id: string }; device_id?: string; ignition_position?: { x: number; y: number; height: number } }; objects: Array<{ id: string; name: string; type: string; x: number; y: number; width: number; depth: number; floors: number; entry: { x: number; y: number } }>; fire_origin: { x: number; y: number; height?:number } } | null
@@ -237,7 +238,7 @@ const actorAssetLabel = computed(() => modelResourceStatus.value === 'loading' ?
 const clockLabel = computed(() => `${String(Math.floor(props.elapsedSeconds / 60)).padStart(2, '0')}:${String(props.elapsedSeconds % 60).padStart(2, '0')}`)
 const activeResident = computed(() => props.simulation?.residents.find((item) => item.id === selectedResident.value) ?? props.simulation?.residents.find((item) => item.status === 'moving'))
 const activeHelper = computed(() => props.simulation?.helpers?.find((helper) => helper.resident_id === activeResident.value?.id))
-const displayedHelpers = computed(() => presentHelpers(props.simulation?.helpers ?? []))
+const displayedHelpers = computed(() => presentHelpers([...(props.simulation?.helpers ?? []),...(props.simulation?.community?.visits??[])]))
 const escortStatusLabel = computed(() => {
   switch (activeHelper.value?.state) {
     case 'completed': return '已护送到达'
@@ -843,14 +844,15 @@ function focusTaskTarget(task: {title:string;kind?:string;target_device_id?:stri
 }
 function focusResident(id: string): void {
   const person = props.simulation?.residents.find(p => p.id === id)
-  if (!person) return
-  if(person.indoor_stage==='outdoor'&&indoorView.value)toggleIndoor(true)
-  if (viewMode.value === 'resident' && selectedResident.value === id) {
-    selected.value = { title: person.label, type: person.vulnerable ? '重点关照人员' : '参演居民智能体', detail: person.behavior ?? '等待指令', residentId: person.id, x: person.x, y: person.y }
-    return
-  }
+  if (!person || !scene || !controls) return
+  // A task's location action is an inspection, not an implicit first-person
+  // camera switch: an indoor eye camera can be facing a nearby wall.
   if (person?.indoor_stage && person.indoor_stage !== 'outdoor') focusIndoorFloor(Math.max(1,Math.ceil(person.current_floor??person.floor??1)),person.building_id)
-  selectAccessibleObject({ target: { value: id } } as unknown as Event)
+  else focusPoint(person.x, person.y)
+  viewMode.value = 'director'; toolMode.value = 'inspect'; controls.enabled = true
+  selectedResident.value = id
+  selected.value = { title: person.label, type: person.vulnerable ? '重点关照人员' : '参演居民智能体', detail: person.behavior ?? '等待指令', residentId: person.id, x: person.x, y: person.y }
+  updateEntities(); renderDirty = true
 }
 function pointRobotAtSelection(): void {
   if (!props.interactive || selected.value?.x === undefined || selected.value?.y === undefined) return
@@ -1013,7 +1015,10 @@ function updateHelperLink(helper: NonNullable<Simulation['helpers']>[number], he
     }
   }
   const pulse = helperMesh.userData.meetingPulse as THREE.Mesh | undefined
-  if (pulse) pulse.visible = helper.state === 'escorting'
+  if (pulse) {
+    pulse.visible = helper.state === 'escorting' || helper.state === 'at_door'
+    ;(pulse.material as THREE.MeshBasicMaterial).color.setHex(helper.state==='at_door'?0xe8b966:0x74b7ff)
+  }
 }
 
 function updateStairHeat(): void {
@@ -1178,7 +1183,7 @@ function updateEntities(): void {
       mesh.userData.exposed=danger;mesh.userData.crowded=crowded
       mesh.userData.behaviorState = resident.status
       mesh.userData.assisted = resident.assisted
-      if (ringMaterial) { ringMaterial.color.setHex(selectedResidents.value.includes(resident.id) ? 0xffffff : danger ? 0xff4d2e : crowded ? 0xffc45d : resident.vulnerable ? 0xf3be62 : 0x8ed0c2); ringMaterial.opacity = selectedResidents.value.includes(resident.id) ? 1 : .75 }
+      if (ringMaterial) { ringMaterial.color.setHex(selectedResidents.value.includes(resident.id) ? 0xffffff : danger ? 0xff4d2e : crowded ? 0xffc45d : resident.notification_state==='unnotified'?0x91a6b9:resident.notification_state==='sent'?0xe4b05f:resident.vulnerable ? 0xf3be62 : 0x8ed0c2); ringMaterial.opacity = selectedResidents.value.includes(resident.id) ? 1 : .75 }
       mesh.scale.setScalar(1)
       if (indoorView.value && resident.height === undefined && resident.indoor_stage && resident.indoor_stage !== 'outdoor') {
         const home = props.simulation?.world?.objects.find(o => o.id === resident.building_id)
@@ -1728,7 +1733,7 @@ watch(() => [props.routePreview, props.robotRoutePreview], () => updateEntities(
           <p v-else-if="robot.state === 'blocked'">先解除道路封锁，或重新规划路线。</p>
           <span>后续排队 {{ robot.task_queue?.filter(task => task.status === 'queued').length ?? 0 }} 项</span>
         </section>
-        <dl v-if="selected.residentId && activeResident" class="resident-vitals"><div><dt>行为</dt><dd>{{ activeResident.behavior ?? '等待指令' }}</dd></div><div><dt>烟气暴露</dt><dd>{{ activeResident.smoke_exposure ?? 0 }}</dd></div><div><dt>拥堵指数</dt><dd>{{ activeResident.congestion ?? 0 }}</dd></div></dl>
+        <p v-if="selected.residentId && activeResident?.household_label">{{activeResident.household_label}} · {{activeResident.profile_label}} · {{activeResident.notification_state==='confirmed'?'已回执收到通知':activeResident.notification_state==='sent'?'已覆盖，待确认':'尚未通知'}}</p><dl v-if="selected.residentId && activeResident" class="resident-vitals"><div><dt>行为</dt><dd>{{ activeResident.behavior ?? '等待指令' }}</dd></div><div><dt>烟气暴露</dt><dd>{{ (activeResident.smoke_exposure ?? 0).toFixed(2) }}</dd></div><div><dt>拥堵指数</dt><dd>{{ activeResident.congestion ?? 0 }}</dd></div></dl>
         <button v-if="selected.vehicleId" type="button" @click="emit('dispatchVehicle', selected.vehicleId); selected = null">安排车辆 / 查看行程</button>
         <section v-if="assemblyCounts" class="assembly-attendance" aria-label="集合点到达与核验">
           <dl class="resident-vitals"><div><dt>真实到达</dt><dd>{{ assemblyCounts.arrived }} 人</dd></div><div><dt>已清点</dt><dd>{{ assemblyCounts.counted }} 人</dd></div><div><dt>分配此出口、尚未到达</dt><dd>{{ assemblyCounts.inbound }} 人</dd></div></dl>

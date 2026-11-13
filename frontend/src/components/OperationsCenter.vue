@@ -21,6 +21,8 @@ import AppIcon from './AppIcon.vue'
 import TaskWorkflow from './TaskWorkflow.vue'
 import GuidedExercise from './GuidedExercise.vue'
 import TrainingJourneyPanel from './TrainingJourneyPanel.vue'
+import CommunityOperations from './CommunityOperations.vue'
+import type {HouseholdNotice} from '../domain/community'
 import type { TrainingAction } from '../domain/training'
 import SpatialTrainingLab from './SpatialTrainingLab.vue'
 import SceneAssistant, { type AssistantAction, type AssistantFocusContext } from './SceneAssistant.vue'
@@ -398,7 +400,7 @@ async function commandResidents(context: { residentIds: string[]; exit: 'north' 
   if ((current.value?.engine_version ?? 1) >= 3) { closeFloatingPanels(); coachOpen.value=true; await nextTick(); await trainingLab.value?.previewCommand(context); return }
   await requestDrill('/residents', 'POST', { resident_ids: context.residentIds, exit: context.exit, action: context.action })
 }
-async function taskAction(taskId: string, action: 'accept' | 'arrive' | 'submit', evidence: string): Promise<void> { const label = action === 'accept' ? '任务已接收，请到目标点后回执到位' : action === 'arrive' ? '到位回执已记录，请提交处置证据' : '处置证据已核验，现场影响和过程评分已更新'; await requestDrill(`/tasks/${taskId}/actions`, 'POST', { action, evidence }, label) }
+async function taskAction(taskId: string, action: 'accept' | 'arrive' | 'submit' | 'release', evidence: string): Promise<void> { const label = action==='release'?'已撤回接收并释放岗位；原有证据保留':action === 'accept' ? '任务已接收，请到目标点后回执到位' : action === 'arrive' ? '到位回执已记录，请提交处置证据' : '处置证据已核验，现场影响和过程评分已更新'; await requestDrill(`/tasks/${taskId}/actions`, 'POST', { action, evidence }, label) }
 function taskAssignees(task: DrillTask) { return current.value?.participants.find(item => item.role === task.responsible_role)?.members?.filter(item => item.online) ?? [] }
 async function assignTask(taskId: string, participantId: string): Promise<void> { await requestDrill(`/tasks/${taskId}/assign`, 'POST', { participant_id: participantId }, '任务已同步给指定参演成员，等待其在手机端接收') }
 function locateTask(task: DrillTask): void { closeFloatingPanels(); arena.value?.focusTaskTarget(task) }
@@ -442,6 +444,12 @@ async function downloadReport(): Promise<void> {
   try { const report = await api.request<Record<string, unknown>>(`${props.apiBaseUrl}/drills/${current.value.id}/report`, { headers: headers() }); const blob = new Blob([JSON.stringify(report, null, 2)], { type: 'application/json;charset=utf-8' }); const url = URL.createObjectURL(blob), anchor = document.createElement('a'); anchor.href = url; anchor.download = `${current.value.name}-复盘报告.json`; anchor.click(); URL.revokeObjectURL(url) }
   catch (cause) { error.value = cause instanceof Error ? cause.message : '请先结束演练并生成评分。' }
 }
+async function submitCommunityNotice(payload:HouseholdNotice){
+  if(!current.value||replay.value||busy.value)return
+  const message=payload.action==='household_visit'?'到户核查已受理，可定位住户观察值守员行程。':payload.action==='household_visit_cancel'?'结束请求已受理，岗位按实际行程释放。':'分户回执已记录，住户状态与现场同步更新。'
+  await requestDrill('/participant-actions','POST',{role:'物业/网格员',...payload},message)
+}
+function locateCommunityResident(id:string){closeFloatingPanels();arena.value?.focusResident(id)}
 function closeFloatingPanels(): void { panelGeneration++; focusedTaskId.value=undefined; activePanel.value = 'none'; branchEvidence.value = null; clearSpatialPreview() }
 function toggleAssistant(): void { const next = !assistantOpen.value; closeFloatingPanels(); assistantOpen.value = next }
 function openAssistant(context?: AssistantFocusContext | null): void { if (context !== undefined) assistantFocus.value = context; closeFloatingPanels(); assistantOpen.value = true }
@@ -460,6 +468,7 @@ async function askTraining(): Promise<void> {
 async function trainingAction(action: TrainingAction): Promise<void> {
   if (!current.value || replay.value || busy.value) return
   switch (action.kind) {
+    case 'households': closeFloatingPanels();drawer.value='training';await nextTick();document.querySelector('.community-operations')?.scrollIntoView({block:'start'});break
     case 'start': await act('start'); break
     case 'resume': await act('resume'); break
     case 'finish': await act('end'); break
@@ -604,7 +613,10 @@ onBeforeUnmount(() => { desiredDrillId = ''; stopLive?.(); clearSpatialPreview()
           <UiToast v-if="error" :message="error" tone="danger" @dismiss="error=''"/>
           <UiToast v-else-if="commandNotice&&!replay" :message="commandNotice" tone="success" :action-label="drawer==='missions'?'':'查看执行'" @action="commandNotice='';toggleDrawer('missions')" @dismiss="commandNotice=''"/>
           <button v-if="drawer!=='training' && current.journey && !replay" type="button" class="director-workspace-back" @click="openTraining"><AppIcon name="back" :size="18" />返回当前任务</button>
-          <TrainingJourneyPanel v-if="drawer==='training' && current.journey && !replay" :journey="current.journey" :status="current.status" :busy="busy" @action="trainingAction" @ask="askTraining" />
+          <div v-if="drawer==='training'" class="director-training-body">
+            <CommunityOperations v-if="displayed.simulation.community" :key="current.id" :community="displayed.simulation.community" :staff="displayed.simulation.environment.response_staff" :running="!replay && current.status==='running'" :busy="busy" :can-report="!replay" can-locate can-visit @notice="submitCommunityNotice" @locate="locateCommunityResident" @task="inspectTask"/>
+            <TrainingJourneyPanel v-if="current.journey && !replay" :journey="current.journey" :status="current.status" :busy="busy" @action="trainingAction" @ask="askTraining" />
+          </div>
           <AssemblyRollcall v-else-if="drawer==='rollcall'" :people="displayed.simulation.residents" :busy="busy" :running="!replay&&current.status==='running'" @confirm="confirmRollcall" @focus="id=>{closeFloatingPanels();arena?.focusResident(id)}"/>
           <div v-else-if="drawer==='indoor' && displayed.simulation?.environment.indoor" class="drawer-list">
             <IndoorFirePanel :tasks="displayed.tasks" @task="inspectTask" :selected-door-id="selectedIndoorDoor" :state="displayed.simulation.environment.indoor" :residents="displayed.simulation.residents" :active-floor="indoorFocus?.buildingId===displayed.simulation.environment.indoor.building_id?indoorFocus.floor:undefined" :readonly="Boolean(replay)||current.status!=='running'" :busy="busy" @door="value=>requestDrill('/indoor/doors','POST',value,'房门状态已更新，烟气与通行同步改变')" @focus="floor=>{selectedIndoorDoor=undefined;arena?.focusIndoorFloor(floor)}" @resident="id=>{closeFloatingPanels();arena?.focusResident(id)}" @select="ids=>{closeFloatingPanels();arena?.selectResidents(ids)}"/>
