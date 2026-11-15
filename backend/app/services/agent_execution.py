@@ -8,6 +8,8 @@ from sqlalchemy import select
 from app.models.operations import DrillCommand, DrillEvent
 from app.services.agent_task_graph import case_task_view
 from app.services.water_resources import effective_spray
+from app.services.release_conditions import check_release
+from app.services.agent_notifications import notice_state, notice_summary
 
 
 def coordination_view(run, data, steps):
@@ -61,6 +63,7 @@ def coordination_view(run, data, steps):
             issues.append({"id": person["id"], "resident_id": person["id"],
                 "label": person["label"], "severity": "danger" if person["blocked"] else "warning",
                 "reason": "路线受阻，请定位后核对通道" if person["blocked"] else "累计烟气暴露超过阈值，请检查护送与出口安排"})
+    notifications = notice_summary(steps, data)
     case_tasks = case_task_view(steps, data) if run.scope.get('include_case_tasks') else []
     case_pending = [task for task in case_tasks if task['state'] not in {'completed', 'waiting'}]
     case_pending.sort(key=lambda item: (not item.get('verification_ready'),
@@ -88,7 +91,12 @@ def coordination_view(run, data, steps):
         elif waiting:
             wave_state = 'waiting'
         automatic_stopped = run.status in {'stopped','taken_over','unfinished'} and waiting is not None
+        gate = check_release(waiting, data, steps) if waiting and waiting.get('release_gate') else None
+        if gate and gate['state']=='blocked' and not automatic_stopped:
+            wave_state='blocked'
         release_waves.append({'wave': wave['wave'], 'total': len(selected),
+            'release_mode':next((s['release_gate']['mode'] for s in wave['steps'] if s.get('release_gate')), 'assembly_serial'),
+            'release_check':gate,
             'arrived': sum(p['status'] == 'evacuated' for p in selected),
             'buildings': [{'id': building_id,
                 'name': next((obj['name'] for obj in data['simulation'].get('world', {}).get('objects', []) if obj['id'] == building_id), building_id),
@@ -99,7 +107,8 @@ def coordination_view(run, data, steps):
             'state': 'stopped' if automatic_stopped else wave_state,
             'reason': '本批已实际到集合点，清点结果以集合核验为准。' if done else
                 '本计划已停止自动下令，本批等待人工重新安排；已受理移动继续保留。' if automatic_stopped else
-                failed['reason'] if failed else waiting['reason'] if waiting else '人员沿连续通道撤离，等待真实到场回执。'})
+                failed['reason'] if failed else gate['reason'] if gate and not gate['ready'] else
+                waiting['reason'] if waiting else '人员沿连续通道撤离，等待真实到场回执。'})
     blocked_ids = {person['id'] for person in attention.values() if person['blocked']}
     closed_door = next((door for door in data['simulation'].get('environment', {}).get('indoor', {}).get('doors', [])
                         if door['state'] == 'closed' and any(actor['kind'] == 'resident' and actor['id'] in blocked_ids
@@ -114,6 +123,9 @@ def coordination_view(run, data, steps):
     elif issues and issues[0]['severity'] == 'danger' and run.status in {'executing', 'waiting'}:
         next_action = {'kind': 'focus', 'label': '定位'+issues[0]['label'],
                        'resident_id': issues[0]['resident_id'], 'reason': issues[0]['reason']}
+    elif notifications['waiting'] and run.status in {'executing','waiting'}:
+        next_action = {'kind':'households','label':'核实住户通知','reason':notifications['items'][0]['reason'],
+                       'household_id':notifications['items'][0]['id']}
     elif case_pending:
         task = case_pending[0]
         next_action = {'kind': 'missions',
@@ -139,7 +151,7 @@ def coordination_view(run, data, steps):
             {"id": "planning", "label": "疏散规划", "state": "review" if run.status == "needs_review" else "approval" if awaiting else "confirmed",
              "detail": f"版本 {run.revision}，待确认 {len(run.candidates)} 个方案" if awaiting else run.reason},
             {"id": "resources", "label": "资源协同", "state": "waiting" if any(s["status"] == "waiting" for s in steps) else "observing",
-             "detail": f"人员行动 {len(steps)-len(robot_steps)-len(vehicle_steps)} 项；机器人 {sum(s['status']=='completed' for s in robot_steps)}/{len(robot_steps)} 项；车辆 {sum(s['status']=='completed' for s in vehicle_steps)}/{len(vehicle_steps)} 项"},
+             "detail": f"人员行动 {sum(s.get('kind') == 'residents.assign' for s in steps)} 项；机器人 {sum(s['status']=='completed' for s in robot_steps)}/{len(robot_steps)} 项；车辆 {sum(s['status']=='completed' for s in vehicle_steps)}/{len(vehicle_steps)} 项"},
             {"id": "supervision", "label": "执行监督", "state": "attention" if issues or stalled else "observing",
              "detail": f"已完成 {completed}/{len(steps)} 项；{len(issues)} 项人员风险，{len(stalled)} 项长时间未推进"},
         ], "issues": issues[:6], "issue_count": len(issues), "bottlenecks": sorted(bottlenecks.values(), key=lambda p: (-p["waiting"], -p["max_wait_seconds"]))[:4],
@@ -160,7 +172,7 @@ def coordination_view(run, data, steps):
             "verification_ready": sum(bool(task.get('verification_ready')) for task in case_pending),
             "overdue": sum(bool(task.get('overdue')) for task in case_pending),
             "next": case_pending[0] if case_pending else None},
-        "next_action": next_action}
+        "notifications": notifications, "next_action": next_action}
 
 
 def execution_view(session, run, data):
@@ -179,6 +191,8 @@ def execution_view(session, run, data):
     for original in run.steps:
         step = dict(original)
         step.pop("progress_signature", None)
+        if step.get('kind')=='community.notice' and step['status'] not in {'unfinished','cancelled','failed','superseded'}:
+            step.update(notice_state(step,data))
         receipt = receipts.get(step["command_id"])
         if receipt:
             step.update(status=receipt.status, progress=receipt.progress, reason=receipt.reason)

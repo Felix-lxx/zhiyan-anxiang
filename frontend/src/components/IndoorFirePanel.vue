@@ -2,15 +2,26 @@
 import {computed,ref,watch} from 'vue'
 import type {IndoorState} from '../domain/indoor'
 import type {ExerciseTask} from '../domain/task'
-interface Occupant {id:string;label:string;building_id?:string;current_floor?:number;floor?:number;indoor_stage?:string;status:string;behavior?:string;route_reachable?:boolean;queue_seconds?:number}
-const props=defineProps<{state:IndoorState;tasks?:ExerciseTask[];readonly?:boolean;busy?:boolean;activeFloor?:number;selectedDoorId?:string;residents?:Occupant[]}>()
-const emit=defineEmits<{door:[value:{door_id:string;state:'open'|'closed'}];focus:[floor:number];resident:[id:string];select:[ids:string[]];task:[id:string]}>()
+import IndoorFloorPlan from './IndoorFloorPlan.vue'
+import DwellingInspector from './DwellingInspector.vue'
+interface Occupant {id:string;label:string;x:number;y:number;vulnerable?:boolean;building_id?:string;current_floor?:number;floor?:number;indoor_stage?:string;status:string;behavior?:string;route_reachable?:boolean;queue_seconds?:number}
+const props=defineProps<{state:IndoorState;tasks?:ExerciseTask[];readonly?:boolean;historical?:boolean;busy?:boolean;activeFloor?:number;selectedDoorId?:string;selectedZoneId?:string;residents?:Occupant[]}>()
+const emit=defineEmits<{household:[id:string];door:[value:{door_id:string;state:'open'|'closed'}];doorFocus:[id:string];zone:[id:string];passage:[id:string];focus:[floor:number];resident:[id:string];select:[ids:string[]];task:[id:string]}>()
 const selected=ref<number>()
+const plan=ref<InstanceType<typeof IndoorFloorPlan>>()
+function returnToPlan(){
+  const element=plan.value?.$el as HTMLElement|undefined
+  element?.scrollIntoView({block:'start',behavior:'instant'})
+  element?.querySelector<HTMLElement>('button[aria-pressed=true]')?.focus({preventScroll:true})
+}
 watch(()=>[props.state.building_id,props.activeFloor],()=>{selected.value=props.activeFloor},{immediate:true})
 const floors=computed(()=>[...new Set(props.state.zones.map(zone=>zone.floor))].filter(floor=>floor>0).sort((a,b)=>a-b))
 const floor=computed(()=>selected.value??props.state.zones.find(zone=>zone.id===props.state.source_zone_id)?.floor??1)
 const zones=computed(()=>props.state.zones.filter(zone=>zone.floor===floor.value))
 const doors=computed(()=>props.state.doors.filter(door=>door.floor===floor.value).sort((a,b)=>Number(b.id===props.selectedDoorId)-Number(a.id===props.selectedDoorId)))
+const localDoor=ref('')
+watch(()=>[floor.value,props.selectedDoorId],()=>{localDoor.value=props.selectedDoorId??''},{immediate:true})
+const inspectedDoors=computed(()=>{const target=doors.value.find(door=>door.id===localDoor.value)??doors.value[0];return target?[target]:[]})
 const people=computed(()=>(props.residents??[]).filter(person=>person.building_id===props.state.building_id&&person.indoor_stage!=='outdoor'&&person.status!=='evacuated'&&Math.max(1,Math.ceil(person.current_floor??person.floor??1))===floor.value))
 const blocked=computed(()=>people.value.filter(person=>person.route_reachable===false).length)
 const source=computed(()=>props.state.zones.find(zone=>zone.id===props.state.source_zone_id))
@@ -31,6 +42,10 @@ const conditionLabel=(status:string)=>({moving:'沿通道撤离',waiting:'等待
       <span>{{floor===source?.floor?'当前为起火层':'起火点在 '+source?.floor+' 层'}}<template v-if="hottest"> · 本层最高烟气 {{Math.round(hottest.smoke_density*100)}}%</template></span>
       <button v-if="source&&floor!==source.floor" type="button" @click="selected=source.floor;emit('focus',source.floor)">返回起火层</button>
     </div>
+    <IndoorFloorPlan ref="plan" :state="state" :floor="floor" :residents="residents" :selected-zone-id="selectedZoneId" :selected-door-id="selectedDoorId"
+      @zone="id=>emit('zone',id)" @door="id=>emit('doorFocus',id)" @passage="id=>emit('passage',id)"/>
+    <DwellingInspector v-if="state.dwellings?.length" :dwellings="state.dwellings" :floor="floor" :selected-zone-id="selectedZoneId??(floor===source?.floor?state.source_zone_id:undefined)" :selected-door-id="selectedDoorId" :historical="historical"
+      @zone="id=>emit('zone',id)" @door="id=>emit('doorFocus',id)" @household="id=>emit('household',id)"/>
     <section v-if="roomTasks.length" class="indoor-fire-panel__tasks" aria-label="本层处置任务">
       <h4>本层处置</h4>
       <p v-if="gasValve">燃气阀：{{gasValve.state==='closed'?'已关闭 · 任务证据已核验':'打开 · 尚未核验关闭'}}。状态来自演练回执。</p>
@@ -39,8 +54,10 @@ const conditionLabel=(status:string)=>({moving:'沿通道撤离',waiting:'等待
     <section aria-label="本层房门" class="indoor-fire-panel__doors">
       <h4>房门与通行</h4>
       <p>关闭房门会减少烟气交换并阻断通行，先确认房内与门口人员已撤离。</p>
-      <article v-for="door in doors" :key="door.id" class="indoor-fire-panel__door" :class="{'is-selected':door.id===selectedDoorId}">
+      <label v-if="doors.length>1">核对哪扇门<select :value="inspectedDoors[0]?.id" @change="localDoor=($event.target as HTMLSelectElement).value;emit('doorFocus',localDoor)"><option v-for="door in doors" :key="door.id" :value="door.id">{{door.label}}</option></select></label>
+      <article v-for="door in inspectedDoors" :key="door.id" :id="'indoor-door-'+door.id" class="indoor-fire-panel__door" :class="{'is-selected':door.id===selectedDoorId}" tabindex="-1">
         <div class="indoor-fire-panel__door-title"><strong>{{door.label}}</strong><span>{{door.id===selectedDoorId?'现场选中 · ':''}}{{door.state==='open'?'打开，可通行':'关闭，暂不可通行'}}</span></div>
+        <button v-if="door.id===selectedDoorId" type="button" @click="returnToPlan">返回本层平面</button>
         <p v-if="door.portal">门洞净宽 {{door.portal.width.toFixed(2)}} 米 · 地面标记显示人员净距检查区；人工和智能体关门使用同一占用校验。</p>
         <p v-if="door.state==='open'&&door.can_close===false" class="indoor-fire-panel__warning">{{door.blocked_reason}}</p>
         <ul v-if="door.occupants?.length" class="indoor-fire-panel__occupants">
@@ -85,6 +102,7 @@ const conditionLabel=(status:string)=>({moving:'沿通道撤离',waiting:'等待
 .indoor-fire-panel__doors>p,.indoor-fire-panel__door p { font-size:14px; margin:8px 0; }
 .indoor-fire-panel .indoor-fire-panel__door { display:grid; grid-template-columns:minmax(0,1fr); gap:8px; margin:0; border:0; border-bottom:1px solid var(--border-default); background:transparent; padding:16px 0; }
 .indoor-fire-panel__door.is-selected { background:var(--surface-raised); padding:16px; outline:1px solid var(--action-primary); border-radius:var(--radius-sm); }
+.indoor-fire-panel__door{scroll-margin-top:16px}
 .indoor-fire-panel__door>button { justify-self:start; white-space:normal; }
 .indoor-fire-panel__occupants { list-style:none; margin:0; padding:0; }
 .indoor-fire-panel__occupants li { display:flex; flex-wrap:wrap; align-items:center; justify-content:space-between; gap:8px; font-size:14px; }

@@ -98,6 +98,8 @@ def capture_world(session: Session, version: SceneVersion, parameters_override: 
     from app.services.scoring_reference import build_scoring_reference
     world['scoring_reference'] = build_scoring_reference(world)
     world['training_briefing'] = build_briefing(world)
+    from app.services.model_manifest import freeze_model_manifest
+    freeze_model_manifest(world)
     return world
 
 

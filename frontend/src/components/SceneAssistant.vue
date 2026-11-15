@@ -10,7 +10,7 @@ import type { AgentAssignment, AgentLiveState } from '../domain/agent'
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import AppIcon from './AppIcon.vue'
 import '../assistant.css'
-export type AssistantAction = { kind: 'training' | 'missions' | 'events' | 'report' | 'command' | 'rollcall' | 'branch' | 'focus' | 'plan' | 'replay' | 'indoor' | 'knowledge'; label: string; resident_id?: string; door_id?:string; object_kind?:'robot'|'vehicle'; at_seconds?:number;plan_id?:string;document_id?:string;version_id?:string;chunk_id?:string;task_id?:string }
+export type AssistantAction = { kind: 'training' | 'missions' | 'events' | 'report' | 'command' | 'rollcall' | 'branch' | 'focus' | 'plan' | 'replay' | 'indoor' | 'knowledge' | 'households'; label: string; resident_id?: string; household_id?:string; door_id?:string; edge_id?:string; object_kind?:'robot'|'vehicle'|'passage'; at_seconds?:number;plan_id?:string;document_id?:string;version_id?:string;chunk_id?:string;task_id?:string }
 export interface AssistantFocusContext { kind: 'resident' | 'road' | 'robot' | 'object' | 'command' | 'score' | 'replay'; id?: string; label: string; type?: string; detail?: string; x?: number; y?: number }
 interface Reply {
   knowledge?: import('../domain/knowledge').KnowledgeResult
@@ -286,7 +286,7 @@ onBeforeUnmount(() => { for (const [element, wasInert] of inertSiblings) element
       <div v-if="error" class="scene-assistant__error" role="alert"><p>{{ error }}</p><button type="button" :disabled="pending" @click="send(lastQuestion)">重试本次问题</button></div>
     </div>
     <div v-show="activeView==='plan'" class="scene-assistant__log" aria-label="目标计划工作区">
-      <AgentPlanWorkspace @building-focus="id=>emit('buildingFocus',id)"
+      <AgentPlanWorkspace @household="id=>navigate({kind:'households',household_id:id,label:'核实住户通知'})" @building-focus="id=>emit('buildingFocus',id)" @passage="id=>navigate({kind:'focus',object_kind:'passage',edge_id:id,label:'定位放行通道'})"
         :api-base-url="apiBaseUrl" :access-token="accessToken" :drill-id="drillId" :active="open&&activeView==='plan'" :historical="atSeconds!==null" :model-available="!!provider?.configured" :live-feed="agentFeed" :connection="connection" :goal-draft="goalDraft" :plan-focus="planFocus" :focus-id="focusContext?.kind==='resident'?focusContext.id:undefined" @preview="previewPlan" @resident-focus="id=>navigate({kind:'focus',label:'定位目标居民',resident_id:id})" @robot="navigate({kind:'focus',object_kind:'robot',label:'定位机器人'})" @vehicle="navigate({kind:'focus',object_kind:'vehicle',label:'查看消防车调度'})" @indoor="id=>navigate({kind:'indoor',door_id:id,label:'检查受阻房门'})" @missions="navigate({kind:'missions',label:'查看案例责任任务'})" @task="id=>navigate({kind:'missions',label:'查看任务核验依据',task_id:id})" @rollcall="navigate({kind:'rollcall',label:'前往集合清点'})" @knowledge="(id,version,chunk)=>navigate({kind:'knowledge',label:'核对知识资料',document_id:id,version_id:version,chunk_id:chunk})" @replay="at=>navigate({kind:'replay',label:'回看决策结果',at_seconds:at})" />
     </div>
     <div v-show="activeView==='chat'" class="scene-assistant__compose">

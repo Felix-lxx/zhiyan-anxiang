@@ -8,6 +8,7 @@ import { ResidentialDoor } from './residentialDoor'
 import { IndoorSmoke } from './indoorSmoke'
 import { IndoorZoneSign } from './indoorZoneSign'
 import { SceneMaterials } from './sceneMaterials'
+import { createResidentialEntry } from './residentialEntry'
 
 /** Rooms load by floor; all solids respect the frozen walking paths. */
 export class IndoorFireVisuals {
@@ -23,6 +24,7 @@ export class IndoorFireVisuals {
   private materials: SceneMaterials
   private roomObjects = new Map<string, THREE.Group>()
   private riskMarkers = new Map<string, THREE.Mesh<THREE.RingGeometry, THREE.MeshBasicMaterial>>()
+  private selectedRoom:string|null=null
   constructor(private initial: IndoorState, private point: (x: number, y: number, height: number) => THREE.Vector3,
     private register: (object: THREE.Object3D, data: Record<string, unknown>) => void, private passages: Passage[] = [],
     changed: () => void = () => {}) {
@@ -31,6 +33,11 @@ export class IndoorFireVisuals {
 
   setQuality(quality: 'low' | 'medium' | 'high') {
     this.materials.setQuality(quality)
+  }
+
+  selectRoom(id:string|null){
+    this.selectedRoom=id
+    for(const [key,marker] of this.riskMarkers)marker.scale.setScalar(key===id?1.35:1)
   }
 
   private buildFloor(floor: number) {
@@ -48,6 +55,15 @@ export class IndoorFireVisuals {
           const slab=box(corridor,tile.width,.018,tile.depth,0xb9b7aa,tile.x-zone.x,-.009,tile.y-zone.y)
           slab.material.dispose(); slab.material=this.materials.surface('tile',0xc8c7bd,tile.width/.7,tile.depth/.7)
         }
+        continue
+      }
+      if(zone.kind==='entry_hall'){
+        const entrance=createResidentialEntry(zone,this.passages,this.materials)
+        entrance.group.position.copy(this.point(zone.x,zone.y,zone.height));layer.add(entrance.group)
+        for(const wall of entrance.walls)this.cutawayWalls.push({object:wall,center:this.point(zone.x,zone.y,zone.height),normalX:Math.sign(wall.position.x),normalZ:0})
+        this.roomObjects.set(zone.id,entrance.group)
+        this.register(entrance.group,{zoneId:zone.id,title:zone.name,type:'住户玄关',
+          detail:'户内过渡空间；厨房门与入户门分别影响烟气和通行。',x:zone.x,y:zone.y})
         continue
       }
       if (zone.kind !== 'room') continue
@@ -93,7 +109,7 @@ export class IndoorFireVisuals {
       const sign=new IndoorZoneSign(zone.width),label=sign.sprite
       // Keep the entire annotation above the 2.45 m wall, not intersecting it.
       label.position.set(0,2.53+label.scale.y/2,-zone.depth*.3);kitchen.add(label);this.labels.add(label);this.roomSigns.set(zone.id,sign)
-      this.register(kitchen, { title: zone.name, type: '厨房房间', detail: '房门、人员路径与分区烟气使用同一空间节点。',
+      this.register(kitchen, { zoneId:zone.id, title: zone.name, type: '厨房房间', detail: '房门、人员路径与分区烟气使用同一空间节点。',
         fireRoom: { floor: zone.floor, room: zone.id.endsWith(':east') ? 'east' : 'west' }, x: zone.x, y: zone.y })
       if (layout?.gas_valve && furnitureFits(counter, zone.height, this.passages)) {
         const device=layout.gas_valve,hardware=createGasValve(counter.depth),valve=hardware.group
@@ -123,7 +139,7 @@ export class IndoorFireVisuals {
         const center=this.point(room.x,room.y,room.height)
         for(const object of [wall,cap])this.cutawayWalls.push({object,center,normalX:Math.sin(opening.rotation),normalZ:Math.cos(opening.rotation)})
       }
-      const visual=new ResidentialDoor(width,door.portal?.clearance_radius??0,door.portal?.wall_depth??.22,this.materials)
+      const visual=new ResidentialDoor(width,door.portal?.clearance_radius??0,door.portal?.wall_depth??.22,this.materials,door.kind==='apartment_entry')
       const frame=visual.frame;frame.position.copy(this.point(opening.x,opening.y,room.height));frame.rotation.y=opening.rotation;layer.add(frame)
       this.doors.set(door.id,visual);this.doorFrames.set(door.id,frame)
       this.register(frame, {title:door.label,type:'可操作房门',action:'indoor-door',doorId:door.id,detail:'点击查看本扇房门、占用人员与通行条件。',x:opening.x,y:opening.y})
@@ -140,6 +156,7 @@ export class IndoorFireVisuals {
       this.volumes.get(zone.id)?.update(zone.smoke_density,zone.temperature)
       const marker = this.riskMarkers.get(zone.id)
       if (marker) marker.material.color.setHex(zone.id === state.source_zone_id ? 0xf06a43 : zone.smoke_density > .3 ? 0xe6b865 : 0x6dc6ad)
+      if (marker) marker.scale.setScalar(zone.id===this.selectedRoom?1.35:1)
       const room = this.roomObjects.get(zone.id)
       if (room?.userData.selection) room.userData.selection.detail = `${zone.id === state.source_zone_id ? '本场起火房间 · ' : ''}烟气 ${Math.round(zone.smoke_density * 100)}% · ${zone.temperature} ℃ · 可见度指数 ${zone.visibility}%`
     }

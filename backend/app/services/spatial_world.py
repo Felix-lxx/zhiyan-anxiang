@@ -23,6 +23,7 @@ def add_spatial_layout(world: dict, home: dict) -> dict:
     roads["obstacles"] = obstacles
     active_building = home.get("id")
     kitchen = world['parameters'].get('fire_source_type') == 'kitchen'
+    dwellings = []
     if kitchen:
         world['spatial_units'] = {'horizontal_meters_per_unit': 1, 'height_mode': 'meters', 'floor_height_meters': 3.2, 'ground_floor_height_meters': .18}
         world['model_notice'] = '厨房示例户型，平面每单位按1米、高程按米冻结；非实测建筑，烟气为分区训练规则。'
@@ -87,7 +88,27 @@ def add_spatial_layout(world: dict, home: dict) -> dict:
                     nodes[-1].update(width=geometry['width'], depth=geometry['depth'])
                     portal = node(f'{room_id}:entry', f'{name} · {floor}层厨房门前走廊', geometry['x'], y, floor_height(floor), 'corridor', floor)
                     nodes[-1].update(width=.9, depth=max(.3, d*.1))
-                    link(room_id, portal, 'room', .9)
+                    if geometry.get('entrance'):
+                        next(item for item in nodes if item['id']==room_id)['door_aperture_width'] = 1.2
+                        entrance = geometry['entrance']
+                        address = f'{floor}0{1 if side == "west" else 2}'
+                        next(item for item in nodes if item['id']==portal)['name'] = f'{name} · {address}户门外公共走廊'
+                        private = node(f'{room_id}:vestibule', f'{name} · {address}户玄关',
+                                       entrance['x'], entrance['y'], floor_height(floor), 'entry_hall', floor)
+                        nodes[-1].update(width=entrance['width'], depth=entrance['depth'])
+                        link(room_id, private, 'room', .9)
+                        link(private, portal, 'room', .9)
+                        dwellings.append({
+                            'id': room_id+':dwelling', 'building_id': active_building,
+                            'building_name': name, 'unit_number': 1, 'floor': floor,
+                            'apartment_number': address, 'label': f'{name} · 1单元{address}户',
+                            'kitchen_zone_id': room_id, 'entrance_zone_id': private,
+                            'entrance_node_id': portal,
+                            'door_id': f'space:{private}:{portal}',
+                            'kitchen_door_id': f'space:{room_id}:{private}',
+                        })
+                    else:
+                        link(room_id, portal, 'room', .9)
                     link(portal, hall, 'corridor', CORRIDOR_CLEAR_WIDTH)
         room_occupants = {}
         for index, person in enumerate(p for p in world["residents"] if p.get("building_id") == active_building):
@@ -98,7 +119,8 @@ def add_spatial_layout(world: dict, home: dict) -> dict:
                 room_id = f"indoor:{active_building}:{floor}:{side}"
                 fixed = next(n for n in nodes if n['id'] == room_id)
                 slot=room_occupants.get(room_id,0);room_occupants[room_id]=slot+1
-                px,py=fixed['x']+(-.32 if slot%2==0 else .32),fixed['y']+(.35 if slot//2==0 else -.35)
+                px = fixed['x'] + ((-.64, 0, .64)[slot % 3] if room_geometry[side].get('entrance') else (-.32 if slot%2==0 else .32))
+                py = fixed['y'] + .15 + .45*((slot//3) % 2) if room_geometry[side].get('entrance') else fixed['y']+(.35 if slot//2==0 else -.35)
                 berth=node(f"room-berth:{person['id']}",fixed['name']+' · '+person['label'],px,py,floor_height(floor),'room_berth',floor)
                 nodes[-1]['zone_id']=room_id
                 link(berth,room_id,'room',.9)
@@ -143,5 +165,6 @@ def add_spatial_layout(world: dict, home: dict) -> dict:
         edge.update(start={k: lookup[edge["start_node_id"]][k] for k in ("x", "y", "height")}, end={k: lookup[edge["end_node_id"]][k] for k in ("x", "y", "height")})
     world["spatial_network"] = {"nodes": nodes, "edges": edges, "destinations": destinations, "berths": berths, "building_id": home.get("id"), "building_ids": [b.get("id") for b in buildings], "stair_width": width}
     if kitchen:
-        world['spatial_network']['indoor_layout_version'] = 2
+        world['spatial_network']['indoor_layout_version'] = 3
+        world['residential_units'] = {'version': 1, 'dwellings': dwellings}
     return world

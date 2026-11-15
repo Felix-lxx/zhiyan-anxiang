@@ -8,10 +8,12 @@ import SpeechInput from './SpeechInput.vue'
 import KnowledgeEvidence from './KnowledgeEvidence.vue'
 import AgentPlanningEvidence from './AgentPlanningEvidence.vue'
 import AgentRevisionView from './AgentRevisionView.vue'
+import ReleaseWaveList from './ReleaseWaveList.vue'
+import NotificationPrerequisites from './NotificationPrerequisites.vue'
 import SpeechPlayback from './SpeechPlayback.vue'
 
 const props = defineProps<{ apiBaseUrl:string;accessToken:string;drillId:string;active:boolean;historical:boolean;modelAvailable:boolean;focusId?:string;liveFeed?:AgentLiveState|null;connection?:'connecting'|'live'|'stale';goalDraft?:{id:number;text:string}|null;planFocus?:{id:string;request:number}|null }>()
-const emit = defineEmits<{ preview:[people:AgentAssignment[]];residentFocus:[id:string];buildingFocus:[id:string];robot:[];vehicle:[];rollcall:[];missions:[];task:[id:string];indoor:[doorId?:string];replay:[at:number];knowledge:[id:string,version?:string,chunk?:string] }>()
+const emit = defineEmits<{ household:[id:string];preview:[people:AgentAssignment[]];passage:[id:string];residentFocus:[id:string];buildingFocus:[id:string];robot:[];vehicle:[];rollcall:[];missions:[];task:[id:string];indoor:[doorId?:string];replay:[at:number];knowledge:[id:string,version?:string,chunk?:string] }>()
 const api = createApiClient(props.apiBaseUrl, () => props.accessToken)
 const goal = ref('将目标居民分流疏散，重点人员安排护送'), building = ref(''), assist = ref(true), useModel = ref(false)
 const robotBroadcast = ref(false)
@@ -46,8 +48,10 @@ const stepSummary = computed(() => {
   const steps = run.value?.steps ?? []
   return { total:steps.length, completed:steps.filter(step => step.status === 'completed').length }
 })
-function dependencyLabel(step: { depends_on?:string[] }) {
-  return step.depends_on?.map(id => run.value?.steps.find(item => item.id === id)?.label).filter(Boolean).join('、')
+function dependencyLabel(step: { depends_on?:string[];release_after?:string[] }) {
+  const names=(ids:string[])=>ids.map(id=>run.value?.steps.find(item=>item.id===id)?.label).filter(Boolean).join('、')
+  return [step.depends_on?.length?`等待完成：${names(step.depends_on)}`:'',
+    step.release_after?.length?`等待受理：${names(step.release_after)}`:''].filter(Boolean).join('；')
 }
 const clock = (seconds:number) => `${String(Math.floor(seconds/60)).padStart(2,'0')}:${String(Math.floor(seconds%60)).padStart(2,'0')}`
 const signed = (value:number) => `${value>0?'+':''}${value}`
@@ -56,6 +60,7 @@ function nextAction() {
   if (!action || busy.value || syncError.value) return
   if (action.kind==='replan') void act('replan')
   else if (action.kind==='rollcall') emit('rollcall')
+  else if (action.kind==='households'&&action.household_id) emit('household',action.household_id)
   else if (action.kind==='missions' && action.task_id) emit('task',action.task_id)
   else if (action.kind==='missions') emit('missions')
   else if (action.kind==='indoor') emit('indoor',action.door_id)
@@ -287,8 +292,8 @@ onBeforeUnmount(()=>{disposed=true;generation++;pollEpoch++;clearTimeout(timer);
               <dl><div><dt>出口分配</dt><dd>北 {{item.metrics.north}} · 南 {{item.metrics.south}}</dd></div><div><dt>不可达</dt><dd>{{item.metrics.unreachable}} 人</dd></div><div><dt>{{item.forecast_seconds}} 秒后到场</dt><dd>{{item.metrics.arrived}} 人</dd></div><div><dt>暴露超阈值</dt><dd>{{item.metrics.exposed}} 人</dd></div><div><dt>累计排队</dt><dd>{{item.metrics.queue_seconds}} 人秒</dd></div><div><dt>{{item.forecast_seconds}}秒状态预估分</dt><dd>{{item.metrics.score}} <small>（{{item.metrics.score_delta>=0?'+':''}}{{item.metrics.score_delta}}）</small></dd></div></dl>
               <p v-if="item.assist_resource?.required" class="agent-workspace__resource-summary">需护送 {{item.assist_resource.required}} 人；本场 {{item.assist_resource.capacity}} 名值守员，{{item.assist_resource.busy}} 名正在执行。{{item.assist_resource.waves ? `至少分 ${item.assist_resource.waves} 批安排，实际等待取决于在途任务。` : '当前无可用值守员，不能执行护送。'}}</p>
               <section v-if="item.release_policy" class="agent-workspace__resource" aria-label="居民放行策略">
-                <h4>{{item.release_policy.mode==='building_waves'?'按楼栋分批放行':'立即组织撤离'}}</h4>
-                <p>{{item.release_policy.notice}}<template v-if="item.release_policy.mode==='building_waves'">共 {{item.release_policy.waves}} 批。每栋放行前核对或接续喷水；水源失效或接续失败时，后续批次进入待复核。</template></p>
+                <h4>{{item.release_policy.mode==='conditional_waves'?'按实时通道条件放行':item.release_policy.mode==='building_waves'?'按楼栋分批放行':'立即组织撤离'}}</h4>
+                <p>{{item.release_policy.notice}}<template v-if="item.release_policy.mode!=='immediate'">共 {{item.release_policy.waves}} 批。每栋放行前核对或接续喷水；水源失效或接续失败时，后续批次进入待复核。</template></p>
                 <dl><div v-if="item.metrics.cumulative_exposure!==undefined"><dt>预演累计暴露</dt><dd>{{item.metrics.cumulative_exposure}} 模型单位</dd></div><div><dt>{{item.metrics.all_arrived?'预计全员到场时刻':'预演内末位到场时刻'}}</dt><dd>{{item.metrics.last_arrival_at!=null?clock(item.metrics.last_arrival_at):'预演内无人到场'}}</dd></div></dl>
                 <p v-if="!item.metrics.all_arrived" class="agent-workspace__meta">尚未覆盖全员到场，以上时刻不代表最终疏散耗时。</p>
                 <template v-if="item.schedule_assessment">
@@ -314,7 +319,7 @@ onBeforeUnmount(()=>{disposed=true;generation++;pollEpoch++;clearTimeout(timer);
                 <p>这些连接与楼体相交，已从寻路中排除。请在地图编辑中调整，保存后新建场次；不能用“恢复道路”解除几何阻挡。</p>
                 <ul><li v-for="issue in item.geometry_issues" :key="issue.edge_id"><strong>{{ issue.name }}</strong><span>{{ issue.reason }}</span></li></ul>
               </details>
-              <p>{{item.reason}}</p><button type="button" :disabled="busy" @click="showRoute(item)"><AppIcon name="eye" :size="17" />在三维现场预览路线</button>
+              <p>{{item.reason}}</p><p v-if="item.notification_prerequisites" class="agent-workspace__notice">{{item.notification_prerequisites.waiting}} 户需要核实通知。{{item.notification_prerequisites.notice}}</p><button type="button" :disabled="busy" @click="showRoute(item)"><AppIcon name="eye" :size="17" />在三维现场预览路线</button>
               </template>
             </article>
           </div>
@@ -351,13 +356,9 @@ onBeforeUnmount(()=>{disposed=true;generation++;pollEpoch++;clearTimeout(timer);
             <p>{{coordination.vehicle.reason||'等待消防车状态回执'}}<template v-if="coordination.vehicle.target"> · {{coordination.vehicle.target}}</template></p>
             <p class="agent-workspace__meta">到场与喷水放行步骤已完成 {{coordination.vehicle.steps_completed}} / {{coordination.vehicle.steps_total}}</p>
           </section>
-          <section v-if="coordination?.release_waves?.length" class="agent-workspace__release" aria-label="楼栋分批放行进展">
-            <h4>楼栋放行进展</h4><p class="agent-workspace__meta">后一批等待前批真实到场；每批下令前核对有效喷水，火势与烟气均消退后直接满足放行条件。</p>
-            <ol><li v-for="wave in coordination.release_waves" :key="wave.wave">
-              <div><strong>第 {{wave.wave}} 批 · {{labels[wave.state]||wave.state}}</strong><span>到场 {{wave.arrived}} / {{wave.total}} 人</span></div><p>{{wave.reason}}</p>
-              <div class="agent-workspace__building-actions"><button v-for="home in wave.buildings??[]" :key="home.id" type="button" :disabled="historical" @click="emit('buildingFocus',home.id)">定位 {{home.name}} · {{home.arrived}}/{{home.total}} 人到场</button><button v-if="wave.resident_id" type="button" @click="emit('residentFocus',wave.resident_id)">查看这批居民</button></div>
-            </li></ol>
-          </section>
+          <NotificationPrerequisites v-if="coordination?.notifications?.total" :summary="coordination.notifications" :historical="historical" :stopped="['stopped','taken_over'].includes(run.status)" @household="id=>emit('household',id)"/>
+          <ReleaseWaveList v-if="coordination?.release_waves?.length" :waves="coordination.release_waves" :historical="historical"
+            @passage="id=>emit('passage',id)" @resident="id=>emit('residentFocus',id)" @building="id=>emit('buildingFocus',id)"/>
           <p v-if="run.execution" class="agent-workspace__meta">现场同步 {{clock(run.execution.at_seconds)}} · 事件 {{run.execution.event_sequence}}。展开步骤可定位受阻人员与查看执行依据。</p>
           <p v-if="['stopped','taken_over'].includes(run.status)" class="agent-workspace__notice">自动下令已停止；下方继续显示已受理指令的实际进展。</p>
           <p v-if="!run.steps.length">方案确认后，这里显示命令进度与等待原因。</p>
@@ -369,6 +370,7 @@ onBeforeUnmount(()=>{disposed=true;generation++;pollEpoch++;clearTimeout(timer);
               <p v-if="step.completion_rule" class="agent-workspace__meta">完成依据：{{step.completion_rule}}</p>
               <progress :value="step.progress" max="1" :aria-label="step.label+'进度'" />
               <p>{{step.reason}}</p>
+              <button v-if="step.kind==='community.notice'&&step.household_id" type="button" :disabled="historical" @click="emit('household',step.household_id)">核实本户通知</button>
               <p v-if="step.execution?.stalled" class="agent-workspace__notice">已 {{step.execution.idle_seconds}} 秒未观察到位置或命令进度变化，请定位现场检查。原指令继续保留。</p>
               <button v-if="step.resident_ids.length" type="button" @click="emit('residentFocus',step.resident_ids[0]!)">定位这组居民</button>
               <button v-else-if="step.kind==='robot.command'" type="button" @click="emit('robot')">定位机器人</button>

@@ -10,7 +10,7 @@ def attach_indoor_environment(world):
     graph = world['spatial_network']
     zones = []
     for node in graph['nodes']:
-        if node.get('building_id') != building_id or node['kind'] not in {'room', 'corridor', 'stairs', 'door'}:
+        if node.get('building_id') != building_id or node['kind'] not in {'room', 'entry_hall', 'corridor', 'stairs', 'door'}:
             continue
         width = building['width'] * (.4 if node['kind'] == 'room' else .18 if node['kind'] == 'stairs' else .7)
         depth = building['depth'] * (.4 if node['kind'] == 'room' else .7 if node['kind'] == 'stairs' else .16)
@@ -27,10 +27,18 @@ def attach_indoor_environment(world):
             room = next(zone for zone in zones if zone['id'] == edge['start_node_id'])
             hall = next(zone for zone in zones if zone['id'] == edge['end_node_id'])
             doors.append({'id': edge['id'], 'label': room['name'] + '房门', 'room_id': room['id'], 'floor': room['floor'],
-                          'portal': door_portal(room, hall, edge['width_meters']),
+                          'portal': door_portal(room, hall, room.get('door_aperture_width', edge['width_meters'])),
                           'state': world['parameters'].get('room_door_state', 'open') if room['id'] == source['location']['node_id'] else 'open'})
-    world['indoor_environment'] = {'model_version': 1, 'geometry_revision': 2, 'building_id': building_id, 'source_zone_id': source['location']['node_id'],
+    dwellings = [item for item in (world.get('residential_units') or {}).get('dwellings', []) if item['building_id']==building_id]
+    for dwelling in dwellings:
+        door = next(item for item in doors if item['id']==dwelling['door_id'])
+        door.update(kind='apartment_entry', label=dwelling['label']+'入户门', dwelling_id=dwelling['id'],
+                    protected_zone_ids=[dwelling['kitchen_zone_id'], dwelling['entrance_zone_id']])
+        kitchen_door = next(item for item in doors if item['id']==dwelling['kitchen_door_id'])
+        kitchen_door.update(kind='kitchen', label=dwelling['label']+'厨房门', dwelling_id=dwelling['id'])
+    world['indoor_environment'] = {'model_version': 1, 'geometry_revision': 3, 'building_id': building_id, 'source_zone_id': source['location']['node_id'],
                                  'zones': zones, 'links': links, 'doors': doors,
+                                 'dwellings': dwellings,
                                  'node_zones':{node['id']:node.get('zone_id',node['id']) for node in graph['nodes'] if node.get('building_id')==building_id}}
     for task in world['tasks']:
         if task['kind'] in {'gas_off', 'containment'}:
@@ -78,7 +86,7 @@ class KitchenSmokeTimeline:
                   'source_label': self.world['fire_source']['name'], 'zones': zones,
                   'doors': [{**door, 'state': self.doors[door['id']]} for door in self.model['doors']]}
         result['density_by_node']={node_id:self.density.get(zone_id,0) for node_id,zone_id in self.model['node_zones'].items()}
-        for key in ('equipment_layout_version', 'equipment_layouts', 'equipment_notice'):
+        for key in ('equipment_layout_version', 'equipment_layouts', 'equipment_notice', 'dwellings'):
             if key in self.model:
                 result[key] = self.model[key]
         from app.services.kitchen_equipment import equipment_state

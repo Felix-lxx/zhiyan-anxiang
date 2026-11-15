@@ -35,8 +35,13 @@ def attach_kitchen_equipment(world):
     for room in model['zones']:
         if room['kind'] != 'room':
             continue
-        counter = {'x': room['x'], 'y': room['y']-room['depth']*.38,
-                   'width': room['width']*.82, 'depth': room['depth']*.2}
+        # Domestic modules retain plausible dimensions in large rooms rather
+        # than stretching the fridge, stove and sink across the entire wall.
+        depth = min(.64, max(.46 if room['depth']<2.1 else .5, room['depth']*.2))
+        counter = {'x': room['x'], 'y': room['y']-room['depth']/2+.08+depth/2,
+                   'width': min(2.8, room['width']*.82), 'depth': depth}
+        if counter['width'] < 1.8 or depth+.16 > room['depth']:
+            continue
         if not clears_passages(counter, room['height'], world['spatial_network']['edges']):
             continue
         unit = counter['width']/4
@@ -54,7 +59,7 @@ def attach_kitchen_equipment(world):
                               'height': round(room['height']+1.35, 4)},
                  'approach_node_id': room['id'], 'approach_position': deepcopy(stove['approach_position'])}
         layouts.append({'room_id': room['id'], 'counter': counter, 'stove': stove, 'gas_valve': valve})
-    model.update(equipment_layout_version=1, equipment_layouts=layouts)
+    model.update(equipment_layout_version=3, equipment_layouts=layouts)
     source = next((item['stove'] for item in layouts if item['room_id'] == model['source_zone_id']), None)
     if source:
         world['fire_source'].update(device_id=source['id'], ignition_position=deepcopy(source['ignition_position']))

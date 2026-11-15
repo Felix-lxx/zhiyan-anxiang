@@ -2,6 +2,7 @@
 const props = withDefaults(defineProps<{ name: string; size?: number; strokeWidth?: number }>(), { size: 20, strokeWidth: 1.8 })
 
 const paths: Record<string, string[]> = {
+  door: ['M4 21V3h13v18M7 21V5l7-2v18M11 12h.01M2 21h18'],
   book: ['M3 4h6a4 4 0 0 1 3 2 4 4 0 0 1 3-2h6v15h-6a4 4 0 0 0-3 2 4 4 0 0 0-3-2H3V4Z','M12 6v15'],
   microphone: ['M9 5a3 3 0 0 1 6 0v7a3 3 0 0 1-6 0V5Z', 'M5 10v2a7 7 0 0 0 14 0v-2M12 19v3m-4 0h8'],
   history: ['M3 4v5h5','M3 9a9 9 0 1 1 1 9M12 7v5l3 2'],

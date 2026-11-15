@@ -21,6 +21,9 @@ def test_equipment_anchor_is_separate_from_walking_point_and_handles_no_space():
              'spatial_network': {'edges': [passage(10, 10, 3.38)]}}
     attach_kitchen_equipment(world)
     stove = world['indoor_environment']['equipment_layouts'][0]['stove']
+    counter = world['indoor_environment']['equipment_layouts'][0]['counter']
+    assert .5 <= counter['depth'] <= .64 and counter['width'] <= 2.8
+    assert counter['y']-counter['depth']/2 >= room['y']-room['depth']/2+.079
     assert stove['approach_position'] == {'x': 10, 'y': 10, 'height': 3.38}
     assert world['fire_source']['ignition_position']['height'] == 4.3
     assert stove['position'] != stove['approach_position']

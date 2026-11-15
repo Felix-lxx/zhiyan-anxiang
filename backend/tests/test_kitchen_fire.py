@@ -39,7 +39,7 @@ def test_room_address_freeze_and_compartment_smoke(kitchen):
     assert source['location']['kind']=='room' and source['location']['floor']==2
     assert source['position']['height']==3.38
     assert world['spatial_units']['height_mode']=='meters'
-    assert model['equipment_layout_version'] == 1
+    assert model['equipment_layout_version'] == 3
     # The built-in residential floor must provide usable kitchens, without
     # shrinking the walking envelope to squeeze decorative furniture into it.
     assert model['equipment_layouts'] and not model.get('equipment_notice')
@@ -47,7 +47,7 @@ def test_room_address_freeze_and_compartment_smoke(kitchen):
     from app.services.kitchen_equipment import clears_passages
     for layout in model['equipment_layouts']:
         room = next(zone for zone in model['zones'] if zone['id'] == layout['room_id'])
-        assert room['width'] >= 2.7 and room['depth'] >= 3
+        assert room['width'] >= 2.7 and room['depth'] >= 2
         assert clears_passages(layout['counter'], room['height'], world['spatial_network']['edges'])
     assert len(world['tasks'])==4 and {'gas_off','containment','broadcast','escort'}=={task['kind'] for task in world['tasks']}
     assert model['source_zone_id'] in {node['id'] for node in world['spatial_network']['nodes']}
@@ -159,7 +159,7 @@ def test_kitchen_topology_supports_people_in_another_building(kitchen):
 def test_new_kitchen_rooms_clear_stairs_and_use_their_own_door_portals(kitchen):
     world = kitchen[4]['simulation']['world']
     graph = world['spatial_network']
-    assert graph['indoor_layout_version'] == 2
+    assert graph['indoor_layout_version'] == 3
     nodes = {node['id']: node for node in graph['nodes']}
     source = world['fire_source']
     room = nodes[source['location']['node_id']]
@@ -167,7 +167,7 @@ def test_new_kitchen_rooms_clear_stairs_and_use_their_own_door_portals(kitchen):
     for room in (node for node in nodes.values() if node['kind'] == 'room' and node['id'].startswith('indoor:')):
         outgoing = next(edge for edge in graph['edges'] if edge['start_node_id'] == room['id'])
         portal = nodes[outgoing['end_node_id']]
-        assert portal['kind'] == 'corridor' and portal['x'] == room['x']
+        assert portal['kind'] in {'entry_hall', 'corridor'} and portal['x'] == room['x']
         assert portal['y'] > room['y'] + room['depth']/2
         for stair in (edge for edge in graph['edges'] if edge['kind'] == 'stairs'
                       and nodes[edge['start_node_id']]['building_id'] == room['building_id']):

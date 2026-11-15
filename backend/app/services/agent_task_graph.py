@@ -16,7 +16,7 @@ def validate_graph(steps):
         if key in visited:
             return
         visiting.add(key)
-        for dependency in known[key].get('depends_on', []):
+        for dependency in [*known[key].get('depends_on', []), *known[key].get('release_after', [])]:
             visit(dependency)
         visiting.remove(key)
         visited.add(key)
@@ -43,7 +43,8 @@ def compile_graph(groups, at, escort_capacity=1):
             next_lane = (next_lane + len(lanes)) % len(escort_lanes)
         step.update(command_id=step.get('command_id') or 'agent-' + step['id'],
                     status='pending', reason='等待资源与前置条件校验', progress=0, last_progress_at=at)
-        step['completion_rule'] = ('起火房间与门洞撤空后，由房门领域命令确认关闭' if step.get('kind') == 'indoor.door.set'
+        step['completion_rule'] = ('本户收到通知的真实回执；不以广播或计时替代' if step.get('kind') == 'community.notice'
+            else '起火房间与门洞撤空后，由房门领域命令确认关闭' if step.get('kind') == 'indoor.door.set'
             else '消防车到达目标道路节点并恢复沿途交通' if step.get('kind') == 'vehicle.command' and step.get('arguments', {}).get('command') == 'dispatch'
             else '车辆处置事件确认有效供水与喷水已开始' if step.get('kind') == 'vehicle.command' and step.get('arguments', {}).get('command') == 'spray'
             else '机器人移动回执确认到位' if step.get('arguments', {}).get('command') == 'move'
@@ -111,6 +112,7 @@ def graph_view(steps, data, resident_ids):
     tasks = case_task_view(steps, data)
     return {'version': 2, 'nodes': [
         {'id': s['id'], 'label': s['label'], 'state': s['status'], 'depends_on': s.get('depends_on', []),
+         'release_after': s.get('release_after', []),
          'command_id': s['command_id'], 'completion_rule': s.get('completion_rule', '领域命令回执')}
         for s in steps],
         'case_tasks': tasks,

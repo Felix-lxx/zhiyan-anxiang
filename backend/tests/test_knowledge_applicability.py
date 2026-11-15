@@ -30,6 +30,23 @@ def test_model_revision_and_historical_snapshot_conditions_are_explicit():
     assert current['target_population']==1
 
 
+def test_independent_models_and_staff_conditions_must_match_for_reuse():
+    current={'parameters':{'community_profile':'night_shift','duty_staff_count':2},
+             'model_manifest':{'environment':'causal_training_v2','residents':'community_v4'},
+             'engine_revision':ENGINE_REVISION,'at_seconds':20}
+    source={'parameters':dict(current['parameters']), 'model_manifest':dict(current['model_manifest']),
+            'observed_engine_revision':ENGINE_REVISION}
+    assert assess_experience(source,current)['status']=='matched'
+    source['model_manifest']['environment']='legacy_training_v1'
+    source['parameters']['duty_staff_count']=4
+    result=assess_experience(source,current)
+    assert {d['field'] for d in result['differences']}=={'model_manifest.environment','duty_staff_count'}
+    source['parameters']['duty_staff_count']=2
+    source.pop('model_manifest')
+    result=assess_experience(source,current)
+    assert result['status']=='unverified' and '独立模型清单' in result['missing']
+
+
 def test_published_experience_retrieval_pins_scope_comparison(exercise):
     client,headers,_,root,*_=exercise
     plan=observed_plan(exercise)

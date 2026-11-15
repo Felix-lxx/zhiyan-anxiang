@@ -33,7 +33,7 @@ import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js'
 import AppIcon from './AppIcon.vue'
 
 interface Resident extends RescueResident { height?: number; building_id?: string; floor?: number; current_floor?: number; indoor_stage?: string; current_edge_id?: string | null; id: string; label: string; vulnerable: boolean; status: string; x: number; y: number; progress: number; exit?: 'north' | 'south'; behavior?: string; smoke_exposure?: number; congestion?: number; queue_seconds?: number; last_location?: string; assisted?: boolean; search_responsible?: string; speed_factor?: number; route_points?: Array<{ x: number; y: number; height?: number }>; route_edge_ids?: string[]; route_reachable?: boolean; estimated_seconds?: number }
-interface SpatialEdgeState { id: string; kind: string; start: { x: number; y: number; height: number }; end: { x: number; y: number; height: number }; width_meters: number; density_percent?: number; live_occupancy?: number; waiting_count?: number; capacity_persons?: number }
+interface SpatialEdgeState { id: string; name?:string; start_node_id?:string; end_node_id?:string; kind: string; start: { x: number; y: number; height: number }; end: { x: number; y: number; height: number }; width_meters: number; density_percent?: number; live_occupancy?: number; waiting_count?: number; capacity_persons?: number }
 interface Resident { household_label?:string;profile_label?:string;notification_state?:'unnotified'|'sent'|'confirmed'; motion_trace?: Array<{ x:number; y:number; height:number; at_seconds:number }> }
 interface RoadEdgeState { geometry_blocked?: boolean; blocked_reason?: string; reserved_by_vehicle?: string | null; id: string; name: string; start: { x: number; y: number }; end: { x: number; y: number }; width_meters: number; status: 'open' | 'restricted' | 'blocked'; blocked_by_event: boolean; risk_score: number; smoke_risk?: number; density_percent?: number; live_occupancy?: number; waiting_count?: number; capacity_persons?: number; flow_capacity_per_second?: number }
 interface Simulation {
@@ -52,7 +52,7 @@ interface Simulation {
 interface Robot { state: string; battery: number; x: number; y: number; route: string[]; reason: string; task_queue?: Array<{ id: string; label: string; status: string; progress?: number; ends_at_seconds?: number; route_points?: Array<{ x: number; y: number; height?: number }> }> }
 interface DrillEvent { sequence: number; event_type: string; message: string; payload?: { x?: number; y?: number; target?: string; route_points?: Array<{ x: number; y: number; height?: number }>; severity?: string } }
 export interface AssistantSceneContext { kind: 'resident' | 'road' | 'robot' | 'object'; id?: string; label: string; type?: string; detail?: string; x?: number; y?: number }
-type SelectedObject = { objectId?:string; hydrantId?:string; fireRoom?:{floor:number;room:string}; title: string; type: string; detail: string; action?: string; residentId?: string; roadEdgeId?: string; vehicleId?: string; x?: number; y?: number }
+type SelectedObject = { zoneId?:string; objectId?:string; hydrantId?:string; fireRoom?:{floor:number;room:string}; title: string; type: string; detail: string; action?: string; residentId?: string; roadEdgeId?: string; spatialEdgeId?:string; vehicleId?: string; x?: number; y?: number }
 type SpatialIntent =
   | { kind: 'road'; edgeId: string }
   | { kind: 'robot'; x: number; y: number; target: string }
@@ -100,7 +100,8 @@ const emit = defineEmits<{
   fireRoomPick: [selection:{floor:number;room:string}]
   inspectIndoor: [doorId?: string]
   inspectDevice: [deviceId: string]
-  indoorFocus: [value: { buildingId: string; floor: number }]
+  indoorFocus: [value: { buildingId: string; floor: number;zoneId?:string }]
+  indoorZone: [id:string]
 }>()
 
 const host = ref<HTMLDivElement | null>(null)
@@ -124,6 +125,7 @@ function askAboutSelection(): void { const context = assistantContext(selected.v
 watch(selected, value => emit('contextSelection', assistantContext(value)), { deep: true })
 
 let scene: THREE.Scene
+let passageFocusGuide: THREE.Group | null = null
 let camera: THREE.PerspectiveCamera
 let renderer: THREE.WebGLRenderer
 let controls: OrbitControls
@@ -138,6 +140,7 @@ const helperMeshes = new Map<string, THREE.Group>()
 let studioEnvironment: THREE.WebGLRenderTarget | undefined
 const communityContext = new Set<THREE.Object3D>()
 const roomInspection = ref(false)
+const inspectionZoneId = ref<string>()
 let groundPlane: THREE.Mesh
 let blockageLayer: THREE.Group
 let environmentAssetLayer: THREE.Group
@@ -565,7 +568,7 @@ function resize(): void {
   const { clientWidth, clientHeight } = host.value; renderer.setSize(clientWidth, clientHeight, false); camera.aspect = clientWidth / Math.max(1, clientHeight); camera.updateProjectionMatrix(); renderDirty = true
   if (props.fireSourceSelection?.enabled && !props.simulation?.environment.indoor) frameFireSources()
   else if (indoorView.value && viewMode.value === 'director' && visibleIndoorFloor.value && !userOrbiting) {
-    if(roomInspection.value)focusKitchen();else focusIndoorFloor(visibleIndoorFloor.value, visibleIndoorBuilding.value)
+    if(roomInspection.value&&inspectionZoneId.value)focusIndoorZone(inspectionZoneId.value);else focusIndoorFloor(visibleIndoorFloor.value, visibleIndoorBuilding.value)
   }
 }
 
@@ -760,6 +763,7 @@ function focusIndoorFloor(floor:number,buildingId?:string):void {
   if(!building)return
   roomInspection.value=false
   floor=Math.max(1,Math.min(building.floors,Math.round(floor)))
+  inspectionZoneId.value=undefined;indoorFireVisuals?.selectRoom(null)
   visibleIndoorFloor.value=floor;visibleIndoorBuilding.value=building.id
   if(!scene)return
   if(!indoorView.value)toggleIndoor(true)
@@ -767,6 +771,7 @@ function focusIndoorFloor(floor:number,buildingId?:string):void {
   syncIndoorContext()
   for(const model of buildingMeshes.values())model.visible=false
   targetLookAt.copy(worldPoint(building.x,building.y,floorHeight(floor)))
+  targetLookAt.y+=1.4
   targetCameraPosition.copy(targetLookAt).add(indoorCameraOffset(building.width,building.depth,camera.aspect))
   for(const child of indoorGeometry.children){
     const slice=child.userData.slice
@@ -789,13 +794,27 @@ function syncIndoorContext():void {
   scene.environmentIntensity=interior ? .65 : .45
 }
 function focusKitchen():void {
+  const id=props.simulation?.environment.indoor?.source_zone_id
+  if(id)focusIndoorZone(id)
+}
+function focusIndoorZone(id:string):void {
   const indoor=props.simulation?.environment.indoor
-  const room=indoor?.zones.find(zone=>zone.id===indoor.source_zone_id)
-  if(!room)return
-  focusIndoorFloor(room.floor,indoor!.building_id)
-  roomInspection.value=true
-  const frame=kitchenCamera({x:room.x-50,y:room.y-50,width:room.width,depth:room.depth,height:worldPoint(room.x,room.y,room.height).y},camera.aspect)
-  targetLookAt.copy(frame.target);targetCameraPosition.copy(frame.position);camera.position.copy(frame.position);controls.target.copy(frame.target);controls.update();renderDirty=true
+  const zone=indoor?.zones.find(item=>item.id===id)
+  if(!indoor||!zone||!scene)return
+  focusIndoorFloor(zone.floor,indoor.building_id)
+  // The existing indoor workspace owns the information; don't open another
+  // object inspector over it when navigating from the plan.
+  selected.value=null;selectedResident.value=''
+  indoorFireVisuals?.selectRoom(id)
+  if(zone.kind==='room'){
+    roomInspection.value=true
+    inspectionZoneId.value=id
+    const frame=kitchenCamera({x:zone.x-50,y:zone.y-50,width:zone.width,depth:zone.depth,height:worldPoint(zone.x,zone.y,zone.height).y},camera.aspect)
+    targetLookAt.copy(frame.target);targetCameraPosition.copy(frame.position)
+    camera.position.copy(frame.position);controls.target.copy(frame.target);controls.update()
+  }
+  emit('indoorFocus',{buildingId:indoor.building_id,floor:zone.floor,zoneId:id})
+  renderDirty=true
 }
 function indoorActorVisible(person:{height?:number;building_id?:string;indoor_stage?:string;x:number;y:number}):boolean {
   if(!indoorView.value)return (person.height??0)===0
@@ -824,6 +843,37 @@ function focusBuilding(id:string):void{
   targetLookAt.y=height*.8
   targetCameraPosition.copy(targetLookAt).add(new THREE.Vector3(24,height+30,38))
 }
+function clearPassageFocus():void {
+  if(!passageFocusGuide)return
+  passageFocusGuide.removeFromParent()
+  disposeLayer(passageFocusGuide)
+  passageFocusGuide=null
+}
+function focusPassage(id:string):void {
+  if(!scene||!controls)return
+  const sim=props.simulation
+  const edge=sim?.spatial_network?.edges.find(item=>item.id===id)??sim?.road_network?.edges.find(item=>item.id===id)
+  if(!edge){flashNotice('该通道不在当前场次中，请刷新方案后重新定位。');return}
+  const node='start_node_id' in edge ? sim?.spatial_network?.nodes.find(item=>item.id===edge.start_node_id) : undefined
+  const x=(edge.start.x+edge.end.x)/2,y=(edge.start.y+edge.end.y)/2
+  if(node?.building_id)focusIndoorFloor(Math.max(1,node.floor),node.building_id)
+  else {
+    focusPoint(x,y)
+    const span=Math.hypot(edge.start.x-edge.end.x,edge.start.y-edge.end.y)
+    targetCameraPosition.copy(targetLookAt).add(new THREE.Vector3(8,Math.max(36,span*1.1),12))
+    camera.position.copy(targetCameraPosition);controls.target.copy(targetLookAt);controls.update()
+  }
+  selectedResident.value=''
+  selected.value={title:edge.name??'疏散通道',type:'放行条件关联通道',spatialEdgeId:id,
+    roadEdgeId:sim?.road_network?.edges.some(item=>item.id===id)?id:undefined,x,y,
+    detail:`净宽 ${edge.width_meters} 米 · 当前占用 ${edge.density_percent??0}% · 等待 ${edge.waiting_count??0} 人。高亮为服务端冻结通道，不改变现场通行状态。`}
+  clearPassageFocus()
+  const points=[edge.start,edge.end].map(point=>worldPoint(point.x,point.y,'height' in point?Number(point.height):0).add(new THREE.Vector3(0,.14,0)))
+  passageFocusGuide=createRouteGuide(points,0xffd789)
+  scene.add(passageFocusGuide)
+  renderDirty=true
+}
+watch(()=>selected.value?.spatialEdgeId,id=>{if(!id)clearPassageFocus()})
 function focusTaskTarget(task: {title:string;kind?:string;target_device_id?:string;target_floor?:number;target_position?:{x:number;y:number}}): void {
   const indoor=props.simulation?.environment.indoor
   if(indoor&&['gas_off','containment'].includes(task.kind??'')){
@@ -872,7 +922,7 @@ function selectCurrentResident(): void {
   selectedResidents.value = [id]; toolMode.value = 'residents'; controls.enabled = false
   emit('selection', selectedResidents.value); updateEntities()
 }
-defineExpose({ focusPoint, focusBuilding, focusResident, showIndoor, selectResidents, focusIndoorFloor, focusKitchen, focusTaskTarget })
+defineExpose({ focusPoint, focusBuilding, focusResident, focusPassage, showIndoor, selectResidents, focusIndoorFloor, focusIndoorZone, focusKitchen, focusTaskTarget })
 
 function animate(time = 0): void {
   animationFrame = requestAnimationFrame(animate)
@@ -1033,6 +1083,11 @@ function updateStairHeat(): void {
 }
 
 function updateEntities(): void {
+  if(selected.value?.spatialEdgeId){
+    const id=selected.value.spatialEdgeId
+    const edge=props.simulation?.road_network?.edges.find(item=>item.id===id)??props.simulation?.spatial_network?.edges.find(item=>item.id===id)
+    selected.value.detail=edge?`净宽 ${edge.width_meters} 米 · 当前占用 ${edge.density_percent??0}% · 等待 ${edge.waiting_count??0} 人。${'status' in edge&&edge.status==='blocked'?'通道已封锁。':''}${'reserved_by_vehicle' in edge&&edge.reserved_by_vehicle?'应急车辆管制中。':''}`:'该通道已不在当前场次中，请重新定位。'
+  }
   if(scene){
     if(buildingReleaseVisuals.layer.parent!==scene)scene.add(buildingReleaseVisuals.layer)
     buildingReleaseVisuals.sync(props.buildingSignals??[],props.simulation?.world?.objects.filter(item=>item.type==='building')??[])
@@ -1354,6 +1409,9 @@ function onPointerUp(event: PointerEvent): void {
   }
   if (hit?.object.userData.selection?.action === 'indoor-door') { emit('inspectIndoor', hit.object.userData.selection.doorId); return }
   if (hit?.object.userData.selection?.action === 'indoor-device') { emit('inspectDevice', hit.object.userData.selection.deviceId); return }
+  if (hit?.object.userData.selection?.zoneId && toolMode.value==='inspect') {
+    emit('indoorZone',hit.object.userData.selection.zoneId);return
+  }
   if (props.interactive === false) return
    const roadHit = hit?.object.userData.selection?.roadEdgeId ? hit : undefined
   const groundHit = groundPlane.visible?raycaster.intersectObject(groundPlane)[0]:undefined
@@ -1562,6 +1620,7 @@ onMounted(() => {
   catch { renderError.value = '当前浏览器无法初始化三维渲染，请检查硬件加速设置后重新进入演练中心。' }
 })
 onBeforeUnmount(() => {
+  clearPassageFocus()
   indoorFireVisuals?.dispose()
   studioEnvironment?.dispose(); studioEnvironment=undefined;communityContext.clear();stairSurfaces.length=0
   vehicleVisuals?.dispose(); vehicleVisuals = null

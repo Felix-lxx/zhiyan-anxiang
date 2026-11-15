@@ -28,6 +28,8 @@ from app.services.agent_task_graph import compile_graph, distinct_candidates, gr
 from app.services.agent_contract import goal_constraints, rank_candidate
 from app.services.agent_release import staged_release, suppression_blocker, hazard_cleared
 from app.services.agent_schedule import release_schedule
+from app.services import agent_notifications
+from app.services.release_conditions import check_release, preceding_releases
 from app.services.water_resources import effective_spray, affected_release_steps
 
 ACTIVE = {"awaiting_approval", "executing", "waiting", "needs_review"}
@@ -183,13 +185,15 @@ def build_candidates(session, drill, data, scope, run=None):
         if kitchen:
             groups.sort(key=lambda group: (group['action'] != 'priority_assist',
                 floor_order(group['floor']), group['exit']))
+        groups, notice_steps = agent_notifications.split_departures(groups, data, routes)
         staged = allocation.get('rule') == 'suppression_staged'
         staged_steps = deepcopy(suppression_steps) if staged else []
         candidate_robot_steps = deepcopy(resource_steps)
         spray_step_id = suppression.get('spray_step_id') if staged else None
         if staged:
+            release_policy = (data['simulation'].get('world', {}).get('community_training') or {}).get('release_policy')
             groups, candidate_robot_steps = staged_release(groups, population, candidate_robot_steps, spray_step_id,
-                (suppression.get('water_source') or {}).get('id'))
+                (suppression.get('water_source') or {}).get('id'), release_policy=release_policy, routes=routes)
         release_at = at + (int(math.ceil(suppression.get('duration_seconds') or 0)) + 1 if staged and not suppression.get('already_active') else 0)
         spray_at = at if suppression.get('already_active') else release_at - 1
         first_building = next((group.get('building_id') for group in groups), None)
@@ -275,16 +279,16 @@ def build_candidates(session, drill, data, scope, run=None):
                  'suppression_staged': '先压制后分批撤离'}[allocation['rule']]
         results.append({"id": "candidate-" + str(index + 1), "title": title,
                         "allocation": allocation, "baseline_metrics": baseline_metrics,
-                        "groups": staged_steps + groups + containment + [
+                        "groups": notice_steps + staged_steps + groups + containment + [
                             {**deepcopy(step), "battery_required": step.get("battery_required", (support or {}).get("battery_required", 0))}
                             for step in candidate_robot_steps],
                         "robot_support": support, "assignments": assignment_list, "geometry_issues": geometry_issues, "navigation_geometry_version": 1,
                         "vehicle_support": {key: value for key, value in suppression.items() if not key.startswith('_')} if staged else None,
                         "suppression_notice": suppression['notice'] if not kitchen and not suppression.get('can_apply') else None,
-                        "release_policy": {'mode': 'building_waves' if staged else 'immediate',
+                        "release_policy": {'mode': 'conditional_waves' if staged and any(g.get('release_gate') for g in groups) else 'building_waves' if staged else 'immediate',
                             'waves': max((g.get('release_wave', 1) for g in groups), default=0),
                             'requires_active_suppression': staged,
-                            'notice': '逐栋放行；后一栋等待前栋实际到场，每批核对有效喷水。' if staged else '批准后立即分流；护送仍按岗位容量执行。'},
+                            'notice': '按通道条件放行；前批指令受理后持续核对住户、车辆管制及负载，不等待前批全员到集合点。' if staged and any(g.get('release_gate') for g in groups) else '逐栋放行；后一栋等待前栋实际到场，每批核对有效喷水。' if staged else '已确认住户批准后分流；未确认住户等待收到回执，护送仍按岗位容量执行。' if notice_steps else '批准后立即分流；护送仍按岗位容量执行。'},
                         "schedule_assessment": release_schedule(groups, routes, candidate_robot_steps, suppression, data) if staged else None,
                         "can_apply": release_in_window and not unresolved and (not assist_required or capacity > 0) and (not support or support["can_apply"]) and (not staged or suppression["can_apply"]),
                         "assist_resource": {"capacity": capacity, "busy": busy_staff, "required": assist_required,
@@ -298,7 +302,7 @@ def build_candidates(session, drill, data, scope, run=None):
                                     "last_arrival_at": max((p.get('assembly_arrived_at_seconds', 0) for p in predicted if p['status'] == 'evacuated'), default=None),
                                     "all_arrived": bool(predicted) and all(p['status'] == 'evacuated' for p in predicted)},
                         "forecast_seconds": forecast_seconds, "forecast_at": at, "forecast_sequence": data["latest_event_sequence"],
-                        "coverage": f"{forecast_seconds} 秒居民与首批可用护送资源预演；" + ("车辆等待行人清空，开始喷水时刻尚不确定，预演未计入放行；" if not forecast_release_known else "") + ("压制方案只估计首栋放行，后续楼栋等待真实到场，不预填完成时间；" if staged else "") + ("首栋广播按喷水后预计到位时刻计入；" if staged and support else "机器人按预计到位时刻计入广播；" if support else "") + "后续批次待资源释放，人工责任任务沿用当前安排。"})
+                        "coverage": f"{forecast_seconds} 秒居民与首批可用护送资源预演；" + ("车辆等待行人清空，开始喷水时刻尚不确定，预演未计入放行；" if not forecast_release_known else "") + ("压制方案只估计首栋放行，后续批次按实时通道条件判断，不预填全批完成时间；" if staged and any(g.get("release_gate") for g in groups) else "压制方案只估计首栋放行，后续楼栋等待真实到场，不预填完成时间；" if staged else "") + ("首栋广播按喷水后预计到位时刻计入；" if staged and support else "机器人按预计到位时刻计入广播；" if support else "") + "后续批次待资源释放，人工责任任务沿用当前安排。"})
     # The director workspace deliberately presents at most two actionable
     # decisions.  More alternatives increase review time without improving
     # the plan: keep the best forecast and one materially different fallback;
@@ -309,7 +313,12 @@ def build_candidates(session, drill, data, scope, run=None):
                    if h['notification_state']!='confirmed' and id_set.intersection(h['resident_ids'])]
         if pending:
             for item in candidates:
-                item.update(can_apply=False, reason=f'{len(pending)} 户尚未确认收到通知，请先到当前任务核实住户，再重新比较。')
+                if agent_notifications.enabled(data):
+                    item['notification_prerequisites'] = {'waiting':len(pending),
+                        'notice':'批准后先执行已满足条件的部分；未确认住户保留通知等待步骤，不自动确认或放行。'}
+                    item['coverage'] += ' 未取得的住户回执未计为完成，通知核实前相应居民保持等待。'
+                else:
+                    item.update(can_apply=False, reason=f'{len(pending)} 户尚未确认收到通知，请先到当前任务核实住户，再重新比较。')
     staged_candidate = next((item for item in candidates if item.get('allocation', {}).get('rule') == 'suppression_staged'), None)
     immediate = next((item for item in candidates if not item.get('vehicle_support')), None)
     if staged_candidate and immediate:
@@ -547,10 +556,29 @@ def _advance_run(session, run, identity, controlled):
         if step["status"] in {"superseded", "cancelled", "failed", "unfinished"}:
             outcome = ("taken_over", "步骤已被替代或结束，自动执行已停止。")
             break
+        if step.get('kind') == 'community.notice':
+            step.update(agent_notifications.notice_state(step, data))
+            if step['status']=='blocked':
+                outcome=('needs_review',step['reason']);break
+            continue
         dependencies = [s for s in steps if s['id'] in step.get('depends_on', [])]
         if not receipt and any(s['status'] != 'completed' for s in dependencies):
             step.update(status='waiting', progress=0, reason='等待前置步骤：' + '、'.join(s['label'] for s in dependencies if s['status'] != 'completed'))
             continue
+        if not receipt and step.get('release_after'):
+            previous = preceding_releases(step, steps, data)
+            if previous:
+                step.update(status='waiting', reason='等待前批行动实际受理：'+'、'.join(s['label'] for s in previous))
+                continue
+        needs_departure = step.get('kind')!='residents.assign' or any(
+            people[pid]['status']!='evacuated' for pid in step.get('resident_ids', []))
+        if not receipt and step.get('release_gate') and needs_departure:
+            check = check_release(step, data, steps)
+            if not check['ready']:
+                step.update(status=check['state'], reason=check['reason'])
+                if check['state']=='blocked':
+                    outcome=('needs_review', check['reason']); break
+                continue
         if step.get('kind') == 'indoor.door.set':
             if receipt:
                 continue

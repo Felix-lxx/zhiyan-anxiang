@@ -14,6 +14,7 @@ export interface AgentVehicleSupport {
   route_points?:Array<{x:number;y:number;height?:number}>
 }
 export interface AgentCandidate {
+  notification_prerequisites?:{waiting:number;notice:string}
   equivalent_rules?:string[]
   allocation?:{rule:'path'|'risk_capacity'|'containment'|'suppression_staged';description:string;changed_residents:number;same_allocation:boolean;peak_risk:number;bottlenecks:Array<{edge_id:string;name:string;assigned:number;waiting:number;flow_capacity:number;risk_score:number;resident_id:string}>}
   baseline_metrics?:{arrived:number;exposed:number;queue_seconds:number}
@@ -22,7 +23,7 @@ export interface AgentCandidate {
   robot_support?:AgentRobotSupport|null
   vehicle_support?:AgentVehicleSupport|null
   suppression_notice?:string|null
-  release_policy?:{mode:'building_waves'|'immediate';waves:number;requires_active_suppression:boolean;notice:string}
+  release_policy?:{mode:'building_waves'|'conditional_waves'|'immediate';waves:number;requires_active_suppression:boolean;notice:string}
   schedule_assessment?:{kind:'queue_free_schedule';complete:boolean;estimated_completion_at:number|null;notice:string;waves:Array<{wave:number;building_id:string;release_at:number|null;arrival_at:number|null}>;deadline_risks:Array<{task_id:string;title:string;deadline_at:number;estimated_ready_at:number;delay_seconds:number}>}|null
   assist_resource?:{capacity:number;busy:number;required:number;waves:number|null}
   geometry_issues?:Array<{edge_id:string;name:string;reason:string}>
@@ -34,17 +35,29 @@ export interface AgentStepExecution {
   attention:Array<{id:string;label:string;location:string;behavior:string;arrived:boolean;blocked:boolean;counted:boolean;queue_seconds:number;smoke_exposure:number;bottleneck:string|null;staff_name:string|null;responsible:string|null;escort_state:string|null}>
   evidence:Array<{id:string;sequence:number;at_seconds:number;message:string}>
 }
-export interface AgentStep { id:string;label:string;resident_ids:string[];floor?:number|null;exit?:'north'|'south';action?:string;kind?:'robot.command'|'vehicle.command'|'residents.assign'|'indoor.door.set';arguments?:Record<string,unknown>;depends_on?:string[];completion_rule?:string;command_id:string;status:string;reason:string;progress:number;execution?:AgentStepExecution }
+export interface ReleaseCheck {
+  mode:'shared_corridor';at_seconds:number;state:'ready'|'waiting'|'blocked';ready:boolean;reason:string
+  route_count:number;density_limit:number
+  checks:Array<{kind:string;label:string;passed:boolean;detail:string;edge_id?:string|null;resident_id?:string|null}>
+}
+export interface ReleaseWave {
+  wave:number;total:number;arrived:number;resident_id:string|null;state:string;reason:string
+  release_mode?:string;release_check?:ReleaseCheck|null
+  buildings?:Array<{id:string;name:string;total:number;arrived:number}>
+}
+export interface AgentStep { id:string;label:string;resident_ids:string[];household_id?:string;floor?:number|null;exit?:'north'|'south';action?:string;kind?:'robot.command'|'vehicle.command'|'residents.assign'|'indoor.door.set'|'community.notice';arguments?:Record<string,unknown>;depends_on?:string[];release_after?:string[];completion_rule?:string;command_id:string;status:string;reason:string;progress:number;execution?:AgentStepExecution }
+export interface AgentNotifications {total:number;completed:number;waiting:number;items:Array<{id:string;label:string;notification_state:string;reason:string}>}
 export interface AgentCoordination {
+  notifications?:AgentNotifications
   status:string;at_seconds:number
   lanes:Array<{id:string;label:string;state:string;detail:string}>
   issues:Array<{id:string;resident_id:string;label:string;severity:'danger'|'warning';reason:string}>;issue_count?:number
   bottlenecks:Array<{edge_id:string;name:string;waiting:number;resident_id:string;max_wait_seconds:number}>
   robot:{included:boolean;state:string|null;battery:number|null;reason:string|null;steps_completed:number;steps_total:number}
   vehicle:{included:boolean;state:string|null;reason:string|null;service:string|null;target:string|null;steps_completed:number;steps_total:number}
-  release_waves?:Array<{wave:number;total:number;arrived:number;resident_id:string|null;state:string;reason:string;buildings?:Array<{id:string;name:string;total:number;arrived:number}>}>
+  release_waves?:ReleaseWave[]
   case_tasks?:{total:number;completed:number;waiting:number;pending:number;verification_ready:number;overdue:number;next:AgentCaseTask|null}
-  next_action:{kind:'review'|'replan'|'rollcall'|'focus'|'robot'|'vehicle'|'observe'|'missions'|'indoor';label:string;reason:string;resident_id?:string|null;door_id?:string;task_id?:string}
+  next_action:{kind:'review'|'replan'|'rollcall'|'focus'|'robot'|'vehicle'|'observe'|'missions'|'indoor'|'households';label:string;reason:string;resident_id?:string|null;household_id?:string;door_id?:string;task_id?:string}
 }
 export interface AgentCaseTask { id:string;kind?:string;label:string;state:string;responsible_role:string;remaining_seconds:number|null;overdue:boolean;completed_on_time?:boolean|null;blockers:string[];verification_ready:boolean;operation_phase?:string|null;depends_on:string[];next_required_action:string;completion_rule:string;automation:'human_verified' }
 export interface AgentRun {

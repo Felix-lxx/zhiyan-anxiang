@@ -29,6 +29,46 @@ const { createFiretruckEquipment } = await load('firetruckEquipment')
 const { supplyHoseCurve, HOSE_RADIUS } = await load('supplyHose')
 const { ROAD_SURFACE_Y } = await load('roadSurface')
 const { BuildingReleaseVisuals } = await load('buildingReleaseVisuals')
+const { indoorPlanFrame } = await load('../domain/indoor-plan')
+const { createResidentialEntry } = await load('residentialEntry')
+
+test('private entrance furnishings preserve the walking lane and distinguish entry doors',async()=>{
+  const finish={surface:()=>new THREE.MeshStandardMaterial()}
+  const zone={x:0,y:0,height:0,width:2.8,depth:.85}
+  const passage={kind:'room',width_meters:.9,start:{x:0,y:-2,height:0},end:{x:0,y:1,height:0}}
+  const {group}=createResidentialEntry(zone,[passage],finish)
+  group.updateMatrixWorld(true)
+  const walking=new THREE.Box3(new THREE.Vector3(-.45,.03,-.425),new THREE.Vector3(.45,1.8,.425))
+  group.traverse(object=>{
+    if(object.isMesh&&object.name!=='entry-floor')assert.equal(new THREE.Box3().setFromObject(object).intersectsBox(walking),false,object.name)
+  })
+  const {ResidentialDoor}=await load('residentialDoor')
+  const entry=new ResidentialDoor(.9,.28,.1,undefined,true)
+  const inner=new ResidentialDoor(1.2,.28,.1)
+  const colors=object=>{const values=new Set();object.traverse(mesh=>{if(mesh.isMesh)for(const material of Array.isArray(mesh.material)?mesh.material:[mesh.material])values.add(material.color?.getHex())});return values}
+  assert.ok(colors(entry.leaf).has(0x53635d))
+  assert.ok(colors(inner.leaf).has(0x9c8267))
+  entry.setOpen(true);entry.step(0,false);entry.frame.updateMatrixWorld(true)
+  const leaf=new THREE.Box3().setFromObject(entry.leaf)
+  inner.frame.position.z=-1.03;inner.setOpen(false);inner.step(0,false);inner.frame.updateMatrixWorld(true)
+  assert.equal(leaf.intersectsBox(new THREE.Box3().setFromObject(inner.leaf.getObjectByName('door-leaf-panel'))),false)
+  // The open entry leaf may extend through the larger kitchen aperture,
+  // but cannot intersect either of its retained front wall panels.
+  for(const side of [-1,1]){
+    const panel=new THREE.Box3(new THREE.Vector3(side<0?-1.4:.68,0,-1.07),new THREE.Vector3(side<0?-.68:1.4,2.45,-.99))
+    assert.equal(leaf.intersectsBox(panel),false)
+  }
+})
+
+test('indoor plan preserves world geometry and fits rooms without displacing actors',()=>{
+  const zones=[{id:'a',x:20,y:30,width:4,depth:3},{id:'b',x:27,y:29,width:4,depth:3}]
+  const frame=indoorPlanFrame(zones)
+  for(const zone of zones){const r=frame.rect(zone);assert.ok(r.x>=0&&r.y>=0&&r.x+r.width<=480&&r.y+r.height<=300)}
+  const a=frame.point(20,30),b=frame.point(27,30)
+  assert.ok(Math.abs((b.x-a.x)/frame.scale-7)<1e-8)
+  assert.equal(a.y,b.y)
+  assert.equal(indoorPlanFrame([]),null)
+})
 
 test('building annotations reuse textures and release removed state without changing geometry',()=>{
  const originalDocument=globalThis.document

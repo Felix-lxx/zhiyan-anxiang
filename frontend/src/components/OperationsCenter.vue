@@ -79,6 +79,28 @@ const error = ref(''), form = ref({ name: '', time_scale: 1, training_mode: 'tea
 type DirectorDrawerName = 'none' | 'training' | 'missions' | 'vehicles' | 'indoor' | 'events' | 'branches' | 'report' | 'more' | 'participant' | 'settings' | 'rollcall'
 const indoorFocus = ref<{buildingId:string;floor:number}|null>(null)
 const selectedIndoorDoor = ref<string>()
+const selectedIndoorZone = ref<string>()
+const focusedHouseholdId=ref<string>()
+const householdBack=ref<{kind:'agent'|'indoor';door?:string;zone?:string}>()
+watch(()=>current.value?.id,()=>{focusedHouseholdId.value=undefined;householdBack.value=undefined})
+async function openHousehold(id:string,kind:'agent'|'indoor'){
+  if(replay.value||!displayed.value?.simulation.community?.households.some(h=>h.id===id))return
+  householdBack.value={kind,door:selectedIndoorDoor.value,zone:selectedIndoorZone.value}
+  closeFloatingPanels();focusedHouseholdId.value=undefined;await nextTick()
+  focusedHouseholdId.value=id;drawer.value='training'
+  await nextTick();document.querySelector('.community-operations')?.scrollIntoView({block:'start'})
+}
+async function returnFromHousehold(){
+  const back=householdBack.value
+  if(back?.kind==='indoor'){
+    if(back.door)await inspectIndoor(back.door)
+    else if(back.zone)inspectIndoorZone(back.zone)
+    else await inspectIndoor()
+    return
+  }
+  openAssistant(null);await nextTick();assistant.value?.showPlan()
+}
+
 const focusedTaskId = ref<string>()
 async function inspectTask(id:string) {
   if(!displayed.value?.tasks.some(task=>task.id===id))return
@@ -92,14 +114,27 @@ function inspectDevice(deviceId:string) {
   else inspectIndoor()
 }
 watch(()=>current.value?.id,()=>{focusedTaskId.value=undefined})
-watch(() => current.value?.id, () => { selectedIndoorDoor.value=undefined; indoorFocus.value=null })
-function inspectIndoor(doorId?:string) {
+watch(() => current.value?.id, () => { selectedIndoorDoor.value=undefined; selectedIndoorZone.value=undefined; indoorFocus.value=null })
+function inspectIndoorZone(id:string){
+  const indoor=displayed.value?.simulation.environment.indoor
+  if(!indoor?.zones.some(zone=>zone.id===id))return
+  closeFloatingPanels();drawer.value='indoor'
+  selectedIndoorZone.value=id;selectedIndoorDoor.value=undefined
+  arena.value?.focusIndoorZone(id)
+}
+async function inspectIndoor(doorId?:string) {
   const indoor=displayed.value?.simulation?.environment.indoor
   const door=indoor?.doors.find(item=>item.id===doorId)
   closeFloatingPanels()
   selectedIndoorDoor.value=door?.id
-  if(door)arena.value?.focusIndoorFloor(door.floor,indoor?.building_id)
+  if(door){selectedIndoorZone.value=door.room_id;arena.value?.focusIndoorZone(door.room_id)}
   drawer.value='indoor'
+  if(door){
+    await nextTick()
+    const target=document.getElementById('indoor-door-'+door.id)
+    target?.scrollIntoView({block:'start',behavior:'instant'})
+    target?.focus({preventScroll:true})
+  }
 }
 type DirectorPanel = DirectorDrawerName | 'assistant' | 'guide' | 'comparison' | 'branch-evidence'
 const activePanel = ref<DirectorPanel>('none')
@@ -499,6 +534,10 @@ async function focusReleasedBuilding(id:string):Promise<void>{
   await nextTick();arena.value?.focusBuilding(id)
 }
 async function assistantNavigate(action: AssistantAction): Promise<void> {
+  if(action.kind==='households'&&action.household_id){
+    await openHousehold(action.household_id,'agent');return
+  }
+
   if(action.kind==='knowledge'&&action.document_id){
     closeFloatingPanels()
     await router.push({name:'projects',query:{section:'knowledge',document:action.document_id,...(action.version_id?{version:action.version_id}:{}),...(action.chunk_id?{chunk:action.chunk_id}:{})}})
@@ -523,6 +562,11 @@ async function assistantNavigate(action: AssistantAction): Promise<void> {
   }
   if (historical) { exitReplay(); await nextTick(); latestCue.value = '已返回实时现场，请核对当前状态后再确认操作。' }
   if (action.kind === 'indoor') { inspectIndoor(action.door_id); return }
+  if (action.kind === 'focus' && action.object_kind === 'passage' && action.edge_id) {
+    closeAssistant()
+    await nextTick()
+    arena.value?.focusPassage(action.edge_id); return
+  }
   if (action.kind === 'focus' && action.object_kind === 'robot' && displayed.value?.robot) {
     closeAssistant()
     arena.value?.focusPoint(displayed.value.robot.x, displayed.value.robot.y); return
@@ -599,7 +643,7 @@ onBeforeUnmount(() => { desiredDrillId = ''; stopLive?.(); clearSpatialPreview()
       <section v-show="directorMode!=='replay'" class="director-stage">
         <nav class="atlas-director-modes" aria-label="导演台模式"><button :aria-pressed="directorMode==='observe'" @click="directorMode='observe';closeFloatingPanels()"><AppIcon name="eye"/>观察</button><button :aria-pressed="directorMode==='command'" @click="directorMode='command';closeFloatingPanels()"><AppIcon name="robot"/>指挥</button><button @click="openReplay"><AppIcon name="history"/>复盘</button></nav>
         <GuidedExercise v-if="coachOpen" v-show="coachVisible" @close="closeCoach" :drill="displayed" :busy="busy" :replay="Boolean(replay)" @indoor="arena?.showIndoor()" @start="act('start')" @resume="act('resume')" @finish="act('end')" @retry="createDrill" @live="leaveReplay" @tasks="toggleDrawer('missions')" @compare="toggleDrawer('branches')" @dispatch="dispatchTask" @assign="assignTask" @locate="locateTask" @broadcast="robot('broadcast')" @assist="ids => commandResidents({ residentIds: ids, exit: 'north', action: 'priority_assist' })" @evacuate="(ids, exit) => commandResidents({ residentIds: ids, exit, action: 'evacuate' })" @focus="id => arena?.focusResident(id)" @task="taskAction" @block="id => inject('channel_blocked', { road_edge_id: id })" @reopen="reopenRoad" @seek="seekReplay"><SpatialTrainingLab v-if="(current.engine_version ?? 1) >= 3" ref="trainingLab" :drill="displayed" :api-base-url="apiBaseUrl" :access-token="accessToken" :replay="Boolean(replay)" @updated="updateFromLab" @forked="forkFromLab" @select="ids => arena?.selectResidents(ids)" @preview="people => routePreview = people as Resident[]" @focus="id => arena?.focusResident(id)" @compare="compareEditable" /><section v-else class="training-upgrade"><h2>当前场次使用历史模型</h2><p>新建连续空间训练，启用楼内行走、路线预览、集合核验与历史重做；原场次不会删除或改写。</p><button :disabled="busy" @click="createDrill">新建连续空间训练</button></section></GuidedExercise>
-<DigitalTwinArena :building-signals="buildingReleaseSignals(agentFeed,current.id,current.state_version,Boolean(replay)||socketState!=='live')" :key="current.id" ref="arena" :route-preview="routePreview" :robot-route-preview="spatialPreview && ['robot', 'vehicle'].includes(spatialPreview.kind) ? spatialPreview.route_points : []" :operation-preview="spatialPreview" :operation-busy="spatialPreviewBusy || Boolean(spatialPreview && busy)" @selection="ids => trainingLab?.selectIds(ids)" @context-selection="updateAssistantContext" @ask-assistant="openAssistant" :status="replay ? 'paused' : current.status" :elapsed-seconds="displayed.elapsed_seconds" :robot="displayed.robot" :simulation="displayed.simulation" :events="displayed.events" :interactive="!replay && current.status === 'running' && !busy" :effects-enabled="effectsEnabled" :camera-enabled="cameraEnabled && !replay" :high-contrast="highContrast" @inject="inject" @robot-command="robot" @preview-action="previewSpatialAction" @confirm-action="confirmSpatialAction" @cancel-action="clearSpatialPreview" @reopen-road="reopenRoad" @dispatch-vehicle="openVehicleDispatch" @inspect-device="inspectDevice" @inspect-indoor="inspectIndoor" @indoor-focus="value=>indoorFocus=value" />
+<DigitalTwinArena :building-signals="buildingReleaseSignals(agentFeed,current.id,current.state_version,Boolean(replay)||socketState!=='live')" :key="current.id" ref="arena" :route-preview="routePreview" :robot-route-preview="spatialPreview && ['robot', 'vehicle'].includes(spatialPreview.kind) ? spatialPreview.route_points : []" :operation-preview="spatialPreview" :operation-busy="spatialPreviewBusy || Boolean(spatialPreview && busy)" @selection="ids => trainingLab?.selectIds(ids)" @context-selection="updateAssistantContext" @ask-assistant="openAssistant" :status="replay ? 'paused' : current.status" :elapsed-seconds="displayed.elapsed_seconds" :robot="displayed.robot" :simulation="displayed.simulation" :events="displayed.events" :interactive="!replay && current.status === 'running' && !busy" :effects-enabled="effectsEnabled" :camera-enabled="cameraEnabled && !replay" :high-contrast="highContrast" @inject="inject" @robot-command="robot" @preview-action="previewSpatialAction" @confirm-action="confirmSpatialAction" @cancel-action="clearSpatialPreview" @reopen-road="reopenRoad" @dispatch-vehicle="openVehicleDispatch" @inspect-device="inspectDevice" @inspect-indoor="inspectIndoor" @indoor-focus="value=>{indoorFocus=value;selectedIndoorZone=value.zoneId}" @indoor-zone="inspectIndoorZone" />
         <aside class="director-metrics" aria-label="现场关键态势">
           <div><span>火势指数</span><strong>{{ displayed.simulation.fire.intensity }}</strong></div>
           <div><span>烟气暴露</span><strong>{{ displayed.simulation.summary.smoke_exposed ?? 0 }}<small>人</small></strong></div>
@@ -614,12 +658,13 @@ onBeforeUnmount(() => { desiredDrillId = ''; stopLive?.(); clearSpatialPreview()
           <UiToast v-else-if="commandNotice&&!replay" :message="commandNotice" tone="success" :action-label="drawer==='missions'?'':'查看执行'" @action="commandNotice='';toggleDrawer('missions')" @dismiss="commandNotice=''"/>
           <button v-if="drawer!=='training' && current.journey && !replay" type="button" class="director-workspace-back" @click="openTraining"><AppIcon name="back" :size="18" />返回当前任务</button>
           <div v-if="drawer==='training'" class="director-training-body">
-            <CommunityOperations v-if="displayed.simulation.community" :key="current.id" :community="displayed.simulation.community" :staff="displayed.simulation.environment.response_staff" :running="!replay && current.status==='running'" :busy="busy" :can-report="!replay" can-locate can-visit @notice="submitCommunityNotice" @locate="locateCommunityResident" @task="inspectTask"/>
+            <button v-if="focusedHouseholdId" type="button" class="task-list-back" @click="returnFromHousehold">{{householdBack?.kind==='indoor'?'返回楼内现场，继续核对户门':'返回目标计划，查看后续执行'}}</button>
+            <CommunityOperations :focus-household-id="focusedHouseholdId" v-if="displayed.simulation.community" :key="current.id" :community="displayed.simulation.community" :staff="displayed.simulation.environment.response_staff" :running="!replay && current.status==='running'" :busy="busy" :can-report="!replay" can-locate can-visit @notice="submitCommunityNotice" @locate="locateCommunityResident" @task="inspectTask"/>
             <TrainingJourneyPanel v-if="current.journey && !replay" :journey="current.journey" :status="current.status" :busy="busy" @action="trainingAction" @ask="askTraining" />
           </div>
           <AssemblyRollcall v-else-if="drawer==='rollcall'" :people="displayed.simulation.residents" :busy="busy" :running="!replay&&current.status==='running'" @confirm="confirmRollcall" @focus="id=>{closeFloatingPanels();arena?.focusResident(id)}"/>
           <div v-else-if="drawer==='indoor' && displayed.simulation?.environment.indoor" class="drawer-list">
-            <IndoorFirePanel :tasks="displayed.tasks" @task="inspectTask" :selected-door-id="selectedIndoorDoor" :state="displayed.simulation.environment.indoor" :residents="displayed.simulation.residents" :active-floor="indoorFocus?.buildingId===displayed.simulation.environment.indoor.building_id?indoorFocus.floor:undefined" :readonly="Boolean(replay)||current.status!=='running'" :busy="busy" @door="value=>requestDrill('/indoor/doors','POST',value,'房门状态已更新，烟气与通行同步改变')" @focus="floor=>{selectedIndoorDoor=undefined;arena?.focusIndoorFloor(floor)}" @resident="id=>{closeFloatingPanels();arena?.focusResident(id)}" @select="ids=>{closeFloatingPanels();arena?.selectResidents(ids)}"/>
+            <IndoorFirePanel :historical="Boolean(replay)" @household="id=>openHousehold(id,'indoor')" :selected-zone-id="selectedIndoorZone" @zone="inspectIndoorZone" @door-focus="inspectIndoor" @passage="id=>{closeFloatingPanels();arena?.focusPassage(id)}" :tasks="displayed.tasks" @task="inspectTask" :selected-door-id="selectedIndoorDoor" :state="displayed.simulation.environment.indoor" :residents="displayed.simulation.residents" :active-floor="indoorFocus?.buildingId===displayed.simulation.environment.indoor.building_id?indoorFocus.floor:undefined" :readonly="Boolean(replay)||current.status!=='running'" :busy="busy" @door="value=>requestDrill('/indoor/doors','POST',value,'房门状态已更新，烟气与通行同步改变')" @focus="floor=>{selectedIndoorDoor=undefined;selectedIndoorZone=undefined;arena?.focusIndoorFloor(floor)}" @resident="id=>{closeFloatingPanels();arena?.focusResident(id)}" @select="ids=>{closeFloatingPanels();arena?.selectResidents(ids)}"/>
           </div>
           <div v-else-if="drawer === 'vehicles'" class="drawer-list">
             <VehicleDispatchPanel :vehicles="displayed.simulation.vehicles ?? []" :nodes="displayed.simulation.road_network?.nodes ?? []" :candidates="displayed.simulation.transfer_candidates ?? []" :selected-id="selectedVehicleId" :drill-status="current.status" :running="!replay && current.status === 'running'" :busy="busy || spatialPreviewBusy" @preview="previewSpatialAction" @command="(id, command) => requestDrill('/vehicles', 'POST', { vehicle_id: id, command }, '车辆任务已更新，现场位置与执行记录已同步')" @focus="vehicle => { closeFloatingPanels(); arena?.focusPoint(vehicle.x, vehicle.y) }" />

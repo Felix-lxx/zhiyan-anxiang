@@ -16,17 +16,28 @@ def freeze_community(world):
     rng = Random(int(params.get('simulation_seed', 2026)))
     needs_help = rng.randrange(len(people))
     houses, buildings = {}, {b['id']: b for b in world['objects']}
+    dwellings = {item['kitchen_zone_id']: item
+                 for item in (world.get('residential_units') or {}).get('dwellings', [])}
     for index, person in enumerate(people):
         building = buildings[person['building_id']]
         zone = person.get('start_zone_id', '')
         side = ('东' if zone.endswith(':east') else '西') if world['parameters'].get('fire_source_type') == 'kitchen' else ('东' if person['y'] >= building['y'] else '西')
         key = (person.get('start_zone_id') if world['parameters'].get('fire_source_type') == 'kitchen'
                else f"{building['id']}:{person['floor']}:{side}")
+        dwelling = dwellings.get(zone)
+        if dwelling:
+            key = dwelling['id']
         house_id = str(uuid5(NAMESPACE_URL, 'zhiyan-household:' + key))
         house = houses.setdefault(house_id, {'id': house_id, 'building_id': building['id'],
             'building_name': building['name'], 'floor': person['floor'],
             'label': f"{building['name']} · {person['floor']}层{side}侧训练户",
             'resident_ids': [], 'source': 'simulation'})
+        if dwelling:
+            house.update({field: dwelling[field] for field in (
+                'unit_number', 'apartment_number', 'entrance_node_id', 'entrance_zone_id',
+                'door_id', 'kitchen_door_id', 'kitchen_zone_id', 'label')})
+            house['dwelling_id'] = dwelling['id']
+            person['household_entrance_node_id'] = dwelling['entrance_node_id']
         house['resident_ids'].append(person['id'])
         profile = 'mobility' if index == needs_help else 'hearing' if index % 5 == 1 else 'sleeping' if index % 3 == 0 else 'standard'
         person.update(household_id=house_id, household_label=house['label'], profile=profile,
@@ -38,10 +49,12 @@ def freeze_community(world):
     world['response_staff'] = [{'id': f'escort-{i+1}', 'name': f'夜班值守员 {i+1}',
         'role':'物业/网格员', 'available':True, 'source':'simulation', 'origin':deepcopy(origin)}
         for i in range(int(params.get('duty_staff_count', 4)))]
-    world['community_training'] = {'version':2, 'source':'simulation',
+    world['community_training'] = {'version':5, 'source':'simulation',
         'label':'社区夜班模拟画像', 'seed':int(params.get('simulation_seed', 2026)),
         'households':list(houses.values()), 'environment_model':'causal_training_v2',
-        'visit_smoke_limit':.15}
+        'visit_smoke_limit':.15,
+        'release_policy': {'mode':params.get('building_release_mode', 'shared_corridor'),
+                           'density_limit':55, 'version':1}}
 
 
 def project_community(world, events, people):

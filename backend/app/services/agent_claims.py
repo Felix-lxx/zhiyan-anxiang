@@ -11,6 +11,7 @@ from app.models.agent import AgentResourceClaim, AgentRun
 from app.models.operations import DrillCommand, DrillEvent
 from app.domain.errors import CommandRejected
 from app.services.response_staff import roster
+from app.services.agent_notifications import departure_notified
 
 LIVE = {'executing', 'waiting', 'needs_review', 'awaiting_approval', 'awaiting_rollcall'}
 
@@ -68,7 +69,8 @@ def acquire(session, run, data):
                 return False, '等待消防车完成已受理行程或处置；原计划让出控制不会取消车辆实际行动。'
     required.update({'door:'+s['arguments']['door_id']: s['label'] for s in run.steps
         if s.get('kind') == 'indoor.door.set' and s['status'] != 'completed'})
-    escorts = [s for s in run.steps if s.get('action') == 'priority_assist' and s['status'] != 'completed']
+    escorts = [s for s in run.steps if s.get('action') == 'priority_assist' and s['status'] != 'completed'
+               and departure_notified(s, data)]
     slots = max((len(s['resident_ids']) for s in escorts), default=0)
     if run.scope.get('escort_parallel_capacity'):
         slots = max(slots, min(run.scope['escort_parallel_capacity'],

@@ -2,8 +2,9 @@
 
 
 def door_occupants(layout, door, residents, helpers):
-    room = next((zone for zone in layout.get('zones', []) if zone['id'] == door['room_id']), None)
     aliases = layout.get('node_zones', {})
+    protected = set(door.get('protected_zone_ids') or [door['room_id']])
+    protected_rooms = [zone for zone in layout.get('zones', []) if zone['id'] in protected]
     blockers = []
     for kind, actors in (('resident', residents), ('helper', helpers)):
         for actor in actors:
@@ -21,13 +22,15 @@ def door_occupants(layout, door, residents, helpers):
                 at_door |= (abs(actor['height']-portal['height']) < .5
                             and abs(normal) <= radius + portal['wall_depth']/2
                             and abs(tangent) <= portal['width']/2 + radius)
-            in_room = aliases.get(actor.get('node_id'), actor.get('node_id')) == door['room_id']
+            in_room = aliases.get(actor.get('node_id'), actor.get('node_id')) in protected
             # Escort helpers follow an actual trail; their graph node can lag
             # behind their physical position. Check their current footprint too.
-            if kind == 'helper' and room and actor.get('state') in {'approaching', 'escorting', 'blocked'}:
-                in_room |= (abs(actor.get('height', -100)-room['height']) < .5
-                            and abs(actor.get('x', -1000)-room['x']) <= room['width']/2
-                            and abs(actor.get('y', -1000)-room['y']) <= room['depth']/2)
+            if kind == 'helper' and actor.get('state') in {'approaching', 'escorting', 'blocked'}:
+                in_room |= any(
+                    abs(actor.get('height', -100)-zone['height']) < .5
+                    and abs(actor.get('x', -1000)-zone['x']) <= zone['width']/2
+                    and abs(actor.get('y', -1000)-zone['y']) <= zone['depth']/2
+                    for zone in protected_rooms)
             if at_door or in_room:
                 blockers.append({'id': actor.get('id', ''), 'kind': kind,
                                  'label': actor.get('label') or actor.get('staff_name') or ('护送员' if kind == 'helper' else '居民'),

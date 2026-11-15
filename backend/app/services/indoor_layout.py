@@ -32,8 +32,22 @@ def kitchen_rooms(building: dict, stair_width: float = 1.2) -> dict:
     room_depth = min(depth * .4, corridor_front - rear_wall)
     if room_width < 1.2 or room_depth < 1.12:
         raise ValueError('住宅平面过小或楼梯过宽，无法容纳两间厨房及独立通道；请调整建筑宽深或楼梯宽度。')
-    return {
+    rooms = {
         side: {'x': left + room_width / 2 + index * (room_width + .2),
                'y': corridor_front - room_depth / 2, 'width': room_width, 'depth': room_depth}
         for index, side in enumerate(('west', 'east'))
     }
+    # A compact dwelling needs a separate threshold: reserve the private
+    # entrance before the shared corridor, rather than visiting the kitchen.
+    if room_depth >= 3 and room_width >= 2.5:
+        for room in rooms.values():
+            original_front = room['y'] + room['depth']/2
+            # Keep a gap for both door leaves and their handles; a .95 m
+            # separation clipped an open entry leaf into the closed kitchen door.
+            room['depth'] -= 1.03
+            room['y'] -= .515
+            room['entrance'] = {
+                'x': room['x'], 'y': original_front - .425,
+                'width': room_width, 'depth': .85,
+            }
+    return rooms

@@ -67,6 +67,7 @@ class SceneRead(BaseModel):
 
 
 class CommunityTrainingParameters(BaseModel):
+    building_release_mode: Literal['shared_corridor', 'assembly_serial'] = 'shared_corridor'
     community_profile: Literal['legacy', 'night_shift'] = 'legacy'
     duty_staff_count: int = Field(default=4, ge=1, le=8)
     simulation_seed: int = Field(default=2026, ge=0, le=2147483647)

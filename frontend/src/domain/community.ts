@@ -1,5 +1,6 @@
 export interface TrainingHousehold {
   id:string; label:string; building_id:string; building_name:string; floor:number
+  dwelling_id?:string;unit_number?:number;apartment_number?:string;entrance_node_id?:string;door_id?:string;kitchen_door_id?:string
   resident_ids:string[]; notification_state:'unnotified'|'sent'|'confirmed'
   channels:Array<'broadcast'|'phone'|'knock'>; direct_contact_required:boolean
   arrived:number; priority:number; profiles:string[]; last_report_at:number|null; evidence:string

@@ -3,10 +3,13 @@ import {computed,ref,watch} from 'vue'
 import type {CommunityTraining,DutyStaff,HouseholdNotice} from '../domain/community'
 import AppIcon from './AppIcon.vue'
 
-const props=defineProps<{community:CommunityTraining;staff?:DutyStaff[];running:boolean;busy:boolean;canReport?:boolean;canLocate?:boolean;canVisit?:boolean}>()
+const props=defineProps<{community:CommunityTraining;staff?:DutyStaff[];running:boolean;busy:boolean;canReport?:boolean;canLocate?:boolean;canVisit?:boolean;focusHouseholdId?:string}>()
 const emit=defineEmits<{notice:[payload:HouseholdNotice];locate:[residentId:string];task:[taskId:string]}>()
 const tab=ref<'households'|'staff'>('households')
 const filter=ref('pending'),search=ref(''),selection=ref(''),page=ref(0)
+watch(()=>props.focusHouseholdId,id=>{
+  if(id&&props.community.households.some(h=>h.id===id)){tab.value='households';selection.value=id}
+},{immediate:true})
 const channel=ref<HouseholdNotice['channel']>('phone'),evidence=ref('')
 const stateLabels={unnotified:'待通知',sent:'已覆盖 · 待确认',confirmed:'已确认收到'}
 const channelLabels={broadcast:'入口广播',phone:'电话联系',knock:'敲门核查'}
@@ -48,6 +51,7 @@ function dispatchVisit(){
       <section v-if="selected" class="community-operations__detail" aria-label="选中住户">
         <header><h3>{{selected.label}}</h3><button v-if="canLocate" type="button" @click="emit('locate',selected.resident_ids[0]!)"><AppIcon name="target"/>定位现场</button></header>
         <p>{{stateLabels[selected.notification_state]}}。收到回执后，由总控安排撤离或接应。</p>
+        <p v-if="selected.apartment_number">到户目标为 {{selected.apartment_number}} 户入户门外的公共走廊；厨房门与入户门分别核对。</p>
         <details class="community-operations__context"><summary>住户情况与回执记录</summary><p>{{selected.arrived}} / {{selected.resident_ids.length}} 人到场；{{selected.priority}} 名需重点接应。</p>
         <p v-if="selected.direct_contact_required">本户有需直接联系的居民，入口广播不能替代电话或敲门确认。</p>
         <p>已记录方式：{{selected.channels.map(c=>channelLabels[c]).join('、')||'尚无通知记录'}}</p>
@@ -66,6 +70,7 @@ function dispatchVisit(){
           <button v-if="visiting&&canVisit" type="button" :disabled="!running||busy||evidence.trim().length<6" @click="submit('household_visit_cancel')">{{visit?.state==='at_door'?'结束本次核查':'撤回到户核查'}}</button>
           <small v-if="visiting&&canVisit">结束或撤回需在下方填写原因；在途人员走完当前通道后释放岗位。</small>
         </section>
+        <p v-if="canReport&&!running&&selected.notification_state!=='confirmed'" role="status">当前场次未运行，暂不能提交回执；暂停时可通过顶部“继续”恢复。</p>
         <template v-if="canReport&&running&&selected.notification_state!=='confirmed'">
           <label>本次联系渠道<select v-model="channel"><option value="phone">电话联系</option><option value="knock" :disabled="!knockReady">敲门核查{{knockReady?'':'（等待到户）'}}</option><option value="broadcast">入口广播</option></select></label>
           <label>现场回执<textarea v-model="evidence" rows="3" maxlength="240" placeholder="记录联系过程与结果，至少六个字。未联系到请勿确认收到。"/></label>

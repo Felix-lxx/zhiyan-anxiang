@@ -55,7 +55,6 @@ def archive_drill(session, drill, data, owner, *, backfill=False):
     if unresolved['exposed']: findings.append(f"{len(unresolved['exposed'])} 人累计烟气暴露超过本模型阈值。")
     if unresolved['tasks']: findings.append(f"{len(unresolved['tasks'])} 项责任任务尚未完成核验。")
     if metrics['fire_intensity']>0: findings.append('结束时仍有仿真火情，疏散成绩不表示灭火完成。')
-    if not findings: findings.append('本场人员到达、集合清点和责任任务均已核验；仍需结合事件核对操作条件。')
     important = [e for e in events if e.event_type in {'resident.command','indoor.door_changed',
         'task.accepted','task.arrived','task.completed','task.overdue','road.reopened','road.blocked',
         'inject.channel_blocked','inject.hydrant_failure','inject.resident_missing','vehicle.action_started',
@@ -67,7 +66,6 @@ def archive_drill(session, drill, data, owner, *, backfill=False):
         'community_id':scene.community_id, 'scene_id':scene.id, 'scene_version_id':drill.scene_version_id,
         'drill_name':drill.name, 'observed_at':drill.elapsed_seconds, 'population':len(people), 'actual':actual,
         'parameters':deepcopy(world.get('parameters', {})), 'observed_engine_revision':None if backfill else ENGINE_REVISION,
-        'result_kind':'incomplete' if any(unresolved.values()) else 'verified',
         'intervention_count':sum(e.event_type.startswith('inject.') for e in events),
         'event_sequence_from':events[0].sequence if events else 0,
         'event_sequence_to':events[-1].sequence if events else 0, 'events':evidence}
@@ -94,10 +92,17 @@ def archive_drill(session, drill, data, owner, *, backfill=False):
         metrics['household_visits'] = len(visits)
         unresolved['household_visits_active'] = sum(v['state']!='completed' for v in visits)
         findings.append(f"分户通知：{notification['confirmed']}/{notification['total']} 户有收到回执；广播覆盖不等于住户确认。")
-    payload = {'version':2, 'name':drill.name, 'scene_name':scene.name, 'scene_id':scene.id,
+    basis['result_kind'] = 'incomplete' if any(unresolved.values()) else 'verified'
+    basis['model_manifest'] = deepcopy(world.get('model_manifest'))
+    if not any(unresolved.values()) and metrics['fire_intensity'] <= 0:
+        findings.append('本场人员到达、集合清点、责任任务及适用的分户回执均已核验。')
+    elif unresolved.get('household_visits_active'):
+        findings.append(f"结束时仍有 {unresolved['household_visits_active']} 项到户核查未结束。")
+    payload = {'version':3, 'name':drill.name, 'scene_name':scene.name, 'scene_id':scene.id,
         'community_id':scene.community_id, 'elapsed_seconds':drill.elapsed_seconds,
         'scene_version_id':drill.scene_version_id, 'engine_revision':None if backfill else ENGINE_REVISION,
         'origin':'historical_reconstruction' if backfill else 'end_transaction',
+        'model_manifest':deepcopy(world.get('model_manifest')),
         'score':deepcopy(data['score']), 'metrics':metrics, 'unresolved':unresolved, 'findings':findings,
         'community':deepcopy(sim.get('community')),
         'events':evidence, 'event_count':len(events), 'conversation_count_at_end':conversation_count,

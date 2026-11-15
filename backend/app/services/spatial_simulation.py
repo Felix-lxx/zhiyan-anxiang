@@ -619,6 +619,9 @@ def simulate(world, events, elapsed, strategy=None, branch_at=None, *, checkpoin
     if env.get('indoor'):
         from app.services.indoor_safety import project_door_safety
         env = {**env, 'indoor': project_door_safety(env['indoor'], world['indoor_environment'], people, list(helpers.values()))}
+        from app.services.indoor_overview import indoor_overview, dwelling_overview
+        env['indoor']['navigation'] = indoor_overview(env['indoor'], graph, people)
+        env['indoor']['dwellings'] = dwelling_overview(env['indoor'], people, community)
         env['visibility'] = min(zone['visibility'] for zone in env['indoor']['zones'])
     congested_edges = sorted((edge for edge in runtime_edges.values() if edge["density_percent"] >= 55), key=lambda edge: (-edge["density_percent"], -edge["waiting_count"], edge["id"]))
     return dict(community=community, elapsed_seconds=elapsed, fire=fire, environment=env, sensors={"temperature": fire["temperature"], "smoke_ppm": round(45+fire["smoke_radius"]*31), "alarm": fire["intensity"] >= 35}, residents=people, helpers=[h for h in helpers.values() if h.get('purpose')!='household_visit'], world=world, spatial_network=graph, road_network=roads, strategy=strategy or "live_commands", parallel_strategy=strategy, summary=dict(total=len(people), evacuated=sum(p["status"] == "evacuated" for p in people), counted=sum(p["counted"] for p in people), moving=sum(p["status"] == "moving" for p in people), vulnerable=sum(p["vulnerable"] for p in people), missing=sum(p["status"] == "missing" for p in people), smoke_exposed=sum(p["smoke_exposure"] > 5 for p in people), congested=sum(p["congestion"] > 55 for p in people), congested_edges=len(congested_edges), critical_edge=({key: congested_edges[0][key] for key in ("id", "name", "density_percent", "waiting_count")} if congested_edges else None), north_load=sum(p["exit"] == "north" for p in people), south_load=sum(p["exit"] == "south" for p in people)))

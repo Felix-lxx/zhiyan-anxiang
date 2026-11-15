@@ -15,6 +15,7 @@ from app.models.operations import DrillCommand, DrillEvent, DrillSession
 from app.services.exercise_world import frozen_world
 from app.services.knowledge import add_version, document_payload, require_community
 from app.services.knowledge_ingestion import digest
+from app.services.knowledge_applicability import PARAMETERS
 
 
 def existing_experience(session, owner, check_id):
@@ -64,11 +65,11 @@ def draft_from_outcome(session, run_id, revision, identity):
         'population': len(check.basis['resident_ids']), 'predicted': deepcopy(check.basis['predicted']),
         'forecast_engine_revision': check.basis.get('forecast_engine_revision'),
         'observed_engine_revision': result.get('observed_engine_revision'),
+        'model_manifest': deepcopy(world.get('model_manifest')),
         'actual': deepcopy(result['actual']), 'delta': deepcopy(result['delta']),
         'event_sequence_from': check.basis['after_sequence'], 'event_sequence_to': result['last_event_sequence'],
         'intervention_count': result['intervention_count'],
-        'parameters': {key: parameters[key] for key in ('fire_source_type', 'fire_source_object_id', 'fire_floor', 'fire_room',
-            'resident_count', 'stair_width', 'south_lane_status', 'room_door_state') if key in parameters}}
+        'parameters': {key: parameters[key] for key in PARAMETERS if key in parameters}}
     ids = {event['id'] for event in result.get('interventions', [])}
     commands = list(set(check.basis['command_ids']))
     for offset in range(0, len(commands), 500):

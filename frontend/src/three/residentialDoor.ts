@@ -12,9 +12,9 @@ export class ResidentialDoor {
   private initialized=false
   private occupied=false
 
-  constructor(width:number,clearance:number,wallDepth:number,materials?:SceneMaterials){
+  constructor(width:number,clearance:number,wallDepth:number,materials?:SceneMaterials,entry=false){
     this.frame.name='residential-door';this.leaf.name='door-swing-leaf'
-    const wood=materials?.surface('wood',0x9c8267,1,3)??new THREE.MeshStandardMaterial({color:0x9c8267,roughness:.68})
+    const wood=entry?new THREE.MeshStandardMaterial({color:0x53635d,metalness:.35,roughness:.52}):materials?.surface('wood',0x9c8267,1,3)??new THREE.MeshStandardMaterial({color:0x9c8267,roughness:.68})
     const trim=new THREE.MeshStandardMaterial({color:0x77614e,roughness:.72})
     const steel=new THREE.MeshStandardMaterial({color:0x87908a,metalness:.7,roughness:.36})
     const seal=new THREE.MeshStandardMaterial({color:0x393e37,roughness:.95})
@@ -38,6 +38,11 @@ export class ResidentialDoor {
     }
     for(const y of [.25,1.05,1.85]){
       const pin=new THREE.Mesh(new THREE.CylinderGeometry(.012,.012,.09,10),steel);pin.position.set(.012,y,0);this.leaf.add(pin)
+    }
+    if(entry){
+      const viewer=new THREE.Mesh(new THREE.CylinderGeometry(.018,.018,.065,12),steel)
+      viewer.name='entrance-door-viewer';viewer.rotation.x=Math.PI/2;viewer.position.set(leafWidth/2,1.52,0);this.leaf.add(viewer)
+      box(this.leaf,'entrance-lock-cylinder',.035,.045,.065,leafWidth-.13,.93,0,steel)
     }
     this.clearance=new THREE.Mesh(new THREE.BoxGeometry(width+clearance*2,.008,wallDepth+clearance*2),new THREE.MeshBasicMaterial({color:0x6dc6ad,transparent:true,opacity:.26,depthWrite:false}))
     this.clearance.name='door-occupancy-envelope';this.clearance.position.y=.018;this.frame.add(this.clearance)

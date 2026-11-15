@@ -118,3 +118,19 @@ def test_release_wave_completion_and_manual_takeover_do_not_overwrite_drill_stat
     assert view['status'] == 'paused'
     assert view['release_waves'][0]['state'] == 'blocked'
     assert view['release_waves'][0]['reason'] == '水源失效'
+
+
+def test_paused_release_projection_explains_new_blockage_without_changing_plan():
+    run, data, steps = fixture()
+    data['status'] = 'paused'
+    data['simulation']['spatial_network']['edges'][0]['status'] = 'blocked'
+    steps[0].update(id='wave-1', status='waiting', release_wave=1,
+        release_gate={'mode':'shared_corridor','density_limit':55},
+        route_edge_ids=['stairs-1'], reason='等待喷水')
+    before = deepcopy((vars(run), data, steps))
+    wave = coordination_view(run,data,steps)['release_waves'][0]
+    assert wave['state']=='blocked' and '通道不可用' in wave['reason']
+    assert wave['release_check']['at_seconds']==32
+    assert (vars(run),data,steps)==before
+    run.status='taken_over'
+    assert coordination_view(run,data,steps)['release_waves'][0]['state']=='stopped'

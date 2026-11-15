@@ -9,6 +9,11 @@ def doorway(world, resident):
     """Stop outside the room; a visit never requires entry through its door."""
     graph = world['spatial_network']
     nodes = {node['id']: node for node in graph['nodes']}
+    if resident.get('household_entrance_node_id'):
+        entry = nodes.get(resident['household_entrance_node_id'])
+        if not entry or entry['kind']!='corridor' or entry.get('building_id')!=resident['building_id'] or entry.get('floor')!=resident['floor']:
+            raise HTTPException(422, '本户入户门外节点与楼栋或楼层不匹配，请检查冻结空间。')
+        return entry['id']
     room = resident.get('start_zone_id', resident['start_node_id'])
     portal = nodes.get(room + ':entry')
     if portal:

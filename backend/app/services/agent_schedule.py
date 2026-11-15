@@ -15,6 +15,12 @@ def release_schedule(groups, routes, resource_steps, support, data):
             batches.setdefault(group['release_wave'], []).append(group)
     if not batches:
         return None
+    if any(group.get('release_gate') for group in groups):
+        return {'kind':'queue_free_schedule', 'complete':False, 'estimated_completion_at':None,
+                'waves':[{'wave':n,'building_id':members[0].get('building_id'),
+                          'release_at':None,'arrival_at':None} for n,members in sorted(batches.items())],
+                'deadline_risks':[],
+                'notice':'本方案按实时通道条件放行，后续时刻取决于占用、管制与岗位释放；尚未完成全批次动态推演，不提供总完成时间或无超时保证。'}
     start = data['elapsed_seconds']
     deployment = support.get('duration_seconds')
     known = deployment is not None or support.get('already_active')

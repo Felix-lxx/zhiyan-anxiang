@@ -8,13 +8,16 @@ PARAMETERS = {
     'fire_source_type': '火源类型', 'fire_source_object_id': '起火对象',
     'fire_floor': '起火楼层', 'fire_room': '起火房间', 'resident_count': '场景居民人数',
     'stair_width': '楼梯净宽', 'south_lane_status': '南侧通道', 'room_door_state': '初始房门状态',
+    'community_profile': '居民训练画像', 'duty_staff_count': '当班人数',
+    'simulation_seed': '随机种子', 'hydrant_status': '初始水源状态',
+    'building_release_mode': '楼栋放行方式',
 }
 
 
 def situation(data, scope=None):
     """Use the caller's exact snapshot, including historical snapshots."""
     world = data.get('simulation', {}).get('world', {})
-    return {'parameters': world.get('parameters', {}), 'engine_revision': ENGINE_REVISION,
+    return {'parameters': world.get('parameters', {}), 'model_manifest': world.get('model_manifest'), 'engine_revision': ENGINE_REVISION,
             'at_seconds': data['elapsed_seconds'], 'event_sequence': data.get('latest_event_sequence'),
             'target_population': len(scope['resident_ids']) if scope else None}
 
@@ -34,6 +37,20 @@ def assess_experience(source, current):
                 'notice': '资料检索未绑定演练现场；进入具体场次后再核对条件。'}
     recorded, actual = source.get('parameters') or {}, current.get('parameters') or {}
     differences, missing = [], []
+    recorded_models, current_models = source.get('model_manifest'), current.get('model_manifest')
+    if recorded_models is not None or current_models is not None:
+        if recorded_models is None or current_models is None:
+            missing.append('独立模型清单')
+        else:
+            labels = {'environment':'环境模型', 'residents':'居民行为模型', 'orchestration':'编排规则',
+                      'height_coordinates':'高度坐标', 'indoor_geometry':'室内几何版本',
+                      'kitchen_equipment':'厨具布局版本', 'residential_units':'住户入口版本',
+                      'scoring':'评分版本', 'version':'模型清单格式'}
+            for key in sorted(recorded_models.keys() | current_models.keys()):
+                before, after = recorded_models.get(key), current_models.get(key)
+                if not equal(before, after):
+                    differences.append({'field':'model_manifest.'+key, 'label':labels.get(key, key),
+                                        'recorded':str(before), 'current':str(after)})
     for key, label in PARAMETERS.items():
         if key not in actual:
             continue

@@ -1,11 +1,12 @@
 """One event-derived environmental curve for live, forecast and replay."""
 from bisect import bisect_right
+from app.services.model_manifest import causal_environment
 
 
 class EnvironmentTimeline:
     def __init__(self, world, events):
         self.kitchen = bool(world.get('indoor_environment'))
-        self.causal = bool(world.get('community_training'))
+        self.causal = causal_environment(world)
         self.indoor = None
         self.times, self.knots = [], []
         failed = world["parameters"].get("hydrant_status") in {"faulty", "failed"}

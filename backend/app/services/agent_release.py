@@ -3,11 +3,13 @@ from copy import deepcopy
 from app.services.water_resources import source_available
 
 
-def staged_release(groups, population, resource_steps, spray_id, water_source_id=None):
-    """Each building waits for the previous building's actual assembly arrival.
+def staged_release(groups, population, resource_steps, spray_id, water_source_id=None, *, release_policy=None, routes=None):
+    """Freeze either assembly-serial or live-corridor release dependencies.
 
     One building is one wave: a building-wide broadcast must not release half
-    a nominal batch early. Escort capacity is still enforced by compile_graph.
+    a nominal batch early. New conditional worlds wait for accepted departure,
+    then recheck corridor load; legacy worlds still wait for assembly arrival.
+    Escort capacity is independently enforced by compile_graph.
     """
     waves = {}
     for group in groups:
@@ -20,6 +22,7 @@ def staged_release(groups, population, resource_steps, spray_id, water_source_id
     order = [step.get('building_id') for step in robot if step.get('arguments', {}).get('command') == 'move']
     waves = {key: waves[key] for key in dict.fromkeys([*order, *waves]) if key in waves}
     previous = []
+    conditional = bool(release_policy and release_policy.get('mode') == 'shared_corridor')
     for wave_index, (building_id, members) in enumerate(waves.items()):
         wave_spray_id = spray_id
         if wave_index:
@@ -27,7 +30,9 @@ def staged_release(groups, population, resource_steps, spray_id, water_source_id
             robot.append({'id': wave_spray_id, 'label': f'第 {wave_index + 1} 批放行前核对并接续喷水',
                 'kind': 'vehicle.command', 'arguments': {'command':'spray','vehicle_id':'firetruck-1',
                     **({'water_source_id': water_source_id} if water_source_id else {})},
-                'depends_on': list(previous), 'resident_ids': [], 'route_edge_ids': []})
+                'depends_on': [] if conditional else list(previous),
+                **({'release_after':list(previous)} if conditional else {}),
+                'resident_ids': [], 'route_edge_ids': []})
         wave_groups = {}
         for group, resident_id in members:
             key = group['id']
@@ -37,9 +42,15 @@ def staged_release(groups, population, resource_steps, spray_id, water_source_id
                             release_wave=wave_index + 1, building_id=building_id,
                             release_condition='active_suppression',
                             release_water_source_id=water_source_id,
-                            depends_on=[*previous, *([wave_spray_id] if wave_spray_id else [])])
+                            depends_on=[*group.get('depends_on', []), *([] if conditional else previous), *([wave_spray_id] if wave_spray_id else [])])
                 wave_groups[key] = copy
             wave_groups[key]['resident_ids'].append(resident_id)
+        if conditional:
+            for group in wave_groups.values():
+                group.update(release_after=list(previous), release_gate=deepcopy(release_policy))
+                if routes is not None:
+                    group['route_edge_ids'] = sorted({eid for pid in group['resident_ids']
+                        for eid in routes[group['exit']][pid].get('route_edge_ids', [])})
         broadcast = next((step for step in robot if step.get('building_id') == building_id
                           and step.get('arguments', {}).get('command') == 'broadcast'), None)
         for step in robot:
@@ -53,8 +64,13 @@ def staged_release(groups, population, resource_steps, spray_id, water_source_id
                     *([spray_id] if not wave_index and spray_id else [])]))
         if broadcast:
             broadcast['depends_on'] = list(dict.fromkeys([
-                *broadcast.get('depends_on', []), *previous,
+                *broadcast.get('depends_on', []), *([] if conditional else previous),
                 *([wave_spray_id] if wave_spray_id else [])]))
+            if conditional:
+                broadcast.update(release_after=list(previous), release_gate=deepcopy(release_policy),
+                    release_condition='active_suppression', release_water_source_id=water_source_id,
+                    gate_resident_ids=[pid for group in wave_groups.values() for pid in group['resident_ids']],
+                    route_edge_ids=sorted({eid for group in wave_groups.values() for eid in group.get('route_edge_ids', [])}))
         for group in wave_groups.values():
             group['label'] = f"第 {wave_index + 1} 批 · {group['label'].rsplit(' · ', 1)[0]} · {len(group['resident_ids'])} 人"
             if broadcast:
