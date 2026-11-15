@@ -31,19 +31,9 @@
 
 ## 最新证据
 
-- [住宅入口、双门与到户联动](reports/2026-11-15-residential-entries.md)：厨房、玄关、入户门与公共走廊的空间契约；真实值守员到户、敲门回执、两端共用状态及响应式截图。
-
-- [逐户通知条件与独立模型](reports/2026-11-15-community-notice-plans.md)：先批准后核实、接应岗位延迟占用、原计划接续、档案与经验条件核对、桌面与手机实查。
-
-- [厨房平面、门控与三维](reports/2026-11-14-kitchen-interaction.md)：楼层态势、房间选择、设备尺寸及实际开门—通行—历史回放验证。
-
-- [实时通道条件放行](reports/2026-11-14-conditional-release.md)：前批受理与到场分离、条件核查、三维通道定位、短屏和手机布局。
-
-- [社区夜班与到户核查](reports/2026-11-13-community-upgrade.md)：分户、岗位互斥、连续移动、敲门到位、两端回执、截图及验证范围。
-- [决策与联动验收](reports/2026-11-10-acceptance.md)：三条完整流程、成绩、修复和未覆盖项。
-- [楼栋空间呈现](reports/2026-11-10-building-release.md)：投影、标记、定位和资源释放。
-- [三维材质与消防设备](reports/2026-11-09-model-assets.md)：来源、许可与实现。
-- [仓库整理与发布](reports/2026-11-14-repository-release.md)：清理清单、检查和升级说明。
+- [当前交付与验证](reports/current-release.md)：住户、双门、通知编排、条件放行、实际截图、本地与远端检查、清理及兼容。
+- [历史验收基线](reports/acceptance-baseline.md)：保留2026-11-10完整演练的条件、成绩与原始证据，不代表当前版本得分。
+- [三维材质与资源](reports/model-assets.md)：资源来源、许可及材质落地记录。
 
 [UI 设计参考](ui-design/UI界面样式图索引.md)只保留六个核心页面的参考图，不作为当前功能验收截图。README 图片来自实际运行。
 

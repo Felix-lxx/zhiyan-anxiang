@@ -42,7 +42,7 @@ Vue 3 + Vite + TypeScript 前端；FastAPI 后端；PostgreSQL 数据库；WebSo
 ## Evidence on Hand
 
 - 当前代码、架构与功能说明见仓库 README 和 `docs/architecture/README.md`。
-- 实际三条演练成绩、浏览器检查与验证缺口见 `docs/reports/2026-11-10-acceptance.md`。
+- 实际三条演练成绩、浏览器检查与验证缺口见 `docs/reports/acceptance-baseline.md`。
 - 示例社区和规则化仿真不冒充真实传感器或实测火场数据；实体设备与大规模容量仍需专项接入和验证。
 
 ## Product Principles

@@ -34,4 +34,4 @@
 
 `training_archive.py`、`assistant_conversations.py` 和 `models/training.py` 分别负责冻结、对话和持久化。新增表为 `drill_archives`、`assistant_conversations`、`assistant_exchanges`，启动时初始化；不批量重写历史成绩或自动发布经验。
 
-验证与剩余项见 [最新验收](../reports/2026-11-10-acceptance.md)，升级流程见 [部署](../operations/deployment.md)。
+验证与剩余项见 [最新验收](../reports/current-release.md)，升级流程见 [部署](../operations/deployment.md)。

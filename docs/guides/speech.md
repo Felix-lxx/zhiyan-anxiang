@@ -27,4 +27,4 @@ SPEECH_API_SECRET=<local-secret>
 
 浏览器朗读使用设备自身的语音合成能力，不是讯飞语音合成接入。本轮仓库交付未执行真实供应商音频转写；协议回归与隔离浏览器录音不能替代供应商识别质量验证。
 
-协议参考：[讯飞文档](https://www.xfyun.cn/doc/spark/spark_zh_iat.html)。项目当前实际验证见 [验收记录](../reports/2026-11-10-acceptance.md)。
+协议参考：[讯飞文档](https://www.xfyun.cn/doc/spark/spark_zh_iat.html)。项目当前实际验证见 [验收记录](../reports/current-release.md)。

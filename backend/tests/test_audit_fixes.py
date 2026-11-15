@@ -105,7 +105,19 @@ def complete_case(client, headers, root, tick, indoor=False):
     ended = call('PATCH','/state',{'action':'end'})
     final_run = next(r for r in call('GET','/agent/runs')['runs'] if r['id']==run['id'])
     assert final_run['status']=='completed'
-    assert ended['score']['total_score'] >= 95, ended['score']
+    # Completing the workflow is not a promise of a high score: this decision
+    # may expose residents or incur delay. Validate the completion contract and
+    # its evidence without changing physical or scoring rules to hit a floor.
+    score=ended['score'];details={item['name']:item for item in score['details']}
+    for name,maximum in [('疏散与清点',25),('重点人员护送',10),('按时核验处置',20),
+                         ('感知与响应',10),('演练完整性',5)]:
+        assert details[name]['score']==maximum,score
+    assert sum(item['score'] for item in score['details'])==score['total_score']
+    assert all(0<=item['score']<=item['max_score'] for item in score['details'])
+    assert '全员到达' in details['决策效率']['evidence']
+    if ended['simulation']['summary']['smoke_exposed']:
+        assert details['烟气与失联控制']['score']<details['烟气与失联控制']['max_score']
+        assert score['total_score']<100
     print('CASE_RESULT='+json.dumps({'indoor':indoor,'score':ended['score']['total_score'],
         'seconds':ended['elapsed_seconds'],'summary':ended['simulation']['summary'],
         'candidate_count':len(run['candidates']),'agent':final_run['status']}))

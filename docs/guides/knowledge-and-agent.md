@@ -51,4 +51,4 @@ KNOWLEDGE_EMBEDDING_KEY=<local-secret>
 
 候选预演只描述注明时域内的模型结果，预估分不等于最终成绩。逐栋时序估算独立显示，尚不含全部队列、护送接近与人工核验。经验检索比较场景、人数、模型和条件差异；单次训练档案不直接当作策略收益证据。
 
-实现边界见 [系统架构](../architecture/README.md)，配置见 [助手接入](assistant.md)，持久化及经验审核见 [训练记录](training-records.md)。最新实跑与验证缺口见 [验收记录](../reports/2026-11-10-acceptance.md)。
+实现边界见 [系统架构](../architecture/README.md)，配置见 [助手接入](assistant.md)，持久化及经验审核见 [训练记录](training-records.md)。最新实跑与验证缺口见 [验收记录](../reports/current-release.md)。

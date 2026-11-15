@@ -22,4 +22,4 @@
 - 标题、正文滚动区和输入区各自保持稳定；窄屏与短屏通过内部滚动和视图收纳适配。
 - 具体尺寸以代码与全局规范为准，本文不再重复早期绝对定位数值。
 
-当前交互契约见 [知识与智能体](../guides/knowledge-and-agent.md)，实际检查范围见 [最新验收](../reports/2026-11-10-acceptance.md)。旧尺寸和阶段检查通过 Git 历史查阅。
+当前交互契约见 [知识与智能体](../guides/knowledge-and-agent.md)，实际检查范围见 [最新验收](../reports/current-release.md)。旧尺寸和阶段检查通过 Git 历史查阅。

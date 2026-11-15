@@ -44,5 +44,9 @@ def test_live_replay_and_checkpoint_have_identical_walked_positions(kitchen):
         assert a['motion_trace'] == b['motion_trace']
         assert all(a['motion_trace'][-1][key] == a[key] for key in ('x', 'y', 'height'))
         assert len(a['motion_trace']) <= TRACE_POINTS
-    source_door = world['indoor_environment']['doors'][0]
-    assert source_door['portal']['width'] == .9
+    model=world['indoor_environment']
+    source_door=next(door for door in model['doors'] if door['room_id']==model['source_zone_id'])
+    source_room=next(node for node in world['spatial_network']['nodes'] if node['id']==model['source_zone_id'])
+    source_edge=next(edge for edge in world['spatial_network']['edges'] if edge['id']==source_door['id'])
+    assert source_door['portal']['width']==source_room.get('door_aperture_width',source_edge['width_meters'])
+    assert source_door['portal']['width']>=source_edge['width_meters']
