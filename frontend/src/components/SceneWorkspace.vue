@@ -4,6 +4,9 @@ import type { ConfigurationIssue, ConfigurationValidation } from '../domain/vali
 import { onBeforeRouteLeave, useRoute, useRouter } from 'vue-router'
 import type { Community, MapObjectSummary, Scene, SceneTemplate } from '../domain/models'
 import AppIcon from './AppIcon.vue'
+import PopulationProfileEditor from './PopulationProfileEditor.vue'
+import {populationIssue,type PopulationProfile} from '../domain/population'
+import type {CommunityTraining} from '../domain/community'
 import DecisionEditor from './DecisionEditor.vue'
 import ScenePublishPanel from './ScenePublishPanel.vue'
 import SceneLivePreview from './SceneLivePreview.vue'
@@ -17,7 +20,7 @@ import { createApiClient } from '../api/client'
 interface Preview {
   configuration_validation?: ConfigurationValidation
   fire_level: string; smoke_level: string; risk_level: string; affected_targets: string[]; route_advice: string; explanation: string
-  simulation: Record<string, unknown> & { summary: { total: number; congested?: number; smoke_exposed?: number }; environment: { east_hydrant: string; south_lane: string; visibility?: number }; world: { parameters: Record<string, unknown>; spatial_network: { stair_width: number } } }
+  simulation: Record<string, unknown> & { community?:CommunityTraining;summary: { total: number; congested?: number; smoke_exposed?: number }; environment: { east_hydrant: string; south_lane: string; visibility?: number }; world: { parameters: Record<string, unknown>; spatial_network: { stair_width: number } } }
 }
 type WorkflowStep = 'parameters' | 'preview' | 'decisions' | 'publish'
 
@@ -42,13 +45,13 @@ const selectedSceneId = ref('')
 const activeStep = ref<WorkflowStep>('parameters')
 const name = ref('')
 const parametersDirty = ref(false)
-const parameterForm = ref({ fire_source_type: 'charging_shed', fire_source_object_id: '', fire_floor: 1, fire_room: 'east', room_door_state: 'open', start_time: '20:15', wind_direction: '微风', resident_count: 60, hydrant_status: 'faulty', south_lane_status: 'restricted', stair_width: 1.2, community_profile:'legacy', duty_staff_count:4, simulation_seed:2026, building_release_mode:'shared_corridor' })
+const parameterForm = ref({ fire_source_type: 'charging_shed', fire_source_object_id: '', fire_floor: 1, fire_room: 'east', room_door_state: 'open', start_time: '20:15', wind_direction: '微风', resident_count: 60, hydrant_status: 'faulty', south_lane_status: 'restricted', stair_width: 1.2, community_profile:'legacy', duty_staff_count:4, simulation_seed:2026, building_release_mode:'shared_corridor', population_profile:null as PopulationProfile|null })
 const parameterBaseline = ref({ ...parameterForm.value })
 const previewMinute = ref(0)
 const preparationStep = ref(1)
 const validation = ref<ConfigurationValidation | null>(null)
 const locationNotice = ref('')
-const fieldSteps:Record<string,number>={'fire-source':2,'fire-floor':2,'fire-room':2,'room-door-state':2,'start-time':2,'wind-direction':2,'resident-count':1,'stair-width':1,'hydrant-status':1,'south-lane-status':1}
+const fieldSteps:Record<string,number>={'population-profile':1,'community-profile':1,'duty-staff-count':1,'simulation-seed':1,'fire-source':2,'fire-floor':2,'fire-room':2,'room-door-state':2,'start-time':2,'wind-direction':2,'resident-count':1,'stair-width':1,'hydrant-status':1,'south-lane-status':1}
 async function focusParameter(field:string){
   if(field==='scenario-tasks'){openPreparationStep(3);await nextTick();document.getElementById('scenario-tasks')?.focus();return}
   if(field==='scenario-template'){locationNotice.value=activeScene.value?.capabilities?.notice??'请检查案例支持情况。';preparationStep.value=4;return}
@@ -154,6 +157,8 @@ function hydrateParameters(scene: Scene) {
   parameterForm.value = {
     fire_source_type: isKitchen.value ? 'kitchen' : 'charging_shed', fire_floor: Number(p.fire_floor ?? 1), fire_room: String(p.fire_room ?? 'east'), room_door_state: String(p.room_door_state ?? 'open'),
     fire_source_object_id: String(p.fire_source_object_id ?? ''), start_time: String(p.start_time ?? (isKitchen.value?'18:30':'20:15')), wind_direction: String(p.wind_direction ?? '微风'), resident_count: Number(p.resident_count ?? (isKitchen.value?8:18)), hydrant_status: String(p.hydrant_status ?? 'available'), south_lane_status: String(p.south_lane_status ?? 'restricted'), stair_width: Number(p.stair_width ?? 1.2), community_profile:String(p.community_profile??'legacy'), duty_staff_count:Number(p.duty_staff_count??4), simulation_seed:Number(p.simulation_seed??2026), building_release_mode:String(p.building_release_mode??'shared_corridor'),
+    // This DTO contains scalar fields; copy them without cloning Vue's proxy.
+    population_profile:p.population_profile?{...(p.population_profile as PopulationProfile)}:null,
   }
   parameterBaseline.value = { ...parameterForm.value }
   parametersDirty.value = false
@@ -254,20 +259,21 @@ async function saveParameters() {
 }
 function validPreviewParameters(): boolean {
   const value = parameterForm.value
-  return Boolean(activeCanRun.value && !loadingFireSources.value && sceneFireSources.value.some(source => source.id === value.fire_source_object_id) && /^([01]\d|2[0-3]):[0-5]\d$/.test(value.start_time) && value.resident_count >= 1 && value.resident_count <= (isKitchen.value?sourceFloors.value*8:1000) && value.stair_width >= .6 && value.stair_width <= 3)
+  return Boolean(activeCanRun.value && !loadingFireSources.value && sceneFireSources.value.some(source => source.id === value.fire_source_object_id) && /^([01]\d|2[0-3]):[0-5]\d$/.test(value.start_time) && value.resident_count >= 1 && value.resident_count <= (isKitchen.value?sourceFloors.value*8:1000) && value.stair_width >= .6 && value.stair_width <= 3 && !populationIssue(value.population_profile,value.resident_count))
 }
 function schedulePreview() {
   if (previewTimer) window.clearTimeout(previewTimer)
   previewRequest++; previewController?.abort()
   if (!activeScene.value || !validPreviewParameters()) {
     previewRequest++; previewController?.abort(); isPreviewing.value = false
-    previewError.value = activeScene.value ? isKitchen.value?`请检查房间、时间、楼梯宽度及人口；当前示例住宅上限 ${sourceFloors.value*8} 人。`:'请检查起火点、时间、人数和楼梯宽度。' : ''
+    previewError.value = populationIssue(parameterForm.value.population_profile,parameterForm.value.resident_count) || (activeScene.value ? isKitchen.value?`请检查房间、时间、楼梯宽度及人口；当前示例住宅上限 ${sourceFloors.value*8} 人。`:'请检查起火点、时间、人数和楼梯宽度。' : '')
     return
   }
   isPreviewing.value=true
   previewTimer = window.setTimeout(() => void loadPreview(activeScene.value!.id, true), 360)
 }
 function handleParameterChange() { if(isKitchen.value)parameterForm.value.fire_floor=Math.max(1,Math.min(sourceFloors.value,parameterForm.value.fire_floor)); parametersDirty.value = JSON.stringify(parameterForm.value) !== JSON.stringify(parameterBaseline.value); validation.value = null; schedulePreview() }
+watch(()=>parameterForm.value.community_profile,mode=>{if(mode!=='night_shift'&&parameterForm.value.population_profile){parameterForm.value.population_profile=null;handleParameterChange()}})
 function selectFireRoom(value:{floor:number;room:string}) { if(isSaving.value || !isKitchen.value)return;parameterForm.value.fire_floor=value.floor;parameterForm.value.fire_room=value.room;handleParameterChange() }
 function handlePreviewMinuteChange() {
   if (!activeScene.value) return
@@ -360,7 +366,7 @@ onBeforeUnmount(() => { fireSourcesRequest++; previewRequest++; window.removeEve
           <label for="start-time">起火时间</label><input id="start-time" v-model="parameterForm.start_time" type="time" required/>
           <label for="wind-direction">风向与风力</label><select id="wind-direction" v-model="parameterForm.wind_direction"><option>微风</option><option>东北微风</option><option>北风</option><option>东风</option></select>
         </div>
-        <section v-if="preparationStep===1" class="atlas-property-group community-preparation"><h3>社区夜班训练</h3><label for="community-profile">居民与通知规则</label><select id="community-profile" v-model="parameterForm.community_profile"><option value="legacy">沿用当前基础规则</option><option value="night_shift">夜班画像 · 分户通知与有限人手</option></select><template v-if="parameterForm.community_profile==='night_shift'"><p>生成匿名训练住户，包含行动受限、需直接联系与熟睡居民。广播只记录覆盖，收到通知需要现场回执。</p><label for="duty-staff-count">当班值守岗位</label><input id="duty-staff-count" v-model.number="parameterForm.duty_staff_count" type="number" min="1" max="8" required/><label for="simulation-seed">场景种子</label><input id="simulation-seed" v-model.number="parameterForm.simulation_seed" type="number" min="0" max="2147483647" required/><label for="building-release-mode">分批放行方式</label><select id="building-release-mode" v-model="parameterForm.building_release_mode"><option value="shared_corridor">按实时通道条件放行</option><option value="assembly_serial">等待前栋全员到场</option></select><p>用于新场次的压制后分批方案。通道条件模式核对通知、喷水、车辆、负载及接应岗位，再决定是否放行。</p><small>相同人数、空间和种子生成相同画像。修改后保存并新建场次，不改变正在运行的训练。</small></template></section><div class="atlas-property-group"><h3>关联与影响</h3><p>{{previewError ? '预览失败，请修复参数后重新计算；暂不显示旧的路径建议。' : preview?.route_advice || '正在计算通道与人员影响…'}}</p><dl><div><dt>风险等级</dt><dd>{{previewError ? '待重新计算' : preview?.risk_level || '—'}}</dd></div><div><dt>烟气等级</dt><dd>{{previewError ? '待重新计算' : preview?.smoke_level || '—'}}</dd></div></dl><small>{{preview?.explanation}}</small></div><button class="primary-button" :disabled="isSaving || !validPreviewParameters()">保存场景参数</button>
+        <section v-if="preparationStep===1" class="atlas-property-group community-preparation"><h3>社区夜班训练</h3><label for="community-profile">居民与通知规则</label><select id="community-profile" v-model="parameterForm.community_profile"><option value="legacy">沿用当前基础规则</option><option value="night_shift">夜班画像 · 分户通知与有限人手</option></select><template v-if="parameterForm.community_profile==='night_shift'"><p>生成匿名训练住户，包含行动受限、需直接联系与熟睡居民。广播只记录覆盖，收到通知需要现场回执。</p><PopulationProfileEditor :model-value="parameterForm.population_profile" :total="parameterForm.resident_count" :disabled="isSaving" :overlap-count="!isPreviewing&&!previewError?preview?.simulation?.community?.population?.overlap_count:undefined" @update:model-value="value=>{parameterForm.population_profile=value;handleParameterChange()}"/><label for="duty-staff-count">当班值守岗位</label><input id="duty-staff-count" v-model.number="parameterForm.duty_staff_count" type="number" min="1" max="8" required/><label for="simulation-seed">场景种子</label><input id="simulation-seed" v-model.number="parameterForm.simulation_seed" type="number" min="0" max="2147483647" required/><label for="building-release-mode">分批放行方式</label><select id="building-release-mode" v-model="parameterForm.building_release_mode"><option value="shared_corridor">按实时通道条件放行</option><option value="assembly_serial">等待前栋全员到场</option></select><p>用于新场次的压制后分批方案。通道条件模式核对通知、喷水、车辆、负载及接应岗位，再决定是否放行。</p><small>相同人数、空间和种子生成相同画像。修改后保存并新建场次，不改变正在运行的训练。</small></template></section><div class="atlas-property-group"><h3>关联与影响</h3><p>{{previewError ? '预览失败，请修复参数后重新计算；暂不显示旧的路径建议。' : preview?.route_advice || '正在计算通道与人员影响…'}}</p><dl><div><dt>风险等级</dt><dd>{{previewError ? '待重新计算' : preview?.risk_level || '—'}}</dd></div><div><dt>烟气等级</dt><dd>{{previewError ? '待重新计算' : preview?.smoke_level || '—'}}</dd></div></dl><small>{{preview?.explanation}}</small></div><button class="primary-button" :disabled="isSaving || !validPreviewParameters()">保存场景参数</button>
        </form>
        <template v-else-if="preparationStep===3"><h2>机器人与任务</h2><p>沿冻结路网巡检，发现火情后触发处置任务。完整训练必须包含案例标准处置，避免无任务场次直接失分。</p><button id="scenario-tasks" class="secondary-button" type="button" :disabled="isSaving || parametersDirty" @click="repairTasks">{{isSaving?'正在补齐…':'补齐案例标准处置任务'}}</button><DecisionEditor :api-base-url="apiBaseUrl" :access-token="accessToken" :key="activeScene.id+'-'+activeVersion?.version_number" :scene-id="activeScene.id" @close="openPreparationStep(1)"/></template>
        <ScenePublishPanel v-else :api-base-url="apiBaseUrl" :access-token="accessToken" :key="activeScene.id+'-'+activeVersion?.version_number" :scene-id="activeScene.id" :scene-status="activeScene.status" :version-number="activeVersion?.version_number ?? 0" @published="handlePublished" @locate="locateIssue"/>

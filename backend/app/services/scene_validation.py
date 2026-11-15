@@ -17,6 +17,10 @@ FIELDS = {
     'hydrant_status': ('水源状态', 'hydrant-status', 1),
     'south_lane_status': ('通道状态', 'south-lane-status', 1),
     'stair_width': ('楼梯宽度（0.6–3 米）', 'stair-width', 1),
+    'population_profile': ('成员需求与响应条件', 'population-profile', 1),
+    'community_profile': ('社区通知规则', 'community-profile', 1),
+    'duty_staff_count': ('值守岗位数量', 'duty-staff-count', 1),
+    'simulation_seed': ('场景种子', 'simulation-seed', 1),
     'tasks': ('案例标准处置任务', 'scenario-tasks', 3),
 }
 
@@ -45,9 +49,10 @@ def validate_configuration(session, scene, parameter_override=None):
             (KitchenParametersUpdate if contract.code == 'kitchen_fire' else ChargingShedParametersUpdate).model_validate(parameters)
         except ValidationError as exc:
             for error in exc.errors():
-                key = str(error['loc'][0])
+                key = str(error['loc'][0]) if error['loc'] else 'population_profile'
                 if key in FIELDS:
-                    issue(key, f'请检查{FIELDS[key][0]}：缺失或格式不正确。')
+                    message = error['msg'].removeprefix('Value error, ') if key=='population_profile' else '缺失或格式不正确。'
+                    issue(key, f'请检查{FIELDS[key][0]}：{message}')
         if parameters.get('fire_source_type') not in contract.source_types:
             issue('fire_source_type', '起火类型与当前案例不一致，请返回参数页重新保存。')
         try:

@@ -20,7 +20,7 @@ try {
   await page.goto(base + '/projects')
   const home = page.locator('.training-home')
   await home.getByText(/进度读取至/).waitFor({ timeout: 30000 })
-  await home.getByRole('button', { name: /恢复现场与当前任务|核对简报并进入/ }).click()
+  await home.getByRole('button', { name: /进入现场 · 查看当前任务|核对简报并进入/ }).click()
   await page.locator('.training-journey').waitFor({ timeout: 60000 })
   const resumed = new URL(page.url())
   const originalId = resumed.searchParams.get('drill')

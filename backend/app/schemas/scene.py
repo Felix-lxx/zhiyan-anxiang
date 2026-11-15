@@ -1,7 +1,7 @@
 from datetime import datetime
 from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, computed_field
+from pydantic import BaseModel, ConfigDict, Field, computed_field, model_validator, field_serializer
 
 from app.models.domain import SceneStatus
 
@@ -66,11 +66,50 @@ class SceneRead(BaseModel):
     capabilities: ScenarioCapabilitiesRead | None = None
 
 
+class PopulationProfile(BaseModel):
+    model_config = ConfigDict(extra='forbid')
+
+    mobility_count: int = Field(ge=0, le=1000, strict=True)
+    direct_contact_count: int = Field(ge=0, le=1000, strict=True)
+    sleeping_count: int = Field(ge=0, le=1000, strict=True)
+    awake_preparation_seconds: int = Field(default=8, ge=0, le=120, strict=True)
+    sleeping_preparation_seconds: int = Field(default=25, ge=0, le=180, strict=True)
+    walking_speed: float = Field(default=1.25, ge=.8, le=1.8, allow_inf_nan=False, strict=True)
+    mobility_walking_speed: float = Field(default=.65, ge=.3, le=1.2, allow_inf_nan=False, strict=True)
+
+    @model_validator(mode='after')
+    def coherent_response(self):
+        if self.mobility_walking_speed > self.walking_speed:
+            raise ValueError('行动受限速度不能高于自主行动速度。')
+        if self.sleeping_preparation_seconds < self.awake_preparation_seconds:
+            raise ValueError('熟睡准备时间不能短于清醒准备时间。')
+        return self
+
+
 class CommunityTrainingParameters(BaseModel):
     building_release_mode: Literal['shared_corridor', 'assembly_serial'] = 'shared_corridor'
     community_profile: Literal['legacy', 'night_shift'] = 'legacy'
     duty_staff_count: int = Field(default=4, ge=1, le=8)
     simulation_seed: int = Field(default=2026, ge=0, le=2147483647)
+    population_profile: PopulationProfile | None = None
+
+    @field_serializer('population_profile')
+    def serialize_population_profile(self, value):
+        # Preserve defaults within an explicitly supplied profile even when
+        # the outer PATCH is serialized with exclude_unset=True.
+        return value.model_dump() if value is not None else None
+
+    @model_validator(mode='after')
+    def population_limits(self):
+        if self.population_profile is None:
+            return self
+        if self.community_profile != 'night_shift':
+            raise ValueError('请先启用社区夜班规则，再配置成员需求。')
+        count = getattr(self, 'resident_count', 0)
+        for name in ('mobility_count', 'direct_contact_count', 'sleeping_count'):
+            if getattr(self.population_profile, name) > count:
+                raise ValueError('每项需求人数不能超过参演居民总数；各项可以重叠。')
+        return self
 
 
 class ChargingShedParametersUpdate(CommunityTrainingParameters):

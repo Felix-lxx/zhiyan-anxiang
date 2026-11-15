@@ -66,6 +66,20 @@ def update_scene_parameters(session: Session, *, scene: Scene, parameters: dict)
         from app.services.fire_sources import InvalidFireSource
         raise InvalidFireSource('参数类型与案例不一致，请重新选择案例。')
     merged_parameters = {**version.parameters, **parameters, 'fire_source_type': expected_type, 'fire_source': fire_source_address(source, parameters)}
+    if merged_parameters.get('population_profile') is not None:
+        from pydantic import ValidationError
+        from app.schemas.scene import PopulationProfile
+        from app.services.fire_sources import InvalidFireSource
+        try:
+            profile = PopulationProfile.model_validate(merged_parameters['population_profile'])
+        except ValidationError as exc:
+            raise InvalidFireSource('成员需求配置无效：'+exc.errors()[0]['msg']) from exc
+        if merged_parameters.get('community_profile')!='night_shift':
+            raise InvalidFireSource('成员需求配置需启用社区夜班规则；切换基础规则时请清除自主配置。')
+        if any(getattr(profile, field)>merged_parameters['resident_count']
+               for field in ('mobility_count','direct_contact_count','sleeping_count')):
+            raise InvalidFireSource('每项成员需求人数不能超过参演总人数；请先调整成员配置。')
+        merged_parameters['population_profile'] = profile.model_dump()
     if version.status == SceneStatus.PUBLISHED or scene.status == SceneStatus.PUBLISHED:
         # Published versions are immutable evidence. Editing one creates a new
         # draft while preserving its decision flow for continued authoring.

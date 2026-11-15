@@ -27,9 +27,10 @@ html .atlas-director .resident-pov-grid>span { padding: 8px; color: var(--text-s
 html .atlas-director .spatial-action-metrics { gap: 8px; }
 html .atlas-director .twin-inspector p { color: var(--text-secondary); }
 html .atlas-director .resident-vitals { display:block; }
-html .atlas-director .resident-vitals>div { display:flex; align-items:baseline; justify-content:space-between; gap:16px; background:transparent; border:0; padding:8px 0; }
+html .atlas-director .resident-vitals>div { display:grid; grid-template-columns:minmax(0,1fr) minmax(0,2fr); align-items:baseline; gap:8px 16px; background:transparent; border:0; padding:8px 0; }
 html .atlas-director .resident-vitals dt { font-size:var(--ui-meta-size); line-height:1.6; color:var(--text-secondary); }
-html .atlas-director .twin-inspector .resident-vitals dd { flex:none; margin:0; font-size:var(--ui-body-size); line-height:1.6; color:var(--text-primary); font-variant-numeric:tabular-nums; }
+html .atlas-director .twin-inspector .resident-vitals dd { min-width:0; margin:0; font-size:var(--ui-body-size); line-height:1.6; color:var(--text-primary); font-variant-numeric:tabular-nums; }
+html .atlas-director .resident-vitals>.resident-vitals__behavior { grid-template-columns:minmax(0,1fr); }
 html .atlas-director .director-rail>button span { font-size:inherit; }
 html .atlas-director .twin-stage__legend span { font-size:inherit; }
 /* Action previews are teleported to body, so cannot inherit the director selector. */

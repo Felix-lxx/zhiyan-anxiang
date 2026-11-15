@@ -31,6 +31,33 @@ const { ROAD_SURFACE_Y } = await load('roadSurface')
 const { BuildingReleaseVisuals } = await load('buildingReleaseVisuals')
 const { indoorPlanFrame } = await load('../domain/indoor-plan')
 const { createResidentialEntry } = await load('residentialEntry')
+const {defaultPopulationProfile,populationIssue}=await load('../domain/population')
+
+test('member needs can overlap while each count and response parameter stays valid',()=>{
+  const profile={...defaultPopulationProfile(8),mobility_count:8,direct_contact_count:8,sleeping_count:8}
+  assert.equal(populationIssue(profile,8),'')
+  assert.notEqual(populationIssue({...profile,mobility_count:9},8),'')
+  assert.notEqual(populationIssue({...profile,mobility_walking_speed:1.2,walking_speed:1},8),'')
+  assert.notEqual(populationIssue({...profile,sleeping_preparation_seconds:1},8),'')
+  assert.notEqual(populationIssue({...profile,sleeping_count:NaN},8),'')
+  assert.equal(populationIssue(null,8),'')
+})
+
+test('composite assistance needs do not imply grey hair or a cane and only pose after meeting',async()=>{
+  const {createPerson,posePerson}=await load('actors')
+  const ordinary=createPerson('same-id',false,false,true)
+  const resident=createPerson('same-id',true,false,true)
+  assert.equal(resident.getObjectByName('resident-hair').material.color.getHex(),ordinary.getObjectByName('resident-hair').material.color.getHex())
+  assert.equal(resident.getObjectByName('legacy-mobility-aid'),undefined)
+  assert.ok(createPerson('old-world',true).getObjectByName('legacy-mobility-aid'))
+  posePerson(resident,false,0,false,false)
+  assert.equal(resident.userData.limbs[0].rotation.z,0)
+  const position=resident.position.clone()
+  resident.userData.assisted=true
+  posePerson(resident,false,0,false,false)
+  assert.equal(resident.userData.limbs[0].rotation.z,-.1)
+  assert.ok(resident.position.equals(position))
+})
 
 test('private entrance furnishings preserve the walking lane and distinguish entry doors',async()=>{
   const finish={surface:()=>new THREE.MeshStandardMaterial()}

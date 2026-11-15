@@ -74,6 +74,7 @@ def archive_drill(session, drill, data, owner, *, backfill=False):
         AssistantConversation.drill_session_id == drill.id, AssistantConversation.owner == owner)) or 0
     final_state = {
         'residents': [fields(person, ('id','label','status','vulnerable','assisted','counted','x','y','height',
+            'household_id','traits','profile_label','walking_speed','preparation_seconds',
             'building_id','floor','node_id','edge_id','exit','queue_seconds','smoke_exposure',
             'smoke_exposed_at_seconds','smoke_exposed_location','assembly_arrived_at_seconds')) for person in people],
         'tasks': [fields(task, ('id','title','kind','status','responsible_role','assignee','target_object_id',

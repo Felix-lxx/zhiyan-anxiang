@@ -29,7 +29,8 @@ try{
  const decision=await api('/scenes/'+scene.id+'/decision-points','POST',{name:'火情确认后切断电源',trigger_condition:'确认火情后',responsible_role:'物业/网格员',time_limit_seconds:600,options:[{label:'切断充电棚电源',consequence:'核验充电棚电源切断'},{label:'等候现场核查',consequence:'持续确认'}]})
  await api('/decision-options/'+decision.options[0].id+'/execute','POST')
  await page.goto(base+'/communities/'+community.id+'/scenes?scene='+scene.id);await page.locator('.scene-live-preview canvas').first().waitFor();await screenshot('scene-1672')
- await page.getByRole('button',{name:'运行校验',exact:true}).click();await page.getByText('校验通过，可以冻结',{exact:true}).waitFor();checks.push('Scene preview and validation')
+ const validation=page.waitForResponse(r=>r.url().endsWith('/scenes/'+scene.id+'/validate')&&r.request().method()==='POST')
+ await page.getByRole('button',{name:'运行校验',exact:true}).click();const validated=await validation;assert.ok(validated.ok());const validationResult=await validated.json();assert.equal(validationResult.passed,true,JSON.stringify(validationResult));await page.getByText('当前版本校验通过，可以发布',{exact:true}).waitFor();checks.push('Scene preview and validation')
  await api('/scenes/'+scene.id+'/publish','POST');drill=await api('/scenes/'+scene.id+'/drills','POST',{name:'UI 闭环验收 '+new Date().toISOString().slice(0,16),time_scale:2})
  const operations=base+'/communities/'+community.id+'/operations?scene='+scene.id+'&drill='+drill.id
  await page.goto(operations);await page.getByRole('button',{name:'开始推演',exact:true}).click();await page.getByRole('button',{name:'暂停演练',exact:true}).waitFor();await screenshot('director-1672')

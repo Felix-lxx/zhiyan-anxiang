@@ -1,5 +1,6 @@
 """Compare recorded simulation conditions without treating similarity as validity."""
 from math import isclose
+import json
 
 from app.services.simulation_checkpoints import ENGINE_REVISION
 
@@ -11,6 +12,7 @@ PARAMETERS = {
     'community_profile': '居民训练画像', 'duty_staff_count': '当班人数',
     'simulation_seed': '随机种子', 'hydrant_status': '初始水源状态',
     'building_release_mode': '楼栋放行方式',
+    'population_profile': '成员需求与响应参数',
 }
 
 
@@ -26,6 +28,12 @@ def equal(left, right):
     if isinstance(left, (int, float)) and not isinstance(left, bool) and isinstance(right, (int, float)) and not isinstance(right, bool):
         return isclose(left, right, rel_tol=0, abs_tol=1e-6)
     return type(left) is type(right) and left == right
+
+
+def condition_value(value):
+    if value is None:
+        return '未单独配置'
+    return json.dumps(value, ensure_ascii=False, sort_keys=True) if isinstance(value, dict) else value
 
 
 def assess_experience(source, current):
@@ -57,7 +65,8 @@ def assess_experience(source, current):
         if key not in recorded:
             missing.append(label)
         elif not equal(recorded[key], actual[key]):
-            differences.append({'field': key, 'label': label, 'recorded': recorded[key], 'current': actual[key]})
+            differences.append({'field': key, 'label': label,
+                                'recorded':condition_value(recorded[key]), 'current':condition_value(actual[key])})
     observed_revision = source.get('observed_engine_revision')
     if observed_revision is None:
         missing.append('观察模型修订号')

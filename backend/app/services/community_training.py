@@ -4,7 +4,6 @@ Profiles are reproducible teaching assumptions, never surveyed resident data.
 Broadcast coverage and a human receipt are deliberately different facts.
 """
 from copy import deepcopy
-from random import Random
 from uuid import NAMESPACE_URL, uuid5
 
 
@@ -13,8 +12,8 @@ def freeze_community(world):
     if params.get('community_profile') != 'night_shift':
         return
     people = world['residents']
-    rng = Random(int(params.get('simulation_seed', 2026)))
-    needs_help = rng.randrange(len(people))
+    from app.services.population_profiles import assign_profiles
+    population = assign_profiles(people, params)
     houses, buildings = {}, {b['id']: b for b in world['objects']}
     dwellings = {item['kitchen_zone_id']: item
                  for item in (world.get('residential_units') or {}).get('dwellings', [])}
@@ -39,17 +38,12 @@ def freeze_community(world):
             house['dwelling_id'] = dwelling['id']
             person['household_entrance_node_id'] = dwelling['entrance_node_id']
         house['resident_ids'].append(person['id'])
-        profile = 'mobility' if index == needs_help else 'hearing' if index % 5 == 1 else 'sleeping' if index % 3 == 0 else 'standard'
-        person.update(household_id=house_id, household_label=house['label'], profile=profile,
-            profile_label={'mobility':'行动受限', 'hearing':'需直接联系', 'sleeping':'夜间熟睡', 'standard':'自主行动'}[profile],
-            vulnerable=profile == 'mobility', notification_need='direct_contact' if profile == 'hearing' else 'standard',
-            walking_speed=.65 if profile == 'mobility' else 1.25,
-            preparation_seconds=rng.randint(15, 35) if profile == 'sleeping' else rng.randint(6, 12))
+        person.update(household_id=house_id, household_label=house['label'])
     origin = world['robot_origin']
     world['response_staff'] = [{'id': f'escort-{i+1}', 'name': f'夜班值守员 {i+1}',
         'role':'物业/网格员', 'available':True, 'source':'simulation', 'origin':deepcopy(origin)}
         for i in range(int(params.get('duty_staff_count', 4)))]
-    world['community_training'] = {'version':5, 'source':'simulation',
+    world['community_training'] = {'version':6, 'source':'simulation', 'population':population,
         'label':'社区夜班模拟画像', 'seed':int(params.get('simulation_seed', 2026)),
         'households':list(houses.values()), 'environment_model':'causal_training_v2',
         'visit_smoke_limit':.15,
@@ -86,11 +80,20 @@ def project_community(world, events, people):
             'direct_contact_required':any(p.get('notification_need') == 'direct_contact' for p in members),
             'arrived':sum(p.get('status')=='evacuated' for p in members),
             'priority':sum(p['vulnerable'] for p in members),
+            'priority_remaining':sum(p['vulnerable'] and p.get('status')!='evacuated' for p in members),
+            'assistance_pending':sum(p['vulnerable'] and not p.get('assisted') and p.get('status')!='evacuated' for p in members),
+            'members':[{'id':p['id'], 'label':p['label'], 'traits':p.get('traits', []),
+                        'profile_label':p.get('profile_label','自主行动'),
+                        'walking_speed':p.get('walking_speed'), 'preparation_seconds':p.get('preparation_seconds'),
+                        'needs_assistance':bool(p.get('vulnerable')), 'status':p.get('status','waiting')}
+                       for p in members],
             'profiles':list(dict.fromkeys(p.get('profile_label', '') for p in members))})
     return {**model, 'households':houses, 'summary':{
         'total':len(houses), 'confirmed':sum(h['notification_state']=='confirmed' for h in houses),
         'unnotified':sum(h['notification_state']=='unnotified' for h in houses),
-        'awaiting_confirmation':sum(h['notification_state']=='sent' for h in houses)},
+        'awaiting_confirmation':sum(h['notification_state']=='sent' for h in houses),
+        'direct_contact_pending':sum(h['direct_contact_required'] and h['notification_state']!='confirmed' for h in houses),
+        'assistance_pending':sum(h['assistance_pending'] for h in houses)},
         'notice':'模拟画像；广播仅表示覆盖。收到通知由现场回执确认，不代表传感器或定位核验。'}
 
 

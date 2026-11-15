@@ -4,6 +4,8 @@ export interface TrainingHousehold {
   resident_ids:string[]; notification_state:'unnotified'|'sent'|'confirmed'
   channels:Array<'broadcast'|'phone'|'knock'>; direct_contact_required:boolean
   arrived:number; priority:number; profiles:string[]; last_report_at:number|null; evidence:string
+  priority_remaining?:number;assistance_pending?:number
+  members?:Array<{id:string;label:string;traits:string[];profile_label:string;walking_speed?:number;preparation_seconds?:number;needs_assistance:boolean;status:string}>
 }
 export interface HouseholdVisit {
   id:string;household_id:string;resident_id:string;staff_id:string;staff_name:string
@@ -16,7 +18,8 @@ export interface CommunityTraining {
   version:number;source:'simulation';label:string;seed:number;notice:string
   households:TrainingHousehold[]
   visits?:HouseholdVisit[]
-  summary:{total:number;confirmed:number;unnotified:number;awaiting_confirmation:number}
+  population?:{version:number;configuration:import('./population').PopulationProfile;configured:boolean;overlap_count:number}
+  summary:{total:number;confirmed:number;unnotified:number;awaiting_confirmation:number;direct_contact_pending?:number;assistance_pending?:number}
 }
 export interface DutyStaff {id:string;name:string;state:string;resident_id?:string|null;task_id?:string;responsible?:string;activity?:string}
 export interface HouseholdNotice {

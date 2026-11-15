@@ -34,7 +34,7 @@ import AppIcon from './AppIcon.vue'
 
 interface Resident extends RescueResident { height?: number; building_id?: string; floor?: number; current_floor?: number; indoor_stage?: string; current_edge_id?: string | null; id: string; label: string; vulnerable: boolean; status: string; x: number; y: number; progress: number; exit?: 'north' | 'south'; behavior?: string; smoke_exposure?: number; congestion?: number; queue_seconds?: number; last_location?: string; assisted?: boolean; search_responsible?: string; speed_factor?: number; route_points?: Array<{ x: number; y: number; height?: number }>; route_edge_ids?: string[]; route_reachable?: boolean; estimated_seconds?: number }
 interface SpatialEdgeState { id: string; name?:string; start_node_id?:string; end_node_id?:string; kind: string; start: { x: number; y: number; height: number }; end: { x: number; y: number; height: number }; width_meters: number; density_percent?: number; live_occupancy?: number; waiting_count?: number; capacity_persons?: number }
-interface Resident { household_label?:string;profile_label?:string;notification_state?:'unnotified'|'sent'|'confirmed'; motion_trace?: Array<{ x:number; y:number; height:number; at_seconds:number }> }
+interface Resident { traits?:string[];walking_speed?:number;preparation_seconds?:number;household_label?:string;profile_label?:string;notification_state?:'unnotified'|'sent'|'confirmed'; motion_trace?: Array<{ x:number; y:number; height:number; at_seconds:number }> }
 interface RoadEdgeState { geometry_blocked?: boolean; blocked_reason?: string; reserved_by_vehicle?: string | null; id: string; name: string; start: { x: number; y: number }; end: { x: number; y: number }; width_meters: number; status: 'open' | 'restricted' | 'blocked'; blocked_by_event: boolean; risk_score: number; smoke_risk?: number; density_percent?: number; live_occupancy?: number; waiting_count?: number; capacity_persons?: number; flow_capacity_per_second?: number }
 interface Simulation {
   community?: import('../domain/community').CommunityTraining | null
@@ -462,8 +462,9 @@ function createResidents(): void {
   const residents = props.simulation?.residents ?? []
   const visibleResidents = residents
   for (const resident of visibleResidents) {
-    const group = residents.length > 60 ? new THREE.Group() : createPerson(resident.id, resident.vulnerable)
+    const group = residents.length > 60 ? new THREE.Group() : createPerson(resident.id, resident.vulnerable,false,Array.isArray(resident.traits))
     group.name = resident.id; group.userData.vulnerable = resident.vulnerable
+    group.userData.compositeNeeds=Array.isArray(resident.traits)
     group.position.copy(worldPoint(resident.x, resident.y, resident.height)); scene.add(group); residentMeshes.set(resident.id, group)
     register(group, { title: resident.label, type: resident.vulnerable ? '重点关照人员' : '参演居民智能体', detail: resident.vulnerable ? '移动速度较慢，需要优先引导至集合点' : '根据告警、广播和道路状态执行疏散', residentId: resident.id, x: resident.x, y: resident.y })
     if (residents.length <= 60) void actorAssets.person(group, resident.id, resident.vulnerable)
@@ -1792,7 +1793,7 @@ watch(() => [props.routePreview, props.robotRoutePreview], () => updateEntities(
           <p v-else-if="robot.state === 'blocked'">先解除道路封锁，或重新规划路线。</p>
           <span>后续排队 {{ robot.task_queue?.filter(task => task.status === 'queued').length ?? 0 }} 项</span>
         </section>
-        <p v-if="selected.residentId && activeResident?.household_label">{{activeResident.household_label}} · {{activeResident.profile_label}} · {{activeResident.notification_state==='confirmed'?'已回执收到通知':activeResident.notification_state==='sent'?'已覆盖，待确认':'尚未通知'}}</p><dl v-if="selected.residentId && activeResident" class="resident-vitals"><div><dt>行为</dt><dd>{{ activeResident.behavior ?? '等待指令' }}</dd></div><div><dt>烟气暴露</dt><dd>{{ (activeResident.smoke_exposure ?? 0).toFixed(2) }}</dd></div><div><dt>拥堵指数</dt><dd>{{ activeResident.congestion ?? 0 }}</dd></div></dl>
+        <p v-if="selected.residentId && activeResident?.household_label">{{activeResident.household_label}} · {{activeResident.profile_label}} · {{activeResident.notification_state==='confirmed'?'已回执收到通知':activeResident.notification_state==='sent'?'已覆盖，待确认':'尚未通知'}}</p><dl v-if="selected.residentId && activeResident" class="resident-vitals"><div class="resident-vitals__behavior"><dt>行为</dt><dd>{{ activeResident.behavior ?? '等待指令' }}</dd></div><div v-if="activeResident.walking_speed!==undefined"><dt>基础步速</dt><dd>{{activeResident.walking_speed}} 米/秒</dd></div><div v-if="activeResident.preparation_seconds!==undefined"><dt>通知后准备</dt><dd>{{activeResident.preparation_seconds}} 秒</dd></div><div><dt>烟气暴露</dt><dd>{{ (activeResident.smoke_exposure ?? 0).toFixed(2) }}</dd></div><div><dt>拥堵指数</dt><dd>{{ activeResident.congestion ?? 0 }}</dd></div></dl>
         <button v-if="selected.vehicleId" type="button" @click="emit('dispatchVehicle', selected.vehicleId); selected = null">安排车辆 / 查看行程</button>
         <section v-if="assemblyCounts" class="assembly-attendance" aria-label="集合点到达与核验">
           <dl class="resident-vitals"><div><dt>真实到达</dt><dd>{{ assemblyCounts.arrived }} 人</dd></div><div><dt>已清点</dt><dd>{{ assemblyCounts.counted }} 人</dd></div><div><dt>分配此出口、尚未到达</dt><dd>{{ assemblyCounts.inbound }} 人</dd></div></dl>

@@ -30,6 +30,21 @@ def test_model_revision_and_historical_snapshot_conditions_are_explicit():
     assert current['target_population']==1
 
 
+def test_member_configuration_differences_are_readable_and_excluded():
+    current={'parameters':{'population_profile':{'mobility_count':3,'direct_contact_count':8}},
+             'engine_revision':ENGINE_REVISION,'at_seconds':12}
+    source={'parameters':{'population_profile':None},'observed_engine_revision':ENGINE_REVISION}
+    result=assess_experience(source,current)
+    assert result['status']=='different'
+    difference=result['differences'][0]
+    assert difference['field']=='population_profile'
+    assert difference['recorded']=='未单独配置'
+    import json
+    assert json.loads(difference['current'])==current['parameters']['population_profile']
+    source['parameters']=dict(current['parameters'])
+    assert assess_experience(source,current)['status']=='matched'
+
+
 def test_independent_models_and_staff_conditions_must_match_for_reuse():
     current={'parameters':{'community_profile':'night_shift','duty_staff_count':2},
              'model_manifest':{'environment':'causal_training_v2','residents':'community_v4'},

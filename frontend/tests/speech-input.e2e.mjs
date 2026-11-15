@@ -20,6 +20,7 @@ try {
     if (path.endsWith('/assistant/status')) return route.fulfill({ json: { configured: false } })
     if (path.endsWith('/knowledge/status')) return route.fulfill({ json: { embedding_configured: true } })
     if (path.endsWith('/agent/runs')) return route.fulfill({ json: { buildings: [], runs: [], drill_status: 'ready' } })
+    if (path.endsWith('/assistant/conversation')) return route.fulfill({ json: { generation: 0, next_before: null, items: [] } })
     if (path.endsWith('/speech/transcribe')) {
       const pcm = route.request().postDataBuffer()
       assert.ok(pcm.length >= 8000 && pcm.length <= 960000 && pcm.length % 2 === 0)

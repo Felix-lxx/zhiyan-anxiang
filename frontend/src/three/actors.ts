@@ -5,7 +5,7 @@ function part(parent: THREE.Object3D, geometry: THREE.BufferGeometry, material: 
 }
 
 /** Articulated residents: dimensions in display metres; identities do not change with risk state. */
-export function createPerson(id: string, vulnerable = false, helper = false): THREE.Group {
+export function createPerson(id: string, vulnerable = false, helper = false, compositeNeeds = false): THREE.Group {
   const group = new THREE.Group()
   const seed = [...id].reduce((sum,c)=>sum+c.charCodeAt(0),0)
   const shirt = new THREE.MeshStandardMaterial({color:helper?0x366da3:[0x718478,0x93674d,0x576c83,0x857383,0xa9956f][seed%5],roughness:.9})
@@ -16,7 +16,7 @@ export function createPerson(id: string, vulnerable = false, helper = false): TH
   const body=part(torso,new THREE.CapsuleGeometry(.2,.3,4,8),shirt,0,.15,0);body.scale.z=.65; group.userData.body=body
   part(torso,new THREE.CylinderGeometry(.065,.075,.13,8),skin,0,.52,0)
   const head=part(torso,new THREE.SphereGeometry(.14,12,10),skin,0,.69,0);head.scale.set(.88,1.15,.92)
-  part(torso,new THREE.SphereGeometry(.145,10,8,0,Math.PI*2,0,Math.PI*.45),new THREE.MeshStandardMaterial({color:vulnerable?0xbcbeb4:0x303129,roughness:1}),0,.72,0)
+  const hair=part(torso,new THREE.SphereGeometry(.145,10,8,0,Math.PI*2,0,Math.PI*.45),new THREE.MeshStandardMaterial({color:vulnerable&&!compositeNeeds?0xbcbeb4:0x303129,roughness:1}),0,.72,0);hair.name='resident-hair'
   const limbs: THREE.Group[]=[]
   const feet: Array<{ shoe: THREE.Mesh; leg: THREE.Group }> = []
   for(const side of [-1,1]) {
@@ -39,13 +39,14 @@ export function createPerson(id: string, vulnerable = false, helper = false): TH
     part(torso,new THREE.BoxGeometry(.07,.1,.035),shoes,.12,.32,-.17)
     part(torso,new THREE.CylinderGeometry(.006,.006,.11,5),shoes,.13,.42,-.17)
   }
-  if(vulnerable) {
+  if(vulnerable&&!compositeNeeds) {
     const cane=part(torso,new THREE.CylinderGeometry(.018,.023,.92,6),shoes,.32,-.54,-.13)
-    cane.rotation.x=-.08
+    cane.name='legacy-mobility-aid';cane.rotation.x=-.08
   }
   const ring=part(group,new THREE.RingGeometry(.29,.35,24),new THREE.MeshBasicMaterial({color:helper?0x77b7ff:vulnerable?0xefc66f:0x76c4af,transparent:true,opacity:.6,side:THREE.DoubleSide,depthWrite:false}),0,.025,0)
   ring.rotation.x=-Math.PI/2;group.userData.ring=ring
   group.userData.limbs=limbs;group.userData.phase=seed*.63;group.userData.vulnerable=vulnerable;group.userData.helper=helper
+  group.userData.compositeNeeds=compositeNeeds
   group.userData.feet=feet
   const detail=new THREE.Group()
   for(const child of [...group.children])if(child!==ring)detail.add(child)
@@ -71,6 +72,9 @@ export function posePerson(group: THREE.Group, moving: boolean, seconds: number,
   }
   if(group.userData.helper && group.userData.behaviorState==='at_door') {
     limbs[0]!.rotation.x=-.65;limbs[0]!.rotation.z=-.2
+  }
+  if(group.userData.compositeNeeds&&group.userData.vulnerable&&group.userData.assisted){
+    limbs[0]!.rotation.x=-.2;limbs[0]!.rotation.z=-.1
   }
   const torso=group.userData.torso as THREE.Group
   torso.rotation.x=exposed?-.22:group.userData.vulnerable?-.08:0

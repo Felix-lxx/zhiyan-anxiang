@@ -46,7 +46,7 @@ export interface CurrentUser {
 
 export interface SceneVersion {
   version_number: number
-  parameters: Record<string, string | number>
+  parameters: Record<string, unknown>
 }
 
 export interface Scene {

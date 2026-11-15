@@ -172,7 +172,18 @@ async function loadNetwork(): Promise<void> {
   finally { isNetworkLoading.value = false }
 }
 
-function objectPayload(): Record<string, unknown> { return { object_type: form.value.object_type, name: form.value.name.trim(), geometry: { x: Number(form.value.x), y: Number(form.value.y) }, properties: form.value.note.trim() ? { note: form.value.note.trim() } : {} } }
+function objectPayload(): Record<string, unknown> {
+  // The property form edits the note, not the frozen model/fixture metadata.
+  const properties = { ...selectedObject.value?.properties }
+  if (form.value.note.trim()) properties.note = form.value.note.trim()
+  else delete properties.note
+  return {
+    object_type: form.value.object_type,
+    name: form.value.name.trim(),
+    geometry: { x: Number(form.value.x), y: Number(form.value.y) },
+    properties,
+  }
+}
 async function saveObject(): Promise<void> {
   actionError.value = ''; actionNotice.value = ''; isSaving.value = true
   try {
@@ -373,7 +384,7 @@ onMounted(async () => { await Promise.all([loadObjects(),loadNetwork()]);await l
           <form class="map-object-form" @submit.prevent="saveObject">
             <label for="object-type">对象类型</label><select id="object-type" v-model="form.object_type"><option v-for="type in objectTypes" :key="type.value" :value="type.value">{{ type.label }}</option></select>
             <label for="object-name">对象名称</label><input id="object-name" ref="objectNameInput" v-model="form.name" required minlength="2" maxlength="120" placeholder="例如：1 号住宅楼" />
-            <div class="coordinate-fields"><div><label for="object-x">横坐标 X</label><input id="object-x" v-model.number="form.x" type="number" required min="0" max="100" step="2" /></div><div><label for="object-y">纵坐标 Y</label><input id="object-y" v-model.number="form.y" type="number" required min="0" max="100" step="2" /></div></div>
+            <div class="coordinate-fields"><div><label for="object-x">横坐标 X</label><input id="object-x" v-model.number="form.x" type="number" required min="0" max="100" step="any" /></div><div><label for="object-y">纵坐标 Y</label><input id="object-y" v-model.number="form.y" type="number" required min="0" max="100" step="any" /></div></div>
             <p class="form-hint">坐标可精确输入，也可直接拖动图上对象。</p>
             <label for="object-note">现场备注 <span>可选</span></label><textarea id="object-note" v-model="form.note" rows="3" maxlength="500" placeholder="例如：六层住宅，东侧有疏散楼梯。"></textarea>
             <p v-if="actionError" class="message message--error" role="alert">{{ actionError }}</p><p v-if="actionNotice" class="message message--success" role="status">{{ actionNotice }}</p>
@@ -391,7 +402,7 @@ onMounted(async () => { await Promise.all([loadObjects(),loadNetwork()]);await l
             <div class="form-title-row"><h3>{{ selectedNode ? '编辑道路节点' : '确认节点位置' }}</h3><button v-if="selectedNode || draftPoint" class="text-action" type="button" @click="resetNodeForm">新增节点</button></div>
             <p class="form-hint">使用上方“放置节点”在画布确定位置，已保存节点可直接拖动。</p>
             <label for="node-name">节点名称</label><input id="node-name" ref="nodeNameInput" v-model="nodeForm.name" required minlength="2" maxlength="120" placeholder="例如：3 号楼路口" />
-            <div class="coordinate-fields"><div><label for="node-x">横坐标 X</label><input id="node-x" v-model.number="nodeForm.x" type="number" required min="0" max="100" step="2" /></div><div><label for="node-y">纵坐标 Y</label><input id="node-y" v-model.number="nodeForm.y" type="number" required min="0" max="100" step="2" /></div></div>
+            <div class="coordinate-fields"><div><label for="node-x">横坐标 X</label><input id="node-x" v-model.number="nodeForm.x" type="number" required min="0" max="100" step="any" /></div><div><label for="node-y">纵坐标 Y</label><input id="node-y" v-model.number="nodeForm.y" type="number" required min="0" max="100" step="any" /></div></div>
             <label class="checkbox-field" for="node-exit"><input id="node-exit" v-model="nodeForm.is_exit" type="checkbox" />作为疏散出口节点</label>
             <button class="secondary-button" type="submit" :disabled="isNetworkSaving || (!selectedNode && !draftPoint)">{{ isNetworkSaving ? '正在保存…' : selectedNode ? '保存节点修改' : '确认放置节点' }}</button>
           </form>

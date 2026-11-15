@@ -13,7 +13,10 @@ watch(()=>props.focusHouseholdId,id=>{
 const channel=ref<HouseholdNotice['channel']>('phone'),evidence=ref('')
 const stateLabels={unnotified:'待通知',sent:'已覆盖 · 待确认',confirmed:'已确认收到'}
 const channelLabels={broadcast:'入口广播',phone:'电话联系',knock:'敲门核查'}
-const filtered=computed(()=>props.community.households.filter(h=>(filter.value==='all'||filter.value==='pending'&&h.notification_state!=='confirmed'||filter.value===h.notification_state)&&(!search.value||`${h.label} ${h.profiles.join(' ')}`.includes(search.value))))
+const filtered=computed(()=>props.community.households.filter(h=>(filter.value==='all'||filter.value==='pending'&&h.notification_state!=='confirmed'
+  ||filter.value==='direct'&&h.direct_contact_required&&h.notification_state!=='confirmed'
+  ||filter.value==='priority'&&(h.assistance_pending??h.priority)>0
+  ||filter.value===h.notification_state)&&(!search.value||`${h.label} ${h.profiles.join(' ')}`.includes(search.value))))
 const visible=computed(()=>filtered.value.slice(page.value*6,page.value*6+6))
 const selected=computed(()=>props.community.households.find(h=>h.id===selection.value))
 const visit=computed(()=>[...(props.community.visits??[])].reverse().find(v=>v.household_id===selection.value))
@@ -44,7 +47,8 @@ function dispatchVisit(){
       <button type="button" :aria-pressed="tab==='staff'" @click="tab='staff'">夜班岗位 {{available}}/{{staff?.length??0}}</button>
     </nav>
     <div v-if="tab==='households'">
-      <button v-if="selected" type="button" class="community-operations__back" @click="selection=''">返回住户列表</button><div v-if="!selected" class="community-operations__filters"><label>查找住户<input v-model="search" type="search" placeholder="楼栋、楼层或画像"/></label><label>通知进度<select v-model="filter"><option value="pending">待处理</option><option value="all">全部住户</option><option value="unnotified">待通知</option><option value="sent">待确认</option><option value="confirmed">已确认</option></select></label></div>
+      <div v-if="!selected" class="community-operations__needs"><button type="button" @click="filter='direct';page=0">待直接联系 {{community.summary.direct_contact_pending??0}} 户</button><button type="button" @click="filter='priority';page=0">待重点接应 {{community.summary.assistance_pending??0}} 人</button></div>
+      <button v-if="selected" type="button" class="community-operations__back" @click="selection=''">返回住户列表</button><div v-if="!selected" class="community-operations__filters"><label>查找住户<input v-model="search" type="search" placeholder="楼栋、楼层或画像"/></label><label>通知进度<select v-model="filter"><option value="pending">待处理</option><option value="all">全部住户</option><option value="direct">需直接联系</option><option value="priority">待重点接应</option><option value="unnotified">待通知</option><option value="sent">待确认</option><option value="confirmed">已确认</option></select></label></div>
       <p v-if="!selected&&!filtered.length" role="status">当前筛选没有待处理住户，可切换“全部住户”。</p>
       <ul v-if="!selected" class="community-operations__households"><li v-for="house in visible" :key="house.id"><button type="button" :aria-pressed="selection===house.id" @click="selection=house.id"><span><strong>{{house.label}}</strong><span>{{house.resident_ids.length}} 人 · {{house.profiles.join(' / ')}}</span></span><span class="community-operations__state" :data-state="house.notification_state">{{stateLabels[house.notification_state]}}</span></button></li></ul>
       <div v-if="!selected&&filtered.length>6" class="community-operations__pages"><button type="button" :disabled="page===0" @click="page--">上一页</button><span>{{page+1}} / {{Math.ceil(filtered.length/6)}}</span><button type="button" :disabled="(page+1)*6>=filtered.length" @click="page++">下一页</button></div>
@@ -52,6 +56,7 @@ function dispatchVisit(){
         <header><h3>{{selected.label}}</h3><button v-if="canLocate" type="button" @click="emit('locate',selected.resident_ids[0]!)"><AppIcon name="target"/>定位现场</button></header>
         <p>{{stateLabels[selected.notification_state]}}。收到回执后，由总控安排撤离或接应。</p>
         <p v-if="selected.apartment_number">到户目标为 {{selected.apartment_number}} 户入户门外的公共走廊；厨房门与入户门分别核对。</p>
+        <ul v-if="selected.members?.length" class="community-operations__members" aria-label="本户成员的通知与接应需求"><li v-for="person in selected.members" :key="person.id"><strong>{{person.label}}</strong><span>{{person.profile_label}}</span><small v-if="person.walking_speed!==undefined">基础步速 {{person.walking_speed}} 米/秒 · 通知后准备 {{person.preparation_seconds}} 秒</small></li></ul>
         <details class="community-operations__context"><summary>住户情况与回执记录</summary><p>{{selected.arrived}} / {{selected.resident_ids.length}} 人到场；{{selected.priority}} 名需重点接应。</p>
         <p v-if="selected.direct_contact_required">本户有需直接联系的居民，入口广播不能替代电话或敲门确认。</p>
         <p>已记录方式：{{selected.channels.map(c=>channelLabels[c]).join('、')||'尚无通知记录'}}</p>
@@ -84,6 +89,9 @@ function dispatchVisit(){
 </template>
 
 <style scoped>
+.community-operations__needs{display:flex;gap:8px;flex-wrap:wrap;margin-block:12px 20px}.community-operations__needs button{min-height:44px;font-size:16px;flex:1 1 140px}
+.community-operations__members{list-style:none;margin:16px 0;padding:0}.community-operations__members li{display:grid;gap:4px;padding-block:12px;border-bottom:1px solid var(--border-default);overflow-wrap:anywhere}.community-operations__members strong{font-size:16px}.community-operations__members span,.community-operations__members small{font-size:14px;line-height:1.65}
+
 .community-operations{min-width:0;margin-block:20px;padding-block:20px;border-block:1px solid var(--border-default);font-size:16px;line-height:1.65;color:inherit}
 .community-operations__visit{margin-block:20px;padding-block:16px;border-block:1px solid var(--border-default)}
 .community-operations__visit>button{display:flex;align-items:center;gap:8px;margin-block:12px}

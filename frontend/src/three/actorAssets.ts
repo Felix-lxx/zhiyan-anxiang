@@ -92,7 +92,7 @@ export class ActorAssets {
       body.traverse(child => { if (child instanceof THREE.SkinnedMesh) child.computeBoundingBox() })
       const bounds = new THREE.Box3().setFromObject(body)
       const seed = [...id].reduce((sum, c) => sum + c.charCodeAt(0), 0)
-      const height = helper ? 1.78 : vulnerable ? 1.65 : 1.68 + (seed % 5) * .035
+      const height = helper ? 1.78 : vulnerable&&!root.userData.compositeNeeds ? 1.65 : 1.68 + (seed % 5) * .035
       body.scale.multiplyScalar(height / Math.max(.01, bounds.max.y - bounds.min.y))
       body.position.y = -bounds.min.y * body.scale.y
       body.updateMatrixWorld(true)
@@ -112,7 +112,7 @@ export class ActorAssets {
             const fabric = source.clone() as THREE.MeshStandardMaterial
             fabric.metalness = 0; fabric.roughness = .88
             if (!helper && isShirt) fabric.color.setHex(palette[seed % palette.length]!)
-            if (vulnerable && source.name === 'Hair') fabric.color.setHex(0xaaa69d)
+            if (vulnerable && !root.userData.compositeNeeds && source.name === 'Hair') fabric.color.setHex(0xaaa69d)
             if (!helper && /skin/i.test(source.name)) fabric.color.setHex(skinPalette[seed%skinPalette.length]!)
             material = fabric; clonedMaterials.set(key, material)
           }
@@ -215,6 +215,7 @@ export class ActorAssets {
       if (root.userData.exposed) rig.arm.rotateX(-.65)
       else if (root.userData.behaviorState === 'escorting') { rig.arm.rotateZ(-.18); rig.arm.rotateX(-.25) }
       else if (root.userData.behaviorState === 'at_door') { rig.arm.rotateZ(-.2); rig.arm.rotateX(-.65) }
+      else if (root.userData.compositeNeeds && root.userData.vulnerable && root.userData.assisted) { rig.arm.rotateZ(-.1); rig.arm.rotateX(-.2) }
     }
     if (rig.forearm) {
       rig.forearmPose = rig.forearm.quaternion.clone()
