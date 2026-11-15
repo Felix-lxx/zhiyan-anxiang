@@ -10,16 +10,13 @@
 
 ## 依赖方向
 
-```text
-Vue 页面 / Three.js 表现层
-          ↓
-composables、domain 类型、API 客户端
-          ↓ REST / WebSocket
-FastAPI 路由（鉴权、输入校验、HTTP 映射）
-          ↓
-领域服务（演练、空间、车辆、智能体、评分）
-          ↓
-SQLAlchemy 模型、事件与快照
+```mermaid
+flowchart TB
+    View["Vue 页面 / Three.js 表现层"] --> Client["composables / domain 类型 / API 客户端"]
+    Client -->|REST / WebSocket| Router["FastAPI 路由：鉴权与协议映射"]
+    Router --> Application["命令应用服务：事务、幂等与批准范围"]
+    Application --> Services["领域服务：演练、空间、车辆、智能体、评分"]
+    Services --> Store["SQLAlchemy 模型、事件与快照"]
 ```
 
 - 路由层不实现仿真规则；新增规则应进入 `backend/app/services/`。
@@ -44,6 +41,8 @@ npm run build
 ```
 
 若变更导演台、手机参演端或 Three.js 表现，还应检查 1440px、1024px、390px 宽度下的主操作路径；浮层应有独立滚动容器，不能遮挡当前必须操作的控件。
+
+真实浏览器脚本在`frontend/tests/*.e2e.mjs`，按注释区分真实隔离服务与协议/布局替身。执行`npm run test:e2e:map`、`test:e2e:realtime`或`test:e2e:account`前，显式设置`QA_BASE_URL`、`QA_API_URL`、`QA_PASSWORD`，并指向可丢弃数据库；浏览器模块路径可用`PLAYWRIGHT_MODULE`，本机浏览器路径可用`QA_BROWSER_PATH`。不要把协议替身的通过记录写成外部服务接入成功。
 
 ## Pull Request 要求
 
