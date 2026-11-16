@@ -1,0 +1,3 @@
+# These official glTF files are verified byte-for-byte against the asset manifest.
+# Preserve their source bytes on Windows as well as Linux checkouts.
+frontend/public/assets/community-real/**/*.gltf -text
