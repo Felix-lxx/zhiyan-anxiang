@@ -42,7 +42,7 @@ npm run build
 
 若变更导演台、手机参演端或 Three.js 表现，还应检查 1440px、1024px、390px 宽度下的主操作路径；浮层应有独立滚动容器，不能遮挡当前必须操作的控件。
 
-真实浏览器脚本在`frontend/tests/*.e2e.mjs`，按注释区分真实隔离服务与协议/布局替身。执行`npm run test:e2e:map`、`test:e2e:realtime`或`test:e2e:account`前，显式设置`QA_BASE_URL`、`QA_API_URL`、`QA_PASSWORD`，并指向可丢弃数据库；浏览器模块路径可用`PLAYWRIGHT_MODULE`，本机浏览器路径可用`QA_BROWSER_PATH`。不要把协议替身的通过记录写成外部服务接入成功。
+真实浏览器脚本在`frontend/tests/*.e2e.mjs`，按注释区分真实隔离服务与协议/布局替身。执行`npm run test:e2e:map`、`test:e2e:realtime`或`test:e2e:account`前，显式设置`QA_BASE_URL`、`QA_API_URL`、`QA_PASSWORD`，并指向可丢弃数据库；`test:e2e:models`检查本地模型、包围盒、资源失败回退和人物/车辆操作，不要求正式业务账号。浏览器模块路径可用`PLAYWRIGHT_MODULE`，本机浏览器路径可用`QA_BROWSER_PATH`。不要把协议替身的通过记录写成外部服务接入成功。
 
 ## Pull Request 要求
 

@@ -31,10 +31,9 @@
 
 ## 最新证据
 
-- [当前交付与验证](reports/current-release.md)：社区v6、地图修复、两案例最新实跑、355项后端/73项前端/16组浏览器检查、实际截图及剩余问题。
-- [历史验收基线](reports/acceptance-baseline.md)：保留2026-11-10完整演练的条件、成绩与原始证据，不代表当前版本得分。
+- [当前交付与验证](reports/current-release.md)：两案例真实实跑、清点岗位阻塞修复、手机/平板工作区、初始355项后端及修复后49项回归、78项前端与29组浏览器检查。
 - [三维材质与资源](reports/model-assets.md)：资源来源、许可及材质落地记录。
 
 [UI 设计参考](ui-design/UI界面样式图索引.md)只保留六个核心页面的参考图，不作为当前功能验收截图。README 图片来自实际运行。
 
-历史可用 `git log --all -- docs` 或 `git show <commit>:<path>` 查询。整理不重写历史，不删除运行数据库、第三方许可或有效回归测试。
+已被当前记录替代的11月10日、11月15日验收明细保留在Git历史，可用 `git log --all -- docs` 或 `git show c07c91f:docs/reports/current-release.md` 查询。整理不重写历史，不删除运行数据库、第三方许可或有效回归测试。
