@@ -69,7 +69,10 @@ export function createApartment(width: number, depth: number, floors: number, se
     }
     if (detailed) {
       // Lower plinth protects the entry; keep the real doorway completely open.
-      for (const side of [-1,1]) box(group,[(width-doorway)/2,.5,.035],[side*(width+doorway)/4,.25,depth/2+.02],0x858b7d)
+      for (const side of [-1,1]) {
+        const plinth=box(group,[(width-doorway)/2,.5,.035],[side*(width+doorway)/4,.25,depth/2+.02],0x858b7d)
+        if(materials)plinth.material=materials.surface('brick',0xe0d1bf,Math.max(1,width/3),.4)
+      }
       const vents:Array<[number,number,number,number]>=[]
       for(let floor=0;floor<floors;floor++)for(let i=0;i<4;i++)vents.push([width/2+.075,floor*3.2+.65+i*.06,-depth*.28,0])
       instances(group,new THREE.BoxGeometry(.055,.022,.4),surface(0x5e716d,.4),vents)

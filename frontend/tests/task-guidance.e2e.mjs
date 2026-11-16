@@ -18,7 +18,7 @@ try{
  const sceneResponse=await context.request.post(`${api}/communities/${community.id}/scenes`,{headers,data:{template_id:template.id,name:'UI 自动验收 · 任务依据厨房'}})
  assert.equal(sceneResponse.status(),201);const scene=await sceneResponse.json(),sceneRoot=api+'/scenes/'+scene.id
  const sources=await(await context.request.get(sceneRoot+'/fire-sources',{headers})).json();assert.ok(sources.length)
- const saved=await context.request.patch(sceneRoot+'/parameters',{headers,data:{fire_source_type:'kitchen',fire_source_object_id:sources[0].id,fire_floor:2,fire_room:'east',room_door_state:'closed',start_time:'18:30',wind_direction:'微风',resident_count:8,hydrant_status:'available',south_lane_status:'open',stair_width:1.2}})
+ const saved=await context.request.patch(sceneRoot+'/parameters',{headers,data:{community_profile:'night_shift',duty_staff_count:2,fire_source_type:'kitchen',fire_source_object_id:sources[0].id,fire_floor:2,fire_room:'east',room_door_state:'closed',start_time:'18:30',wind_direction:'微风',resident_count:8,hydrant_status:'available',south_lane_status:'open',stair_width:1.2}})
  assert.ok(saved.ok(),await saved.text())
  const published=await context.request.post(sceneRoot+'/publish',{headers});assert.ok(published.ok(),await published.text())
  const result=await context.request.post(sceneRoot+'/drills',{headers,data:{name:'UI 自动验收 · 任务依据与设备定位',training_mode:'teaching',time_scale:1}})
@@ -31,6 +31,8 @@ try{
  const deadline=Date.now()+60000;let current
  while(Date.now()<deadline){current=await get();if(current.tasks.find(t=>t.id===gas.id)?.status==='pending')break;await new Promise(resolve=>setTimeout(resolve,1200))}
  assert.equal(current.tasks.find(t=>t.id===gas.id).status,'pending')
+ const escort=current.tasks.find(t=>t.kind==='escort')
+ assert.equal(escort.can_accept,false)
  const plan=await context.request.post(root+'/agent/runs',{headers,data:{request_id:randomUUID(),goal:'组织厨房楼栋居民撤离并核验案例任务',include_case_tasks:true,pause_for_review:true,use_model:false}})
  assert.equal(plan.status(),201,await plan.text());const run=await plan.json()
  assert.equal(run.task_graph.case_tasks.length,4)
@@ -41,6 +43,15 @@ try{
  await page.getByRole('button',{name:'目标计划',exact:true}).click()
  const tasks=page.getByRole('region',{name:'案例责任任务',exact:true})
  await tasks.locator('summary').click()
+ await command('resume')
+ await tasks.getByRole('button',{name:new RegExp(escort.title)}).click()
+ const escortWorkflow=page.locator('#focused-task-'+escort.id)
+ await escortWorkflow.getByText('请先完成重点人员护送，再接收集合核验任务，避免清点占用接应岗位。',{exact:true}).waitFor()
+ assert.equal(await escortWorkflow.getByRole('button',{name:'总控代办此任务',exact:true}).isDisabled(),true)
+ await command('pause')
+ await page.getByRole('button',{name:'打开安巷指挥助手',exact:true}).click()
+ await page.getByRole('button',{name:'目标计划',exact:true}).click()
+ if(!await tasks.locator('details').evaluate(el=>el.open))await tasks.locator('summary').click()
  await tasks.getByRole('button',{name:new RegExp(gas.title)}).click()
  const task=page.locator('#focused-task-'+gas.id),guidance=task.locator('.task-guidance')
  await guidance.getByText('现场读取于',{exact:false}).waitFor()

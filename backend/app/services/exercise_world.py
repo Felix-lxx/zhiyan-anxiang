@@ -104,6 +104,7 @@ def capture_world(session: Session, version: SceneVersion, parameters_override: 
 
 
 def projected_tasks(world: dict, events: list, elapsed: int, simulation: dict, robot: dict | None) -> list[dict]:
+    from app.services.task_staff import acceptance_blockers
     confirmed = next((e.elapsed_seconds for e in events if e.event_type == "robot.alarm_confirmed"), None)
     result = []
     for source in world["tasks"]:
@@ -131,6 +132,8 @@ def projected_tasks(world: dict, events: list, elapsed: int, simulation: dict, r
         staff_id = accepted.payload.get('staff_id') if accepted else None
         source = {**source, 'staff_id':staff_id,
                   'staff_name':next((s['name'] for s in world.get('response_staff', []) if s['id']==staff_id), None)}
+        source['acceptance_blockers'] = acceptance_blockers(world, source, simulation['residents'])
+        source['can_accept'] = state == 'pending' and not source['acceptance_blockers']
         operation_elapsed = max(0, (done.elapsed_seconds if done else elapsed) - arrived.elapsed_seconds) if arrived else 0
         operation = {'mode': 'arrival_receipt', 'duration_seconds': source['duration_seconds'],
                      'elapsed_seconds': min(source['duration_seconds'], operation_elapsed),

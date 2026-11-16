@@ -107,7 +107,8 @@ def project_journey(*, world: dict | None, status: str, elapsed: int,
             offer("rollcall", f"清点 {len(arrivals)} 名到场居民", "只核对实际到场人员，未到场人员仍保留待寻找状态。", "rollcall")
         if alarm and (need_help or not_ordered):
             offer("plan", "安排分流与重点护送", f"{len(not_ordered)} 人待安排撤离，{len(need_help)} 名重点人员待接应；先比较方案，再批准执行。", "plan")
-        actionable = [t for t in pending if t.get("status") in {"pending", "executing", "verifying"} and not t.get("can_submit")]
+        actionable = [t for t in pending if t.get("status") in {"pending", "executing", "verifying"} and not t.get("can_submit")
+                      and not (t.get('status') == 'pending' and t.get('can_accept') is False)]
         if actionable:
             task = min(actionable, key=lambda t: (not t.get("overdue", False), t.get("remaining_seconds", 0)))
             offer("task-" + task["id"], task["title"],

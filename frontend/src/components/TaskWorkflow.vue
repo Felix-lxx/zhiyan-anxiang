@@ -44,8 +44,9 @@ const visibleBlockers=computed(()=>(props.task.blockers??[]).filter(reason=>!(pr
       <p v-if="director" class="task-workflow__hint">{{ task.assignee_id ? '手机端接收后锁定执行人，总控不能覆盖。' : '也可由总控代办，系统会记录实际操作者。' }}</p>
       <label v-if="task.status === 'verifying'" :for="`evidence-${task.id}`">处置结果（至少 6 字）<textarea :id="`evidence-${task.id}`" v-model="evidence" maxlength="500" placeholder="说明已完成的操作及核验结果" /></label>
       <ul v-if="task.status === 'verifying' && visibleBlockers.length" class="task-workflow__blockers"><li v-for="reason in visibleBlockers" :key="reason">{{ reason }}</li></ul>
+      <ul v-if="task.status === 'pending' && task.acceptance_blockers?.length" class="task-workflow__blockers" role="status"><li v-for="reason in task.acceptance_blockers" :key="reason">{{reason}}</li></ul>
       <div class="task-workflow__actions">
-        <button v-if="task.status === 'pending' && (!director || !task.assignee_id)" type="button" :disabled="busy" @click="emit('action', 'accept', '')">{{ director ? '总控代办此任务' : '接收任务' }}</button>
+        <button v-if="task.status === 'pending' && (!director || !task.assignee_id)" type="button" :disabled="busy || task.can_accept === false" @click="emit('action', 'accept', '')">{{ director ? '总控代办此任务' : '接收任务' }}</button>
         <button v-if="['executing','verifying'].includes(task.status)" type="button" :disabled="busy" @click="emit('action','release','撤回当前接收并释放值守岗位')">撤回接收</button>
         <button v-if="task.status === 'executing'" type="button" :disabled="busy" @click="emit('action', 'arrive', '')">回执已到达目标</button>
         <button v-if="task.status === 'verifying'" type="button" :disabled="busy || !task.can_submit || evidence.trim().length < 6" @click="emit('action', 'submit', evidence)">提交核验证据</button>

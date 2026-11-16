@@ -2,6 +2,17 @@
 from fastapi import HTTPException
 
 
+def acceptance_blockers(world, task, residents):
+    # The resident/helper command performs escort; check-in must not claim a
+    # second worker while waiting for the same escort to finish.
+    if (world.get('community_training') and task.get('kind') == 'escort'
+            and task.get('responsible_role') == '物业/网格员'
+            and any(p['vulnerable'] and (p['status'] != 'evacuated' or not p.get('assisted'))
+                    for p in residents)):
+        return ['请先完成重点人员护送，再接收集合核验任务，避免清点占用接应岗位。']
+    return []
+
+
 def occupations(events):
     active = {}
     for event in events:
@@ -15,6 +26,9 @@ def occupations(events):
 
 
 def select_staff(session, drill, data, task, member):
+    blockers = acceptance_blockers(data['simulation']['world'], task, data['simulation']['residents'])
+    if blockers:
+        raise HTTPException(409, '；'.join(blockers))
     if not data['simulation']['world'].get('community_training') or task['responsible_role'] != '物业/网格员':
         return None
     from app.services.agent_claims import claims_for

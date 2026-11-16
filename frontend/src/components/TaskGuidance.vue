@@ -14,7 +14,7 @@ const opened=ref(false),busy=ref(false),referenceBusy=ref(false),error=ref('')
 const data=ref<TaskGuidanceSnapshot|null>(null),reference=ref<{title:string;version:KnowledgeVersion;chunkId:string}|null>(null)
 const referencePanel=ref<HTMLElement|null>(null),panel=ref<HTMLDetailsElement|null>(null)
 let generation=0,controller:AbortController|undefined
-const stale=computed(()=>Boolean(data.value&&(props.elapsedSeconds-data.value.observed_at_seconds>15||props.task.status!==data.value.task.status||props.task.assignee_id!==data.value.task.assignee_id||Boolean(props.task.verification_ready)!==Boolean(data.value.task.verification_ready))))
+const stale=computed(()=>Boolean(data.value&&(props.elapsedSeconds-data.value.observed_at_seconds>15||props.task.status!==data.value.task.status||props.task.assignee_id!==data.value.task.assignee_id||props.task.can_accept!==data.value.task.can_accept||Boolean(props.task.verification_ready)!==Boolean(data.value.task.verification_ready))))
 const clock=(value:number)=>String(Math.floor(value/60)).padStart(2,'0')+':'+String(Math.floor(value%60)).padStart(2,'0')
 async function load(){
   if(busy.value||props.historical)return

@@ -4,10 +4,11 @@
   "version": "0.1.0",
   "type": "module",
   "scripts": {
-    "test": "node --test tests/api-client.test.mjs tests/three-models.test.mjs tests/live-state.test.mjs tests/commands.test.mjs tests/agent-state.test.mjs tests/kitchen-assets.test.mjs tests/map-marker-layout.test.mjs",
+    "test": "node --test tests/api-client.test.mjs tests/three-models.test.mjs tests/live-state.test.mjs tests/commands.test.mjs tests/agent-state.test.mjs tests/kitchen-assets.test.mjs tests/map-marker-layout.test.mjs tests/community-site.test.mjs",
     "test:e2e:realtime": "node tests/realtime-flow.e2e.mjs",
     "test:e2e:account": "node tests/account-layout.e2e.mjs",
     "test:e2e:map": "node tests/map-precision.e2e.mjs",
+    "test:e2e:models": "node tests/community-site.e2e.mjs && node tests/vehicle-assets.e2e.mjs && node tools/inspect-actors.mjs",
     "dev": "vite",
     "build": "vue-tsc -b && vite build",
     "preview": "vite preview"

@@ -1,12 +1,12 @@
 <script setup lang="ts">
-import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, useId, watch } from 'vue'
 import { BuildingReleaseVisuals } from '../three/buildingReleaseVisuals'
 import type { BuildingReleaseSignal } from '../domain/agent'
 import { useSceneOverlayLayout } from '../composables/useSceneOverlayLayout'
 
 const sceneUtilities = useSceneOverlayLayout()
 import * as THREE from 'three'
-import { createApartment, createChargingShed, createFireStation, createStreet, createStreetFurniture, createRoadBarrier } from '../three/communityModels'
+import { createApartment, createChargingShed, createFireStation, createStreet, createRoadBarrier } from '../three/communityModels'
 import { alignRoadTexture, createJunctionPatch, roadJunctions } from '../three/roadJunctions'
 import { ROAD_SURFACE_Y, roadWidth } from '../three/roadSurface'
 import { SceneMaterials, displayHeight as legacyDisplayHeight } from '../three/sceneMaterials'
@@ -31,6 +31,8 @@ import { assemblyAttendance, createAssemblyPoint, type AssemblyResident } from '
 import { RoomEnvironment } from 'three/examples/jsm/environments/RoomEnvironment.js'
 import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js'
 import AppIcon from './AppIcon.vue'
+import { CommunitySiteVisuals } from '../three/communitySiteVisuals'
+import { createPassageDeck } from '../three/passageDeck'
 
 interface Resident extends RescueResident { height?: number; building_id?: string; floor?: number; current_floor?: number; indoor_stage?: string; current_edge_id?: string | null; id: string; label: string; vulnerable: boolean; status: string; x: number; y: number; progress: number; exit?: 'north' | 'south'; behavior?: string; smoke_exposure?: number; congestion?: number; queue_seconds?: number; last_location?: string; assisted?: boolean; search_responsible?: string; speed_factor?: number; route_points?: Array<{ x: number; y: number; height?: number }>; route_edge_ids?: string[]; route_reachable?: boolean; estimated_seconds?: number }
 interface SpatialEdgeState { id: string; name?:string; start_node_id?:string; end_node_id?:string; kind: string; start: { x: number; y: number; height: number }; end: { x: number; y: number; height: number }; width_meters: number; density_percent?: number; live_occupancy?: number; waiting_count?: number; capacity_persons?: number }
@@ -144,6 +146,7 @@ const inspectionZoneId = ref<string>()
 let groundPlane: THREE.Mesh
 let blockageLayer: THREE.Group
 let environmentAssetLayer: THREE.Group
+let communitySite: CommunitySiteVisuals | null = null
 let roadNetworkLayer: THREE.Group
 let residentRouteLayer: THREE.Group
 let residentTrailLayer: THREE.Group
@@ -183,6 +186,8 @@ const indoorView = ref(false)
 const showFireSource = computed(() => !props.simulation?.environment.indoor || !indoorView.value ||
   (visibleIndoorBuilding.value === props.simulation.environment.indoor.building_id && visibleIndoorFloor.value === props.simulation.world?.parameters?.fire_floor))
 const displayToolsOpen = ref(false)
+const sceneToolsExpanded = ref(false)
+const sceneToolsId = useId()
 const interactiveMeshes: THREE.Object3D[] = []
 const roadInteractiveMeshes = new Set<THREE.Object3D>()
 const targetCameraPosition = new THREE.Vector3(66, 76, 74)
@@ -203,7 +208,6 @@ let lastEntitySeconds = -1
 let blockageSignature = ''
 const hydrantModels: Array<{ id?:string; group: THREE.Group; paint: THREE.MeshStandardMaterial[]; warning: THREE.Mesh; isEast: boolean }> = []
 const exitModels: Array<{ group: THREE.Group; materials: THREE.MeshStandardMaterial[]; nodeId?: string }> = []
-const environmentRequests = new Set<AbortController>()
 const assemblyModels = new Map<string, ReturnType<typeof createAssemblyPoint>>()
 const assemblyNodes = computed(() => props.simulation?.spatial_network?.nodes.filter(node => node.kind === 'assembly' && /^assembly:(north|south)$/.test(node.id)) ?? [])
 const selectedAssembly = computed(() => assemblyNodes.value.find(node => node.name === selected.value?.title && selected.value?.type === '集合点'))
@@ -350,59 +354,26 @@ function addParkedVehicle(x: number, z: number, color: number, rotation = 0): vo
 }
 
 async function loadEnvironmentAssets(): Promise<void> {
-  const assetBase = `${import.meta.env.BASE_URL}assets/`
-  const base = assetBase + 'kenney-city-suburban/Models/GLB%20format/'
-  const { GLTFLoader } = await import('three/examples/jsm/loaders/GLTFLoader.js')
-  if (destroyed) return
-  const loader = new GLTFLoader()
-  const definitions = [
-    { url: base+'tree-large.glb', size: 5, positions: [[-43,-38],[-42,38],[-15,35],[13,40],[42,12],[39,-39],[-16,-43]] },
-    { url: base+'planter.glb', size: 1.8, positions: [[-9,8],[8,8],[19,8]] },
-    { url: assetBase+'kenney-car-kit/sedan.glb', size: 4.2, positions: [[-45,-19],[-45,-11],[-45,-3]] },
-    ...(!props.simulation?.vehicles?.length ? [
-      { url: assetBase+'kenney-car-kit/firetruck.glb', size: 6.2, positions: [[40,36]] },
-      { url: assetBase+'kenney-car-kit/ambulance.glb', size: 5.2, positions: [[40,44]] },
-    ] : []),
-  ]
-  const isClear = (x: number,z: number,radius:number) => {
-    const px=x+50, py=z+50
-    if(props.simulation?.world?.objects.some(o=>Math.abs(o.x-px)<o.width/2+radius && Math.abs(o.y-py)<o.depth/2+radius)) return false
-    return !(props.simulation?.road_network?.edges ?? []).some(edge=>{
-      const dx=edge.end.x-edge.start.x, dy=edge.end.y-edge.start.y
-      const t=THREE.MathUtils.clamp(((px-edge.start.x)*dx+(py-edge.start.y)*dy)/(dx*dx+dy*dy||1),0,1)
-      return Math.hypot(px-edge.start.x-t*dx,py-edge.start.y-t*dy)<edge.width_meters/2+radius
-    })
-  }
-  const results = await Promise.allSettled(definitions.map(async definition=>{
-    const controller = new AbortController(); environmentRequests.add(controller)
-    const timeout = window.setTimeout(() => controller.abort(), 15000)
-    let gltf
-    try {
-      const response = await fetch(definition.url, { signal:controller.signal })
-      if(!response.ok)throw new Error(`环境资源读取失败（${response.status}）`)
-      gltf = await loader.parseAsync(await response.arrayBuffer(), definition.url.slice(0, definition.url.lastIndexOf('/')+1))
-    } finally { window.clearTimeout(timeout); environmentRequests.delete(controller) }
-    if(destroyed) {
-      const temporary=new THREE.Group();temporary.add(gltf.scene);disposeLayer(temporary);return
-    }
-    const bounds=new THREE.Box3().setFromObject(gltf.scene), size=bounds.getSize(new THREE.Vector3()), center=bounds.getCenter(new THREE.Vector3())
-    const scale=definition.size/Math.max(size.x,size.y,size.z,.01)
-    const prototype=new THREE.Group(); gltf.scene.position.set(-center.x,-bounds.min.y,-center.z); prototype.add(gltf.scene)
-    definition.positions.forEach(([x,z])=>{
-      if(!isClear(x,z,definition.size/2)) return
-      const model=prototype.clone(true);model.scale.setScalar(scale);model.position.set(x,0,z)
-      model.traverse(object=>{const mesh=object as THREE.Mesh;if(mesh.isMesh){mesh.castShadow=qualityFactor===1;mesh.receiveShadow=true}})
-      environmentAssetLayer.add(model)
-      if(definition.url.includes('car-kit')) register(model,{title:definition.url.includes('firetruck')?'停放消防车':definition.url.includes('ambulance')?'停放救护车':'停放车辆',type:'社区环境模型',detail:'用于识别停车区域；当前为静态车辆，不执行救援任务。'})
-    })
-    renderDirty=true
-  }))
-  if(!destroyed) for(const building of props.simulation?.world?.objects.filter(o=>o.type==='building')??[]) {
-    const x=building.x-50+building.width/2+3,z=building.y-50
-    if(isClear(x,z,1.8)) { const furniture=createStreetFurniture();furniture.position.set(x,0,z);environmentAssetLayer.add(furniture) }
-  }
-  if(!destroyed)renderDirty=true
-  if(!destroyed && results.some(result=>result.status==='rejected')) flashNotice('部分环境模型加载失败，演练可继续；刷新后重试。')
+  const world=props.simulation?.world
+  if(!world || destroyed)return
+  const site=new CommunitySiteVisuals({
+    objects:world.objects,
+    roads:props.simulation?.road_network?.edges??[],
+    passages:props.simulation?.spatial_network?.edges??[],
+    protectedPoints:[
+      {x:world.fire_origin.x,y:world.fire_origin.y,radius:2},
+      ...world.objects.filter(o=>o.type==='building').map(o=>({x:o.entry.x,y:o.entry.y,radius:2})),
+      ...(props.simulation?.road_network?.nodes.filter(n=>n.is_exit).map(n=>({x:n.x,y:n.y,radius:4}))??[]),
+    ],
+  },sceneMaterials,markRenderDirty)
+  communitySite=site;site.setQuality(quality.value);environmentAssetLayer.add(site.group)
+  const result=await site.load()
+  if(destroyed)return
+  for(const root of site.group.children)if(root.name.startsWith('parking-'))register(root,{
+    title:'社区停车位',type:'环境设施',detail:'静态停车环境，与可调度消防车和救护车分别显示。',
+  })
+  if(result.failed)flashNotice('部分环境模型读取失败，已保留基础环境，演练可继续。')
+  markRenderDirty()
 }
 
 function addHydrant(name: string, x: number, z: number, isEast = false, id?:string): void {
@@ -508,7 +479,7 @@ function buildScene(): void {
   controls.addEventListener('end', () => { targetCameraPosition.copy(camera.position); targetLookAt.copy(controls.target); userOrbiting = false; renderDirty = true })
   ambientLight = new THREE.HemisphereLight(night ? 0x9ebacf : 0xffffff, 0x56624a, props.highContrast ? 3.2 : night ? .85 : 2.7); scene.add(ambientLight)
   const moon = new THREE.DirectionalLight(night ? 0xc4d4e8 : 0xfff3df, night ? 1.5 : 2.1); moon.position.set(-38, 62, 18); moon.castShadow = qualityFactor === 1; moon.shadow.mapSize.set(2048,2048); moon.shadow.camera.left = -65; moon.shadow.camera.right = 65; moon.shadow.camera.top = 65; moon.shadow.camera.bottom = -65; moon.shadow.normalBias = .045; moon.shadow.radius = 3; scene.add(moon)
-  groundPlane = new THREE.Mesh(new THREE.PlaneGeometry(116, 116), sceneMaterials.surface('paving',0x999b88,36,36)); groundPlane.rotation.x = -Math.PI / 2; groundPlane.receiveShadow = true; scene.add(groundPlane)
+  groundPlane = new THREE.Mesh(new THREE.PlaneGeometry(160, 160), sceneMaterials.surface('paving',0xc2c0b1,48,48)); groundPlane.rotation.x = -Math.PI / 2; groundPlane.receiveShadow = true; scene.add(groundPlane)
   blockageLayer = new THREE.Group(); scene.add(blockageLayer)
   environmentAssetLayer = new THREE.Group(); scene.add(environmentAssetLayer)
   roadNetworkLayer = roadVisuals.group; scene.add(roadNetworkLayer)
@@ -596,6 +567,7 @@ function applyQuality(): void {
   })
   actorAssets.setQuality(quality.value)
   sceneMaterials.setQuality(quality.value)
+  communitySite?.setQuality(quality.value)
   indoorFireVisuals?.setQuality(quality.value)
   resize();renderDirty=true
 }
@@ -706,8 +678,14 @@ function buildSpatialGeometry(): void {
         stairSurfaces.push(surface);indoorGeometry.add(flight.group)
         flight.heat.userData.density=0;stairHeatMeshes.set(edge.id,flight.heat)
       } else {
-        const deck=new THREE.Mesh(new THREE.BoxGeometry(width,.12,horizontal),material(edge.kind==='room'?0xb6aa92:0xaaa99b))
-        deck.position.copy(a).lerp(b,.5);deck.position.y-=.06;deck.rotation.y=yaw;deck.receiveShadow=true;indoorGeometry.add(deck)
+        const zones=(props.simulation?.environment.indoor?.zones??[])
+          .filter(zone=>['room','entry_hall','corridor'].includes(zone.kind)&&Math.abs(displayHeight(zone.height)-a.y)<.015&&rise<.005)
+          .map(zone=>{const center=worldPoint(zone.x,zone.y,zone.height);return {x:center.x,y:center.z,width:zone.width,depth:zone.depth}})
+        if(zones.length)indoorGeometry.add(createPassageDeck(a,b,width,zones,material(0xaaa99b)))
+        else {
+          const deck=new THREE.Mesh(new THREE.BoxGeometry(width,.12,horizontal),material(edge.kind==='room'?0xb6aa92:0xaaa99b))
+          deck.position.copy(a).lerp(b,.5);deck.position.y-=.06;deck.rotation.y=yaw;deck.receiveShadow=true;indoorGeometry.add(deck)
+        }
       }
     }
     // Only the selected residents' confirmed routes receive navigation arrows.
@@ -1629,8 +1607,7 @@ onBeforeUnmount(() => {
   destroyed = true
   clearTimeout(contextRestoreTimer)
   motionPreference.removeEventListener('change', updateMotionPreference); preferenceObserver.disconnect()
-  for (const request of environmentRequests) request.abort()
-  environmentRequests.clear(); hydrantModels.length=0
+  communitySite?.dispose();communitySite=null;hydrantModels.length=0
   cancelAnimationFrame(animationFrame); resizeObserver?.disconnect(); document.removeEventListener('visibilitychange', onVisibilityChange)
   if (renderer) { renderer.domElement.removeEventListener('pointerdown', onPointerDown); renderer.domElement.removeEventListener('pointerup', onPointerUp); renderer.domElement.removeEventListener('pointermove', onPointerMove); renderer.domElement.removeEventListener('pointercancel', cancelMarquee); renderer.domElement.removeEventListener('webglcontextlost', onContextLost); renderer.domElement.removeEventListener('webglcontextrestored', onContextRestored) }
   controls?.dispose()
@@ -1699,7 +1676,9 @@ watch(() => [props.routePreview, props.robotRoutePreview], () => updateEntities(
         <div class="twin-sensor twin-sensor--clock"><span>演练时刻</span><strong>{{ clockLabel }}</strong></div>
       </div>
 
-      <div v-if="!compact" ref="sceneUtilities" class="scene-utilities" role="group" aria-label="现场显示与车辆工具">
+      <div v-if="!compact" ref="sceneUtilities" class="scene-utilities" role="group" aria-label="现场显示与车辆工具" :data-expanded="sceneToolsExpanded">
+        <button class="scene-utilities-toggle" type="button" aria-label="现场工具" :aria-expanded="sceneToolsExpanded" :aria-controls="sceneToolsId" @click="sceneToolsExpanded=!sceneToolsExpanded"><AppIcon name="eye" :size="18" />{{sceneToolsExpanded?'收起工具':'现场工具'}}<AppIcon name="chevron" :size="16" /></button>
+        <div :id="sceneToolsId" class="scene-utilities-content">
         <label v-if="displayToolsOpen" class="scene-quality">画面品质<select v-model="quality" aria-label="三维画质"><option value="high">精细</option><option value="medium">均衡</option><option value="low">流畅</option></select><small role="status" :title="actorAssetLabel">{{ modelResourceStatus === 'loading' ? '模型加载中' : modelResourceStatus === 'fallback' ? '轻量模型' : status === 'running' && fps ? fps + ' fps' : '静止省电' }}</small></label>
         <button type="button" :disabled="!indoorBuildings.length" :title="indoorBuildings.length ? '显示楼内通道、楼梯与居民位置' : '当前场次没有可观察的室内通道，请检查场景配置或新建连续空间演练'" :aria-pressed="indoorView" @click="showIndoor"><AppIcon name="building" :size="18" />{{ indoorView ? '恢复建筑外观' : '查看楼内透视' }}</button>
         <button v-if="simulation?.environment.indoor" type="button" @click="emit('inspectIndoor')"><AppIcon name="fire" :size="18"/>楼内烟气与门控</button>
@@ -1710,6 +1689,7 @@ watch(() => [props.routePreview, props.robotRoutePreview], () => updateEntities(
         </div>
         <button type="button" :disabled="!simulation?.vehicles?.length" @click="emit('dispatchVehicle', simulation?.vehicles?.[0]?.id ?? '')"><AppIcon name="route" :size="18" />车辆调度</button>
         <button type="button" :aria-expanded="displayToolsOpen" @click="displayToolsOpen=!displayToolsOpen"><AppIcon name="eye" :size="18"/>画面设置</button>
+        </div>
       </div>
       <nav v-if="!compact" class="twin-views" aria-label="沙盘视角">
         <button type="button" title="总控鸟瞰" aria-label="总控鸟瞰" :data-active="viewMode === 'director'" :aria-pressed="viewMode === 'director'" @click="setView('director')"><AppIcon name="eye" />总控鸟瞰</button>

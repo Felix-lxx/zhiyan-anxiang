@@ -20,6 +20,8 @@ try {
       const panel = page.locator('.vehicle-dispatch')
       await panel.getByRole('heading', { name: '车辆调度与到场处置' }).waitFor()
       const utilities = page.getByRole('group', { name: '现场显示与车辆工具' })
+      const expand=utilities.getByRole('button',{name:'现场工具',exact:true})
+      if(await expand.isVisible()&&await expand.getAttribute('aria-expanded')==='false')await expand.click()
       if (!await utilities.getByLabel('三维画质').count()) await utilities.getByRole('button', { name: '画面设置', exact: true }).click()
       await utilities.getByLabel('三维画质').selectOption('medium')
       const cutaway = utilities.getByRole('button', { name: /查看楼内透视|恢复建筑外观/ })

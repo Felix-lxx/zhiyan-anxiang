@@ -27,6 +27,8 @@ def community_run(exercise):
         point = db.scalar(select(DecisionPoint).where(DecisionPoint.scene_version_id==version.id))
         db.add(DecisionTask(decision_point_id=point.id, scene_version_id=version.id,
             kind='manual', title='检查门厅照明', target='门厅照明模拟核查', deadline_seconds=300))
+        db.add(DecisionTask(decision_point_id=point.id, scene_version_id=version.id,
+            kind='manual', title='检查楼梯照明', target='楼梯照明模拟核查', deadline_seconds=300))
         db.commit()
     assert client.post('/api/v1/scenes/'+demo['scene_id']+'/publish', headers=headers).status_code==200
     created = client.post('/api/v1/scenes/'+demo['scene_id']+'/drills', headers=headers,
@@ -88,7 +90,7 @@ def test_household_receipt_requires_contact_and_is_replayed(community_run):
 
 def test_two_staff_cannot_accept_three_jobs_and_release_is_real(community_run):
     client,headers,root,data,_,_,_=community_run
-    jobs=[t for t in data['tasks'] if t['responsible_role']=='物业/网格员']
+    jobs=[t for t in data['tasks'] if t['responsible_role']=='物业/网格员' and t['kind']!='escort']
     assert len(jobs)>=3
     def act(job,action):
         return client.post(root+'/tasks/'+job['id']+'/actions',headers=headers,
@@ -121,6 +123,24 @@ def test_typed_task_name_does_not_change_semantics():
     assert resolved_kind(SimpleNamespace(kind='gas_off',title='关闭北侧设施'))=='gas_off'
     assert resolved_kind(SimpleNamespace(kind='manual',title='切断电源'))=='manual'
     assert resolved_kind(SimpleNamespace(kind=None,title='切断充电棚电源'))=='power_off'
+
+
+def test_escort_verification_cannot_lock_the_staff_it_is_waiting_for(community_run):
+    client, headers, root, data, *_ = community_run
+    task = next(t for t in data['tasks'] if t['kind'] == 'escort')
+    assert task['can_accept'] is False
+    assert task['acceptance_blockers']
+    before = data['simulation']['environment']['response_staff']
+    response = client.post(root+'/tasks/'+task['id']+'/actions', headers=headers,
+                           json={'action':'accept'})
+    assert response.status_code == 409
+    fresh = client.get(root, headers=headers).json()
+    assert fresh['simulation']['environment']['response_staff'] == before
+    assert not any(e['event_type']=='task.accepted' and e['payload'].get('task_id')==task['id']
+                   for e in fresh['events'])
+    guidance = client.post(root+'/tasks/'+task['id']+'/guidance', headers=headers, json={})
+    assert guidance.status_code == 200
+    assert guidance.json()['next_action']['kind'] == 'wait'
 
 
 def test_knock_receipt_requires_onsite_responsibility():

@@ -54,12 +54,13 @@ try {
     assert.ok(a.y >= top.y + top.height - 1, `${width}: work area avoids persistent controls`)
     assert.ok(a.x >= 0 && a.x + a.width <= width + 1 && a.y + a.height <= height + 1, `${width}: drawer bounds`)
     assert.ok(await panel.evaluate(el => el.scrollWidth <= el.clientWidth + 1), `${width}: no horizontal overflow`)
-    assert.ok(await panel.evaluate(el => el.clientHeight > 180 && el.scrollHeight > el.clientHeight), `${width}: independently scrollable briefing`)
+    const scrollArea=drawer.locator('.director-training-body')
+    assert.ok(await scrollArea.evaluate(el => el.clientHeight > 180 && el.scrollHeight > el.clientHeight), `${width}: independently scrollable briefing`)
     if (width > 1100) {
       const stage = await page.locator('.director-stage').boundingBox()
       assert.ok(stage.x + stage.width <= a.x + 1, '3D canvas reserves real space')
     }
-    await panel.evaluate(el => { el.scrollTop = 0 })
+    await scrollArea.evaluate(el => { el.scrollTop = 0 })
     await page.screenshot({ path: resolve(output, `briefing-${width}.png`) })
   }
   await page.setViewportSize({ width: 1440, height: 900 })

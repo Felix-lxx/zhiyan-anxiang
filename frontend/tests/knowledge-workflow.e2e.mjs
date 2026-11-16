@@ -55,7 +55,10 @@ try {
   assert.ok((await pinned.json()).hits.some(h=>h.document_id===document.id&&h.content===content))
   const demoResponse=await context.request.post(api+'/communities/demo-ready',{headers})
   assert.ok(demoResponse.ok(),'Isolated demo setup failed')
-  const demo=await demoResponse.json(), root=api+'/drills/'+demo.drill_id
+  const demo=await demoResponse.json()
+  const ownDrill=await context.request.post(api+'/scenes/'+demo.scene_id+'/drills',{headers,data:{name:'知识流程独立验收',training_mode:'teaching'}})
+  assert.ok(ownDrill.ok(),'Create an isolated drill instead of sharing another test plan')
+  const root=api+'/drills/'+(await ownDrill.json()).id
   const chatResponse=await context.request.post(root+'/assistant/chat',{headers,data:{message:'充电棚道路堵塞了，应怎样安排居民护送？',use_model:false}})
   assert.ok(chatResponse.ok(),'Real assistant knowledge retrieval failed')
   const chat=await chatResponse.json()

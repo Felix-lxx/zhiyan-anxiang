@@ -1,7 +1,7 @@
 import * as THREE from 'three'
 import { surfaceAssets, type PhotographicSurface } from './surfaceAssets'
 
-export type SurfaceKind = 'plaster' | 'asphalt' | 'paving' | 'tile' | 'stone' | 'wood'
+export type SurfaceKind = 'plaster' | 'asphalt' | 'paving' | 'tile' | 'stone' | 'wood' | 'grass' | 'brick'
 
 /** Local PBR surfaces with deterministic fallback. Each arena owns its resources. */
 export class SceneMaterials {
@@ -63,7 +63,7 @@ export class SceneMaterials {
       const context = canvas.getContext('2d')!
       let seed = 739
       const random = () => { seed = (Math.imul(seed, 1664525) + 1013904223) >>> 0; return seed / 4294967296 }
-      context.fillStyle = kind === 'asphalt' ? '#9c9c9c' : '#d4d4d4'; context.fillRect(0, 0, 256, 256)
+      context.fillStyle = kind === 'asphalt' ? '#9c9c9c' : kind === 'grass' ? '#586e46' : '#d4d4d4'; context.fillRect(0, 0, 256, 256)
       for (let i = 0; i < 18000; i++) {
         const tone = Math.floor(120 + random() * 110)
         context.fillStyle = `rgba(${tone},${tone},${tone},${kind === 'asphalt' ? .65 : .25})`
@@ -119,7 +119,7 @@ export class SceneMaterials {
       this.physicalMaterials.set(material, maps)
       material.normalMap = this.highDetail ? maps.normal : null
       material.roughnessMap = this.highDetail ? maps.roughness : null
-      material.normalScale.setScalar(source === 'asphalt' ? .45 : .3)
+      material.normalScale.setScalar(source === 'asphalt' ? .45 : source === 'grass' ? .65 : source === 'brick' ? .55 : .25)
       material.bumpMap = null
     }
     this.textures.set(key, map); this.textures.set(key + ':bump', bump); this.materials.set(key, material)

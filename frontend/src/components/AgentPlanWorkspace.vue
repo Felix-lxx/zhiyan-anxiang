@@ -346,12 +346,12 @@ onBeforeUnmount(()=>{disposed=true;generation++;pollEpoch++;clearTimeout(timer);
             <ul><li v-for="issue in coordination.issues" :key="issue.id"><div><strong>{{issue.label}}</strong><p>{{issue.reason}}</p></div><button type="button" @click="emit('residentFocus',issue.resident_id)"><AppIcon name="target" :size="18" />定位</button></li>
             <li v-for="place in coordination.bottlenecks" :key="place.edge_id"><div><strong>{{place.name}}</strong><p>{{place.waiting}} 人等待 · 最长累计排队 {{place.max_wait_seconds}} 秒</p></div><button type="button" @click="emit('residentFocus',place.resident_id)">查看队列</button></li></ul>
           </section>
-          <section v-if="coordination?.robot.included" class="agent-workspace__robot-live" aria-label="机器人实时执行">
+          <section v-if="coordination?.robot?.included" class="agent-workspace__robot-live" aria-label="机器人实时执行">
             <div><h4><AppIcon name="robot" :size="18" />机器人协同</h4><button type="button" @click="emit('robot')">查看三维位置</button></div>
             <p>{{coordination.robot.reason||'等待机器人状态回执'}} · 电量 {{coordination.robot.battery??'—'}}%</p>
             <p class="agent-workspace__meta">到位与广播步骤已完成 {{coordination.robot.steps_completed}} / {{coordination.robot.steps_total}}</p>
           </section>
-          <section v-if="coordination?.vehicle.included" class="agent-workspace__vehicle-live" aria-label="消防车实时执行">
+          <section v-if="coordination?.vehicle?.included" class="agent-workspace__vehicle-live" aria-label="消防车实时执行">
             <div><h4><AppIcon name="route" :size="18" />消防车协同</h4><button type="button" @click="emit('vehicle')">查看车辆与处置</button></div>
             <p>{{coordination.vehicle.reason||'等待消防车状态回执'}}<template v-if="coordination.vehicle.target"> · {{coordination.vehicle.target}}</template></p>
             <p class="agent-workspace__meta">到场与喷水放行步骤已完成 {{coordination.vehicle.steps_completed}} / {{coordination.vehicle.steps_total}}</p>

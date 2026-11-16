@@ -25,6 +25,8 @@ def guidance_view(data, task):
         next_action = ('resume', '时钟已暂停，继续训练后按任务步骤操作')
     elif status == 'waiting':
         next_action = ('wait', '等待服务端火情确认，不提前核验任务')
+    elif status == 'pending' and task.get('can_accept') is False:
+        next_action = ('wait', '；'.join(task.get('acceptance_blockers') or ['等待接收条件满足']))
     elif status == 'pending':
         next_action = ('accept', '由指定执行人或对应角色参演者接收任务')
     elif status == 'executing':
@@ -48,7 +50,7 @@ def guidance_view(data, task):
     return {'drill_id': data['id'], 'task_id': task['id'], 'observed_at_seconds': data['elapsed_seconds'],
             'event_sequence': data.get('latest_event_sequence', 0), 'drill_status': data['status'],
             'task': {key: deepcopy(task.get(key)) for key in ('id', 'title', 'kind', 'target', 'status',
-                'responsible_role', 'assignee', 'assignee_id', 'verification_ready', 'can_submit',
+                'responsible_role', 'assignee', 'assignee_id', 'verification_ready', 'can_submit', 'can_accept', 'acceptance_blockers',
                 'target_device_id', 'target_floor', 'target_position', 'operation')},
             'next_action': {'kind': next_action[0], 'label': next_action[1]},
             'can_submit': can_submit, 'blockers': blockers, 'conditions': conditions,
