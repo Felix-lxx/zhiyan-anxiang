@@ -196,9 +196,9 @@ onBeforeUnmount(()=>{disposed=true;generation++;pollEpoch++;clearTimeout(timer);
         <div class="agent-workspace__case-heading"><h4>案例处置 · {{run.task_graph.case_tasks.length}} 项</h4><button type="button" @click="emit('missions')">查看与核验</button></div>
         <p>{{run.task_graph.case_tasks.filter(task=>task.state!=='completed').length}} 项待核验<template v-if="run.task_graph.case_tasks.some(task=>task.verification_ready)">，已有任务满足提交条件</template>。</p>
         <details><summary>查看责任人与截止时间</summary>
-        <button v-for="task in run.task_graph.case_tasks" :key="task.id" type="button" :data-ready="task.verification_ready||undefined" :data-overdue="task.overdue||undefined" @click="emit('task',task.id)">
+        <button v-for="task in run.task_graph.case_tasks" :key="task.id" type="button" :data-ready="task.verification_ready||task.can_report||undefined" :data-overdue="task.overdue||undefined" @click="emit('task',task.id)">
           <strong>{{task.label}}</strong>
-          <span>{{task.state==='completed'?(task.completed_on_time===false?'超时核验 · 证据已留存':'已核验'):task.verification_ready?'立即核验':task.overdue?'已超时，可补救':`剩余 ${task.remaining_seconds ?? '—'} 秒`}} · {{task.responsible_role}}</span>
+          <span>{{task.state==='completed'?(task.completed_on_time===false?'超时核验 · 证据已留存':'已核验'):task.can_report?'待动作报告':task.verification_ready?'立即核验':task.overdue?'已超时，可补救':`剩余 ${task.remaining_seconds ?? '—'} 秒`}} · {{task.responsible_role}}</span>
           <small v-if="task.state!=='completed'">下一步：{{task.next_required_action}}</small>
           <small v-if="task.depends_on?.length">关联行动：{{dependencyLabel(task)}}</small>
         </button>

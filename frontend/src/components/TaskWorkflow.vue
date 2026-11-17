@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import type { ExerciseTask } from '../domain/task'
+import type { ExerciseTask, TaskActionKind } from '../domain/task'
 import { computed, ref } from 'vue'
 import AppIcon from './AppIcon.vue'
 import TaskGuidance from './TaskGuidance.vue'
@@ -7,9 +7,9 @@ import '../exercise.css'
 
 interface TaskAssignee { id: string; name: string; online: boolean }
 const props = defineProps<{ task: ExerciseTask; running: boolean; busy: boolean; readonly?: boolean; director?: boolean; assignees?: TaskAssignee[]; apiBaseUrl?:string;accessToken?:string;drillId?:string;elapsedSeconds?:number;guidanceOpen?:boolean }>()
-const emit = defineEmits<{ action: [action: 'accept' | 'arrive' | 'submit' | 'release', evidence: string]; assign: [participantId: string]; locate: []; dispatch: [] }>()
+const emit = defineEmits<{ action: [action: TaskActionKind, evidence: string]; assign: [participantId: string]; locate: []; dispatch: [] }>()
 const evidence = ref('')
-const label = computed(() => ({ waiting: '等待火情确认', pending: '待接收', executing: '前往目标', verifying: '处置与核验', completed: '已完成' }[props.task.status] ?? '历史任务'))
+const label = computed(() => props.task.status==='verifying'&&props.task.action_report_required?(props.task.action_reported_at!=null?'待提交核验':'现场操作与报告'):({ waiting: '等待火情确认', pending: '待接收', executing: '前往目标', verifying: '处置与核验', completed: '已完成' }[props.task.status] ?? '历史任务'))
 const urgency = computed(() => props.task.status === 'completed' ? 'done' : props.task.overdue ? 'overdue' : (props.task.remaining_seconds ?? Number.POSITIVE_INFINITY) <= 10 ? 'critical' : (props.task.remaining_seconds ?? Number.POSITIVE_INFINITY) <= 30 ? 'warning' : 'normal')
 const visibleBlockers=computed(()=>(props.task.blockers??[]).filter(reason=>!(props.task.operation?.phase==='working'&&/^处置还需 \d+ 秒$/.test(reason))))
 </script>
@@ -21,13 +21,14 @@ const visibleBlockers=computed(()=>(props.task.blockers??[]).filter(reason=>!(pr
     <header><span>{{ task.responsible_role ?? '历史处置任务' }}</span><strong :data-overdue="task.overdue || task.completed_on_time===false">{{ task.status === 'completed' ? (task.completed_on_time===false?'超时核验':'已核验') : task.overdue ? '已超时 · 可补救' : `${task.remaining_seconds ?? task.deadline_seconds} 秒` }}</strong></header>
     <h3>{{ task.title }}</h3><p>{{ task.target }}</p>
     <div class="task-workflow__state"><AppIcon :name="task.status === 'completed' ? 'tasks' : 'target'" /><span>{{ label }}<template v-if="task.assignee"> · {{ task.assignee }}</template></span></div>
-    <ol v-if="task.kind" class="task-workflow__steps" aria-label="任务处置步骤"><li :data-done="!['waiting','pending'].includes(task.status)">接收</li><li :data-done="['verifying','completed'].includes(task.status)">到位</li><li :data-done="task.status === 'completed'">核验</li></ol>
-    <p v-if="task.staff_id">占用夜班岗位：{{task.staff_name??'夜班值守岗位'}}。完成或撤回接收后释放。</p><p v-if="task.evidence" class="task-workflow__evidence">结果证据：{{ task.evidence }}</p>
+    <ol v-if="task.kind" class="task-workflow__steps" aria-label="任务处置步骤"><li :data-done="!['waiting','pending'].includes(task.status)">接收</li><li :data-done="['verifying','completed'].includes(task.status)">到位</li><li v-if="task.action_report_required" :data-done="task.action_reported_at!=null">动作报告</li><li :data-done="task.status === 'completed'">核验</li></ol>
+    <p v-if="task.staff_id">作业岗位：{{task.staff_name??'夜班值守岗位'}}。{{task.action_reported_at!=null||task.status==='completed'?'岗位已释放；责任与证据记录保留。':task.action_report_required?'完成动作报告后释放，核验仍由当前责任人提交。':'完成核验或撤回接收后释放。'}}</p><p v-if="task.evidence" class="task-workflow__evidence">结果证据：{{ task.evidence }}</p>
     <div v-if="task.operation && task.status==='verifying'" class="task-workflow__operation" aria-live="polite">
-      <strong>{{task.operation.phase==='working'?`处置计时：还需 ${task.operation.remaining_seconds} 秒`:'处置计时结束，核对下方条件后提交证据'}}</strong>
+      <strong>{{task.action_reported_at!=null?'动作已报告；作业岗位已释放，责任核验仍待完成':task.operation.phase==='working'?`处置计时：还需 ${task.operation.remaining_seconds} 秒`:task.action_report_required?'处置计时结束，请核对实际动作并报告结果':'处置计时结束，核对下方条件后提交证据'}}</strong>
       <progress :value="task.operation.elapsed_seconds" :max="Math.max(1,task.operation.duration_seconds)" aria-label="到位回执后的处置计时" />
       <p>计时以演练时钟为准；暂停时不推进。到位回执不代表虚拟人员已自动走到设备。</p>
     </div>
+    <p v-if="task.action_reported_at!=null" class="task-workflow__hint">报告时刻 {{Math.floor(task.action_reported_at)}} 秒 · {{task.action_report_evidence}}。现场效果已记录；核验完成后才计入任务成绩。</p>
     <p v-if="task.completed_on_time===false" class="task-workflow__hint">核验晚于截止时间，已保留处置证据，但不计按时得分。</p>
     <p v-if="!running && task.status !== 'completed'">当前不可提交。{{ readonly ? '正在查看历史过程或其他角色任务。' : '请等待导演开始或继续演练。' }}</p>
     <template v-if="!readonly && running && task.kind && task.status !== 'completed'">
@@ -42,14 +43,15 @@ const visibleBlockers=computed(()=>(props.task.blockers??[]).filter(reason=>!(pr
         <p>{{ task.assignee_id ? `已预派给 ${task.assignee}，接收前仍可改派。` : '指派后仅该成员可接收；状态会实时同步到手机端。' }}</p>
       </div>
       <p v-if="director" class="task-workflow__hint">{{ task.assignee_id ? '手机端接收后锁定执行人，总控不能覆盖。' : '也可由总控代办，系统会记录实际操作者。' }}</p>
-      <label v-if="task.status === 'verifying'" :for="`evidence-${task.id}`">处置结果（至少 6 字）<textarea :id="`evidence-${task.id}`" v-model="evidence" maxlength="500" placeholder="说明已完成的操作及核验结果" /></label>
+      <label v-if="task.status === 'verifying'" :for="`evidence-${task.id}`">{{task.action_report_required?(task.action_reported_at==null?'动作报告（至少6字）':'核验证据（至少6字）'):'处置结果（至少 6 字）'}}<textarea :id="`evidence-${task.id}`" v-model="evidence" maxlength="500" placeholder="说明已完成的操作及核验结果" /></label>
       <ul v-if="task.status === 'verifying' && visibleBlockers.length" class="task-workflow__blockers"><li v-for="reason in visibleBlockers" :key="reason">{{ reason }}</li></ul>
       <ul v-if="task.status === 'pending' && task.acceptance_blockers?.length" class="task-workflow__blockers" role="status"><li v-for="reason in task.acceptance_blockers" :key="reason">{{reason}}</li></ul>
       <div class="task-workflow__actions">
         <button v-if="task.status === 'pending' && (!director || !task.assignee_id)" type="button" :disabled="busy || task.can_accept === false" @click="emit('action', 'accept', '')">{{ director ? '总控代办此任务' : '接收任务' }}</button>
-        <button v-if="['executing','verifying'].includes(task.status)" type="button" :disabled="busy" @click="emit('action','release','撤回当前接收并释放值守岗位')">撤回接收</button>
+        <button v-if="['executing','verifying'].includes(task.status) && task.action_reported_at==null" type="button" :disabled="busy" @click="emit('action','release','撤回当前接收并释放值守岗位')">撤回接收</button>
         <button v-if="task.status === 'executing'" type="button" :disabled="busy" @click="emit('action', 'arrive', '')">回执已到达目标</button>
-        <button v-if="task.status === 'verifying'" type="button" :disabled="busy || !task.can_submit || evidence.trim().length < 6" @click="emit('action', 'submit', evidence)">提交核验证据</button>
+        <button v-if="task.status==='verifying' && task.action_report_required && task.action_reported_at==null" type="button" :disabled="busy || !task.can_report || evidence.trim().length<6" @click="emit('action','report',evidence)">报告动作完成</button>
+        <button v-if="task.status === 'verifying' && (!task.action_report_required || task.action_reported_at!=null)" type="button" :disabled="busy || !task.can_submit || evidence.trim().length < 6" @click="emit('action', 'submit', evidence)">提交核验证据</button>
         <button v-if="director && task.target_position" type="button" @click="emit('locate')">定位目标</button>
         <button v-if="director && task.kind === 'broadcast'" type="button" :disabled="busy" @click="emit('dispatch')">派机器人到入口</button>
       </div>

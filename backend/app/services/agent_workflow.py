@@ -484,7 +484,9 @@ def approve(session, drill, run, candidate_id, revision, identity):
 def advance_run(session, run, identity):
     if run.status not in OPERATING: return
     owner, now = str(uuid4()), datetime.now(UTC)
-    acquired = session.execute(update(AgentRun).where(AgentRun.id == run.id, AgentRun.status.in_(OPERATING),
+    # The database arbitrates this race. SQLite reloads timestamps without a
+    # timezone; evaluating the predicate against loaded ORM objects can crash.
+    acquired = session.execute(update(AgentRun).execution_options(synchronize_session=False).where(AgentRun.id == run.id, AgentRun.status.in_(OPERATING),
         or_(AgentRun.lease_owner.is_(None), AgentRun.lease_expires_at <= now)).values(
             lease_owner=owner, lease_expires_at=now + timedelta(seconds=30), execution_epoch=AgentRun.execution_epoch + 1))
     session.commit()

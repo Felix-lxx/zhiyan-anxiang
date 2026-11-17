@@ -31,6 +31,8 @@ def guidance_view(data, task):
         next_action = ('accept', '由指定执行人或对应角色参演者接收任务')
     elif status == 'executing':
         next_action = ('arrive', '核对实际位置后回执到位')
+    elif task.get('can_report'):
+        next_action = ('report', '报告实际动作结果，现场状态更新后再提交核验证据')
     elif can_submit:
         next_action = ('submit', '核对处置事实，填写证据后提交核验')
     else:
@@ -51,7 +53,8 @@ def guidance_view(data, task):
             'event_sequence': data.get('latest_event_sequence', 0), 'drill_status': data['status'],
             'task': {key: deepcopy(task.get(key)) for key in ('id', 'title', 'kind', 'target', 'status',
                 'responsible_role', 'assignee', 'assignee_id', 'verification_ready', 'can_submit', 'can_accept', 'acceptance_blockers',
-                'target_device_id', 'target_floor', 'target_position', 'operation')},
+                'target_device_id', 'target_floor', 'target_position', 'operation',
+                'action_report_required', 'can_report', 'action_reported_at', 'action_report_evidence')},
             'next_action': {'kind': next_action[0], 'label': next_action[1]},
             'can_submit': can_submit, 'blockers': blockers, 'conditions': conditions,
             'steps': list(task.get('steps') or []),

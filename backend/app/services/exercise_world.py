@@ -80,6 +80,8 @@ def capture_world(session: Session, version: SceneVersion, parameters_override: 
     world = add_spatial_layout({"scenario_contract": contract.payload(), "response_staff": response_staff, "scene_version_id": version.id, "community_version_id": version.community_version_id, "parameters": parameters, "objects": objects, "residents": residents, "fire_source": fire_source, "fire_origin": deepcopy(fire_source["position"]), "robot_origin": station["entry"], "inspection_target": deepcopy(fire_source["access_position"]), "broadcast_target": home["entry"], "tasks": tasks, "road_network": {"nodes": nodes, "edges": edges}}, home)
     from app.services.community_training import freeze_community
     freeze_community(world)
+    from app.services.task_workflow import freeze_workflow
+    freeze_workflow(world)
     from app.services.water_resources import freeze_resources, vehicle_obstacles
     world['water_resources'] = freeze_resources(world)
     world['road_network']['vehicle_obstacles'] = vehicle_obstacles(world)
@@ -105,6 +107,7 @@ def capture_world(session: Session, version: SceneVersion, parameters_override: 
 
 def projected_tasks(world: dict, events: list, elapsed: int, simulation: dict, robot: dict | None) -> list[dict]:
     from app.services.task_staff import acceptance_blockers
+    from app.services.task_workflow import requires_action_report
     confirmed = next((e.elapsed_seconds for e in events if e.event_type == "robot.alarm_confirmed"), None)
     result = []
     for source in world["tasks"]:
@@ -115,6 +118,8 @@ def projected_tasks(world: dict, events: list, elapsed: int, simulation: dict, r
         accepted = next((e for e in history if e.event_type == "task.accepted"), None)
         arrived = next((e for e in history if e.event_type == "task.arrived"), None)
         done = next((e for e in history if e.event_type == "task.completed"), None)
+        reported = next((e for e in history if e.event_type == 'task.action_reported'), None)
+        report_required = requires_action_report(world, source)
         remaining = source['deadline_seconds'] if confirmed is None else source['deadline_seconds'] - max(0, elapsed - confirmed)
         state = "completed" if done else "waiting" if confirmed is None else "verifying" if arrived else "executing" if accepted else "pending"
         blockers = []
@@ -128,6 +133,9 @@ def projected_tasks(world: dict, events: list, elapsed: int, simulation: dict, r
             blockers.append("请先接收任务并回执到位")
         elif elapsed - arrived.elapsed_seconds < source["duration_seconds"]:
             blockers.append(f"处置还需 {source['duration_seconds'] - (elapsed - arrived.elapsed_seconds)} 秒")
+        can_report = bool(report_required and arrived and not blockers and not reported and not done)
+        if report_required and not reported and not done:
+            blockers.append('请先报告现场动作完成，再提交核验证据')
         owner = accepted or assigned
         staff_id = accepted.payload.get('staff_id') if accepted else None
         source = {**source, 'staff_id':staff_id,
@@ -143,7 +151,10 @@ def projected_tasks(world: dict, events: list, elapsed: int, simulation: dict, r
             and math.dist((e.payload.get('x', -100), e.payload.get('y', -100)), (source['target_position']['x'], source['target_position']['y'])) <= 3), None)
         result.append({**source, "status": state, "overdue": confirmed is not None and remaining < 0 and not done, "remaining_seconds": max(0, remaining), "assignee": owner.actor if owner else None, "assignee_id": owner.payload.get("participant_id") if owner else None, "assignment_locked": accepted is not None, "blockers": blockers, "can_submit": bool(arrived and not blockers and not done), "evidence": done.payload.get("evidence") if done else None, "completed_at": done.elapsed_seconds if done else None,
                        'verification_ready': bool(arrived and not blockers and not done), 'operation': operation,
-                       'action_completed_at': action_event.elapsed_seconds if action_event else None,
+                       'action_report_required': report_required, 'can_report': can_report,
+                       'action_reported_at': reported.elapsed_seconds if reported else None,
+                       'action_report_evidence': reported.payload.get('evidence') if reported else None,
+                       'action_completed_at': reported.elapsed_seconds if reported else action_event.elapsed_seconds if action_event else None,
                        'deadline_at_seconds': confirmed + source['deadline_seconds'] if confirmed is not None else None,
                        'completed_on_time': done.elapsed_seconds <= confirmed + source['deadline_seconds'] if done and confirmed is not None else None})
     return result

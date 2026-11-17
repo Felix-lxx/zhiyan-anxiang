@@ -30,6 +30,7 @@ export interface CommandReceipt { id: string; kind: string; label: string; actor
 
 export interface Drill {
   id: string
+  scene_id?: string
   name: string
   status: string
   time_scale: number

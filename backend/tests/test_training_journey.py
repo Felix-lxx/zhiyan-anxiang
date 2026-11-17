@@ -58,6 +58,15 @@ def test_paused_and_ended_do_not_claim_movement_or_completion():
     assert ended["completion"]["blockers"] and not ended["completion"]["ready"]
 
 
+def test_ready_action_report_has_one_distinct_entry_and_remains_unverified():
+    values = state(tasks=[dict(id='gas', title='关闭燃气', status='verifying', can_report=True,
+                              can_submit=False, blockers=['先报告动作'], remaining_seconds=20)])
+    journey = project_journey(**values)
+    entries = [a for a in journey['actions'] if a['target_id'] == 'gas']
+    assert len(entries) == 1 and entries[0]['id'] == 'report-gas'
+    assert not journey['completion']['ready']
+
+
 def test_frozen_briefing_is_not_rewritten_by_live_projection():
     values = state()
     values["world"]["training_briefing"] = build_briefing(values["world"])

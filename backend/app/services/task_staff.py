@@ -20,7 +20,7 @@ def occupations(events):
         data = event['payload'] if isinstance(event, dict) else event.payload
         if kind == 'task.accepted' and data.get('staff_id'):
             active[data['task_id']] = data
-        elif kind in {'task.completed', 'task.released'}:
+        elif kind in {'task.completed', 'task.released', 'task.action_reported'}:
             active.pop(data.get('task_id'), None)
     return active
 

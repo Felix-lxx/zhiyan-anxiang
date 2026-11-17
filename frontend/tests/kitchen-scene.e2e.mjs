@@ -48,6 +48,8 @@ try{
   assert.equal(await room.inputValue(),'west')
   await page.screenshot({path:resolve(output,`prepare-${width}.png`),fullPage:true})
   await page.goto(base+'/tests/kitchen-director.html')
+  const tools=page.getByRole('button',{name:'现场工具',exact:true})
+  if(await tools.isVisible()&&await tools.getAttribute('aria-expanded')==='false')await tools.click()
   const control=page.getByRole('button',{name:'楼内烟气与门控',exact:true});await control.waitFor();await control.click()
   const panel=page.getByRole('region',{name:'楼内烟气与房门'});await panel.waitFor()
   await panel.getByText(/门洞净宽 0.90 米/).first().waitFor()

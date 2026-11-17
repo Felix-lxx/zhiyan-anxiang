@@ -22,7 +22,7 @@ class EnvironmentTimeline:
         changes = []
         for event in events:
             kind, data, at = event["event_type"], event["payload"], event["elapsed_seconds"]
-            if kind in {"inject.hydrant_failure", "participant.resource_ready", "task.completed", "vehicle.action_stopped", "vehicle.action_started"}:
+            if kind in {"inject.hydrant_failure", "participant.resource_ready", "task.completed", "task.action_reported", "vehicle.action_stopped", "vehicle.action_started"}:
                 changes.append((at, event["sequence"], kind, data))
             if kind == "vehicle.action_started" and data.get("action") == "spray":
                 changes.append((at + data["duration_seconds"], -1, "spray.expired", data))
@@ -52,7 +52,7 @@ class EnvironmentTimeline:
                         sources[source_id]['state'] = 'failed'
                     failed = sources.get(primary_id, {}).get('state') == 'failed'
             elif kind == "participant.resource_ready": resource = True
-            elif kind == "task.completed" and data.get("kind") in {"power_off", "gas_off"}:
+            elif (kind == 'task.action_reported' or kind == 'task.completed' and world.get('task_workflow_version', 1) < 2) and data.get("kind") in {"power_off", "gas_off"}:
                 power = True
                 if data['kind'] == 'power_off': electric_off = True
                 if data['kind'] == 'gas_off': gas_off = True

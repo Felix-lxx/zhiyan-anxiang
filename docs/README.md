@@ -31,9 +31,9 @@
 
 ## 最新证据
 
-- [当前交付与验证](reports/current-release.md)：两案例真实实跑、清点岗位阻塞修复、手机/平板工作区、初始355项后端及修复后49项回归、78项前端与29组浏览器检查。
+- [当前交付与验证](reports/current-release.md)：两案例92/91分真实实跑、责任作业与两端场次、租约恢复、页面检查；初始359项后端、修复后38项回归、78项前端与31组浏览器专项。
 - [三维材质与资源](reports/model-assets.md)：资源来源、许可及材质落地记录。
 
-[UI 设计参考](ui-design/UI界面样式图索引.md)只保留六个核心页面的参考图，不作为当前功能验收截图。README 图片来自实际运行。
+界面以[现行设计规范](../DESIGN.md)、[助手职责](scene-assistant/DESIGN.md)及[实际运行证据](reports/current-release.md)为准。旧ImageGen图稿已由真实页面截图替代，不再随当前版本交付。
 
-已被当前记录替代的11月10日、11月15日验收明细保留在Git历史，可用 `git log --all -- docs` 或 `git show c07c91f:docs/reports/current-release.md` 查询。整理不重写历史，不删除运行数据库、第三方许可或有效回归测试。
+被替代的阶段验收与设计图可用`git log --all -- docs`查询；上版记录可用`git show 49ca914:docs/reports/current-release.md`读取。整理不重写历史，不删除运行数据库、第三方许可、历史兼容代码或有效回归测试。

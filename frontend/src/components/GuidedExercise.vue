@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, ref, watch } from 'vue'
 import TaskWorkflow from './TaskWorkflow.vue'
-import type { ExerciseTask } from '../domain/task'
+import type { ExerciseTask, TaskActionKind } from '../domain/task'
 import AppIcon from './AppIcon.vue'
 import '../training.css'
 
@@ -25,7 +25,7 @@ const emit = defineEmits<{
   dispatch: [task: ExerciseTask]; locate: [task: ExerciseTask]; broadcast: []; assist: [ids: string[]]
   assign: [taskId: string, participantId: string]
   evacuate: [ids: string[], exit: 'north' | 'south']; focus: [id: string]
-  task: [id: string, action: 'accept' | 'arrive' | 'submit' | 'release', evidence: string]
+  task: [id: string, action: TaskActionKind, evidence: string]
   block: [id: string]; reopen: [id: string]; seek: [time: number]
 }>()
 const selectedRoad = ref(''), selectedPerson = ref('')
@@ -57,12 +57,13 @@ const indoorMoving = computed(() => indoors.value.filter(p => ['corridor','stair
 const indoorWaiting = computed(() => Math.max(0, indoors.value.length - indoorMoving.value))
 const liveScore = computed(() => props.drill.score?.total_score ?? props.drill.score_preview?.total_score ?? 0)
 const weakestScore = computed(() => [...(props.drill.score?.details ?? props.drill.score_preview?.details ?? [])].sort((a,b) => ((b.max_score ?? b.score)-b.score)-((a.max_score ?? a.score)-a.score))[0])
-const lastDecision = computed(() => props.drill.events.find(e => ['resident.command','inject.channel_blocked','road.reopened','robot.broadcast_completed','task.completed'].includes(e.event_type)))
+const lastDecision = computed(() => props.drill.events.find(e => ['resident.command','inject.channel_blocked','road.reopened','robot.broadcast_completed','task.action_reported','task.completed'].includes(e.event_type)))
 const consequence = computed(() => {
   if (lastDecision.value?.event_type === 'robot.broadcast_completed') return '广播已经生效。看楼层圆点从等待转为准备、下楼，再到室外；广播不会让所有人立即出现在出口。'
   if (lastDecision.value?.event_type === 'inject.channel_blocked') return `封锁已写入当前路网。现在有 ${people.value.filter(p => p.status !== 'evacuated' && !p.route_reachable).length} 人的路线不可达；仍可达的人沿新路线继续移动。`
   if (lastDecision.value?.event_type === 'road.reopened') return '路段已恢复通行，机器人和居民重新规划；他们从当前位置继续，不会瞬间到达。'
-  if (lastDecision.value?.event_type === 'task.completed') return '核验证据已保存。能源切断任务会减缓后续火势增长，既有烟气暴露不会被清零。'
+  if (lastDecision.value?.event_type === 'task.action_reported') return '现场动作报告已记录，能源与岗位状态已更新；责任任务仍需核验，既有烟气暴露保留。'
+  if (lastDecision.value?.event_type === 'task.completed') return '核验证据已保存。环境效果按本场冻结规则计算，已报告动作不重复施加，既有烟气暴露保留。'
   return `指令已生效。当前楼内 ${indoors.value.length} 人，室外 ${outside.value.length} 人；下楼、会合和沿路行走都需要演练时间。`
 })
 const stage = computed(() => {

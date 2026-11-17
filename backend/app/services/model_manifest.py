@@ -14,6 +14,7 @@ def freeze_model_manifest(world):
         'kitchen_equipment': indoor.get('equipment_layout_version'),
         'residential_units': (world.get('residential_units') or {}).get('version'),
         'scoring': 4,
+        'task_workflow': 'action_report_v2' if world.get('task_workflow_version', 1) >= 2 else 'receipt_v1',
     }
 
 

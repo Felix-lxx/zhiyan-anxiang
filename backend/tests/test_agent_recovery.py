@@ -1,6 +1,7 @@
 """A revision changes future decisions, not already accepted physical actions."""
 from types import SimpleNamespace
 from copy import deepcopy
+from datetime import UTC, datetime, timedelta
 
 import pytest
 from sqlalchemy import select
@@ -11,6 +12,28 @@ from app.models.operations import DrillCommand, DrillEvent
 from app.services.agent_workflow import advance_run
 from test_agent_workflow import proposal, robot_proposal
 from test_exercise_world import exercise  # noqa: F401
+
+
+@pytest.mark.parametrize('expired', [False, True])
+def test_persisted_worker_lease_recovers_without_stealing_or_duplicate_commands(exercise, expired):
+    client, headers, _, root, *_ = exercise
+    run, candidate = robot_proposal(exercise)
+    response = client.post(root+'/agent/runs/'+run['id']+'/actions', headers=headers,
+        json={'action':'approve', 'revision':1, 'candidate_id':candidate['id']})
+    assert response.status_code == 200, response.text
+    with operations.SessionLocal() as db:
+        record = db.get(AgentRun, run['id'])
+        record.lease_owner = 'previous-worker'
+        record.lease_expires_at = datetime.now(UTC) + timedelta(minutes=-1 if expired else 5)
+        db.commit()
+        db.refresh(record)  # Exercise the persisted SQLite timestamp, not a fresh Python value.
+        epoch = record.execution_epoch
+        commands = list(db.scalars(select(DrillCommand.command_id)))
+        advance_run(db, record, SimpleNamespace(username='admin'))
+        db.refresh(record)
+        assert record.execution_epoch == epoch + int(expired)
+        assert record.lease_owner == (None if expired else 'previous-worker')
+        assert list(db.scalars(select(DrillCommand.command_id))) == commands
 
 
 @pytest.mark.parametrize("arrive_during_review", [False, True])

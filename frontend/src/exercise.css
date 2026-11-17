@@ -77,19 +77,19 @@
 .task-workflow > header strong { font-size: 14px; color: #e0bb63; white-space: nowrap; font-variant-numeric:tabular-nums; }
 .task-workflow > header strong[data-overdue='true'] { color: #efad8b; }
 .task-workflow h3 { margin: 10px 0 8px; font-size: 18px; line-height: 1.45; }
-.task-workflow p { margin: 8px 0; font-size: 14px; line-height: 1.65; }
+.task-workflow p { margin: 8px 0; font-size: 16px; line-height: 1.65; overflow-wrap: anywhere; }
 .task-workflow__state { display: flex; align-items: center; gap: 8px; font-size: 14px; line-height: 1.5; }
 .task-workflow__state .app-icon { flex-shrink: 0; width: 18px; }
 .task-workflow__steps { display: flex; gap: 12px; list-style: none; padding: 0; margin: 16px 0; counter-reset: step; }
 .task-workflow__steps li { flex: 1; font-size: 14px; border-bottom: 2px solid var(--exercise-line, #ccd6cc); padding-bottom: 8px; color: var(--exercise-muted, #a9bbae); }
 .task-workflow__steps li[data-done='true'] { border-color: #75ae85; color: #7cb892; }
-.task-workflow label { display: grid; gap: 8px; margin-top: 14px; font-size: 14px; }
+.task-workflow label { display: grid; gap: 8px; margin-top: 14px; font-size: 16px; }
 .task-workflow textarea { width: 100%; resize: vertical; min-height: 90px; padding: 10px; font-size: 16px; line-height: 1.5; color: inherit; background: transparent; border: 1px solid var(--exercise-line, #92a493); border-radius: 6px; }
 .task-workflow textarea::placeholder { color: var(--exercise-muted, #52665a); }
 .task-workflow__actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 14px; }
-.task-workflow__actions button { min-height: 44px; padding: 10px 12px; border: 1px solid #577962; background: #244b37; color: #ecf4e9; border-radius: 6px; font-size: 14px; }
+.task-workflow__actions button { min-height: 44px; padding: 10px 12px; border: 1px solid #577962; background: #244b37; color: #ecf4e9; border-radius: 6px; font-size: 16px; }
 .task-workflow__actions button:disabled { opacity: .45; cursor: not-allowed; }
-.task-workflow__blockers { padding-left: 20px; font-size: 13px; line-height: 1.65; }
+.task-workflow__blockers { padding-left: 20px; font-size: 14px; line-height: 1.65; overflow-wrap: anywhere; }
 .task-workflow__hint { font-size: 14px !important; }
 .task-workflow__deadline{display:flex;align-items:flex-start;gap:8px;padding:12px 0;border-block:1px solid #8f7744;color:#f0d9a4;font-size:16px!important;line-height:1.55}
 .task-workflow__deadline .app-icon{flex:0 0 auto;margin-top:3px}

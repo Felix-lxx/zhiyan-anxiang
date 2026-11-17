@@ -15,7 +15,16 @@ try {
   async function get(path){const r=await context.request.get(api+path,{headers});assert.ok(r.ok(),path);return r.json()}
   const catalog=await get('/knowledge/documents'),doc=catalog.items.find(item=>item.id==='builtin-household-gas-response-01')
   assert.ok(doc);checks.builtinDocuments=catalog.items.filter(item=>item.builtin).length
-  const search=await context.request.post(api+'/knowledge/search',{headers,data:{query:'燃气泄漏 电器',scenario:'kitchen_fire'}})
+  const searchData={headers,data:{query:'燃气泄漏 电器',scenario:'kitchen_fire'}}
+  let search=await context.request.post(api+'/knowledge/search',searchData)
+  if(search.status()===429){
+    const retryAfter=Number(search.headers()['retry-after'])
+    assert.ok(Number.isFinite(retryAfter)&&retryAfter>0&&retryAfter<=60,'Admission returns a bounded retry time')
+    console.log(`Knowledge admission: 429; respecting Retry-After ${retryAfter}s before one retry`)
+    await page.waitForTimeout(retryAfter*1000)
+    search=await context.request.post(api+'/knowledge/search',searchData)
+  }
+  assert.ok(search.ok(),`Knowledge search: ${search.status()} ${await search.text()}`)
   const hits=(await search.json()).hits;assert.ok(hits.some(item=>item.document_id===doc.id));checks.gasRetrieval=true
   await page.setViewportSize({width:1440,height:900})
   await page.goto(`${base}/projects?section=knowledge&document=${doc.id}&version=${doc.versions[0].id}`)

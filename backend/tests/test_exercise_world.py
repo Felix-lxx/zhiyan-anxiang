@@ -38,8 +38,10 @@ def exercise(client, monkeypatch):
 
 
 def test_frozen_configuration_drives_population_geometry_and_old_replay(exercise):
-    client, headers, demo, root, _, _, clock, tick, start = exercise
+    client, headers, demo, root, public, code, clock, tick, start = exercise
     first = tick(0)
+    assert first['scene_id'] == demo['scene_id']
+    assert client.get(public+'?code='+code).json()['scene_id'] == demo['scene_id']
     assert first["simulation"]["summary"]["total"] == 60
     world = first["simulation"]["world"]
     assert len(world["objects"]) == 14

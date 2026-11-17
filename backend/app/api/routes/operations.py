@@ -234,6 +234,17 @@ def perform_task(session: Session, drill: DrillSession, task_id: str, payload: T
         raise HTTPException(409, "请先接收此任务。")
     if payload.action == 'release' and task['status'] not in {'executing', 'verifying'}:
         raise HTTPException(409, '只能撤回已接收但尚未核验的任务。')
+    if payload.action == 'release' and task.get('action_reported_at') is not None:
+        raise HTTPException(409, '现场动作已报告，不能撤销已发生的事实；请继续提交核验证据。')
+    if payload.action == 'report':
+        if not task.get('action_report_required'):
+            raise HTTPException(409, '本任务沿用原核验流程，不单独接收动作报告。')
+        if task.get('action_reported_at') is not None:
+            return data
+        if not task.get('can_report'):
+            raise HTTPException(409, '请先接收、回执到位并完成处置计时，再报告现场动作。')
+        if len(payload.evidence.strip()) < 6:
+            raise HTTPException(422, '请填写至少6字的现场动作结果，不能只报告到位。')
     if payload.action == "submit":
         if not task["can_submit"]:
             raise HTTPException(409, "；".join(task["blockers"]))
@@ -241,8 +252,8 @@ def perform_task(session: Session, drill: DrillSession, task_id: str, payload: T
             raise HTTPException(422, "请填写至少 6 个字的处置结果证据。")
     from app.services.task_staff import select_staff
     staff_id = select_staff(session, drill, data, task, member) if payload.action=='accept' else task.get('staff_id')
-    kind = {"accept": "accepted", "arrive": "arrived", "submit": "completed", 'release':'released'}[payload.action]
-    label = {"accept": "已接收", "arrive": "已回执到位", "submit": "核验完成", 'release':'已撤回接收并释放岗位'}[payload.action]
+    kind = {"accept": "accepted", "arrive": "arrived", "submit": "completed", 'release':'released', 'report':'action_reported'}[payload.action]
+    label = {"accept": "已接收", "arrive": "已回执到位", "submit": "核验完成", 'release':'已撤回接收并释放岗位', 'report':'已报告动作完成，等待核验'}[payload.action]
     append_event(session, drill, f"task.{kind}", member["name"], f"{task['title']}：{label}", {"task_id": task_id, "kind": task["kind"], "staff_id":staff_id, "participant_id": member["participant_id"], "role": member["role"], "evidence": payload.evidence.strip(), "target_object_id": task["target_object_id"]})
     commit_changes(session)
     return snapshot(session, drill)
@@ -879,7 +890,7 @@ def snapshot(session: Session, drill: DrillSession) -> dict:
                               simulation=simulation, tasks=visible_tasks, robot=live_robot,
                               commands=commands, events=all_events)
     return {
-        "id": drill.id, "name": drill_label(drill.name, world), "status": drill.status, "time_scale": drill.time_scale,
+        "id": drill.id, "scene_id": drill.scene_id, "name": drill_label(drill.name, world), "status": drill.status, "time_scale": drill.time_scale,
         "elapsed_seconds": elapsed, "participants": participant_state,
         "events": [{"id": e.id, "sequence": e.sequence, "event_type": e.event_type, "actor": e.actor, "message": e.message, "elapsed_seconds": e.elapsed_seconds, "payload": {k: v for k, v in e.payload.items() if k not in {"world", "token_hash", "participant_token"}}} for e in events],
         "robot": live_robot,

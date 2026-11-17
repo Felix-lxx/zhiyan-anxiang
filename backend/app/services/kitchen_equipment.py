@@ -77,8 +77,8 @@ def attach_kitchen_equipment(world):
 
 
 def equipment_state(model, gas_off):
-    """Projection only: task evidence controls the source valve, not every kitchen."""
+    """Project the source valve from its frozen report/evidence contract."""
     return [{'id': item['gas_valve']['id'], 'room_id': item['room_id'],
              'state': 'closed' if gas_off and item['room_id'] == model['source_zone_id'] else 'open',
-             'basis': 'task_evidence' if gas_off and item['room_id'] == model['source_zone_id'] else 'initial'}
+             'basis': model.get('action_basis', 'task_evidence') if gas_off and item['room_id'] == model['source_zone_id'] else 'initial'}
             for item in model.get('equipment_layouts', []) if item.get('gas_valve')]

@@ -2,6 +2,7 @@
 import type { DrillIndex, DrillEvent, DrillTask, Resident, Simulation, Robot, Drill, BranchComparison, SpatialIntent, SpatialPreview, CommandReceipt } from '../domain/drill'
 import { createApiClient } from '../api/client'
 import { connectLive, isNewerState } from '../api/live'
+import type { TaskActionKind } from '../domain/task'
 import type { AgentLiveState } from '../domain/agent'
 import { buildingReleaseSignals } from '../domain/agent'
 import { sendCommand } from '../api/commands'
@@ -435,7 +436,7 @@ async function commandResidents(context: { residentIds: string[]; exit: 'north' 
   if ((current.value?.engine_version ?? 1) >= 3) { closeFloatingPanels(); coachOpen.value=true; await nextTick(); await trainingLab.value?.previewCommand(context); return }
   await requestDrill('/residents', 'POST', { resident_ids: context.residentIds, exit: context.exit, action: context.action })
 }
-async function taskAction(taskId: string, action: 'accept' | 'arrive' | 'submit' | 'release', evidence: string): Promise<void> { const label = action==='release'?'已撤回接收并释放岗位；原有证据保留':action === 'accept' ? '任务已接收，请到目标点后回执到位' : action === 'arrive' ? '到位回执已记录，请提交处置证据' : '处置证据已核验，现场影响和过程评分已更新'; await requestDrill(`/tasks/${taskId}/actions`, 'POST', { action, evidence }, label) }
+async function taskAction(taskId: string, action: TaskActionKind, evidence: string): Promise<void> { const label = action==='report'?'动作报告已记录，现场已更新；核验仍待提交':action==='release'?'已撤回接收并释放岗位；原有证据保留':action === 'accept' ? '任务已接收，请到目标点后回执到位' : action === 'arrive' ? '到位回执已记录，请提交处置证据' : '处置证据已核验，现场影响和过程评分已更新'; await requestDrill(`/tasks/${taskId}/actions`, 'POST', { action, evidence }, label) }
 function taskAssignees(task: DrillTask) { return current.value?.participants.find(item => item.role === task.responsible_role)?.members?.filter(item => item.online) ?? [] }
 async function assignTask(taskId: string, participantId: string): Promise<void> { await requestDrill(`/tasks/${taskId}/assign`, 'POST', { participant_id: participantId }, '任务已同步给指定参演成员，等待其在手机端接收') }
 function locateTask(task: DrillTask): void { closeFloatingPanels(); arena.value?.focusTaskTarget(task) }

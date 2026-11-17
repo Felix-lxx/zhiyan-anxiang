@@ -37,6 +37,7 @@ def attach_indoor_environment(world):
         kitchen_door = next(item for item in doors if item['id']==dwelling['kitchen_door_id'])
         kitchen_door.update(kind='kitchen', label=dwelling['label']+'厨房门', dwelling_id=dwelling['id'])
     world['indoor_environment'] = {'model_version': 1, 'geometry_revision': 3, 'building_id': building_id, 'source_zone_id': source['location']['node_id'],
+                                 'action_basis': 'task_action_report' if world.get('task_workflow_version', 1) >= 2 else 'task_evidence',
                                  'zones': zones, 'links': links, 'doors': doors,
                                  'dwellings': dwellings,
                                  'node_zones':{node['id']:node.get('zone_id',node['id']) for node in graph['nodes'] if node.get('building_id')==building_id}}

@@ -1427,7 +1427,7 @@ textarea {
 .director-metrics div:last-child { border-right:0; }
 .director-metrics span { display:block; color:#9bb0aa; font-size:.68rem; }
 .director-metrics strong { display:block; margin-top:.18rem; color:#f3f7f4; font-size:1.05rem; font-variant-numeric:tabular-nums; }
-.director-metrics small { margin-left:.18rem; color:#89a49d; font-size:.62rem; }
+.director-metrics small { margin-left:.18rem; color:#a9c8be; font-size:14px; line-height:1.4; }
 .director-metrics i { position:absolute; right:0; bottom:0; left:0; height:2px; max-width:100%; background:#ff6b49; }
 .director-rail { position:absolute; z-index:11; top:4.7rem; right:.85rem; display:grid; gap:.38rem; width:3.15rem; }
 .director-rail button { position:relative; display:grid; place-items:center; width:3.15rem; height:3.15rem; border:1px solid rgba(92,138,129,.4); border-radius:.7rem; background:rgba(7,29,26,.9); color:#9db5af; cursor:pointer; backdrop-filter:blur(12px); }

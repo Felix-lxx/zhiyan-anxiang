@@ -59,7 +59,7 @@ export interface AgentCoordination {
   case_tasks?:{total:number;completed:number;waiting:number;pending:number;verification_ready:number;overdue:number;next:AgentCaseTask|null}
   next_action:{kind:'review'|'replan'|'rollcall'|'focus'|'robot'|'vehicle'|'observe'|'missions'|'indoor'|'households';label:string;reason:string;resident_id?:string|null;household_id?:string;door_id?:string;task_id?:string}
 }
-export interface AgentCaseTask { id:string;kind?:string;label:string;state:string;responsible_role:string;remaining_seconds:number|null;overdue:boolean;completed_on_time?:boolean|null;blockers:string[];verification_ready:boolean;operation_phase?:string|null;depends_on:string[];next_required_action:string;completion_rule:string;automation:'human_verified' }
+export interface AgentCaseTask { id:string;kind?:string;label:string;state:string;responsible_role:string;remaining_seconds:number|null;overdue:boolean;completed_on_time?:boolean|null;blockers:string[];verification_ready:boolean;operation_phase?:string|null;can_report?:boolean;action_reported_at?:number|null;depends_on:string[];next_required_action:string;completion_rule:string;automation:'human_verified' }
 export interface AgentRun {
   impact?:AgentImpact
   revision_context?:{from_revision:number;baseline:'approved'|'draft';at_seconds:number;impact:AgentImpact;previous_objective:string;previous_forbidden_exits:string[];new_objective?:string;new_forbidden_exits?:string[];candidates:Array<{candidate_id:string;changed_count:number;residents:Array<{resident_id:string;label:string;old_exit:string;new_exit:string;exit_changed:boolean;route_changed:boolean}>}>}|null

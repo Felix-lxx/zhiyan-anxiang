@@ -67,7 +67,7 @@ class ParticipantHeartbeat(BaseModel):
 
 
 class TaskAction(BaseModel):
-    action: str = Field(pattern=r"^(accept|arrive|submit|release)$")
+    action: str = Field(pattern=r"^(accept|arrive|report|submit|release)$")
     evidence: str = Field(default="", max_length=500)
     participant_token: str | None = Field(default=None, max_length=128)
 

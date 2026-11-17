@@ -116,7 +116,7 @@ export class IndoorFireVisuals {
         valve.position.copy(this.point(device.position.x,device.position.y,device.position.height));layer.add(valve)
         this.valves.set(device.id,hardware)
         this.register(valve,{title:device.label,type:'燃气阀',action:'indoor-device',deviceId:device.id,
-          detail:'打开 · 关闭状态需由处置任务证据核验。',x:device.position.x,y:device.position.y,
+          detail:'打开 · 尚未收到有效关闭处置记录。点击进入处置任务。',x:device.position.x,y:device.position.y,
           fireRoom:{floor:zone.floor,room:zone.id.endsWith(':east')?'east':'west'}})
       }
     }
@@ -171,7 +171,7 @@ export class IndoorFireVisuals {
       if(!valve)continue
       const closed=device.state==='closed'
       valve.setClosed(closed)
-      if(valve.group.userData.selection)valve.group.userData.selection.detail=closed?'关闭 · 处置证据已核验。点击查看任务记录。':'打开 · 尚未核验关闭。点击进入处置任务。'
+      if(valve.group.userData.selection)valve.group.userData.selection.detail=closed?'关闭 · 查看动作报告与任务核验记录。':'打开 · 尚未收到有效关闭处置记录。点击进入处置任务。'
     }
   }
 

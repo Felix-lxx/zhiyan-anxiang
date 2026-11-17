@@ -56,7 +56,7 @@ def archive_drill(session, drill, data, owner, *, backfill=False):
     if unresolved['tasks']: findings.append(f"{len(unresolved['tasks'])} 项责任任务尚未完成核验。")
     if metrics['fire_intensity']>0: findings.append('结束时仍有仿真火情，疏散成绩不表示灭火完成。')
     important = [e for e in events if e.event_type in {'resident.command','indoor.door_changed',
-        'task.accepted','task.arrived','task.completed','task.overdue','road.reopened','road.blocked',
+        'task.accepted','task.arrived','task.action_reported','task.completed','task.overdue','road.reopened','road.blocked',
         'inject.channel_blocked','inject.hydrant_failure','inject.resident_missing','vehicle.action_started',
         'vehicle.action_stopped','vehicle.dispatched','vehicle.arrived','robot.alarm_confirmed',
         'robot.broadcast_completed','drill.ended'}][-24:]
@@ -78,7 +78,8 @@ def archive_drill(session, drill, data, owner, *, backfill=False):
             'building_id','floor','node_id','edge_id','exit','queue_seconds','smoke_exposure',
             'smoke_exposed_at_seconds','smoke_exposed_location','assembly_arrived_at_seconds')) for person in people],
         'tasks': [fields(task, ('id','title','kind','status','responsible_role','assignee','target_object_id',
-            'deadline_at_seconds','action_completed_at','completed_on_time','evidence','blockers')) for task in tasks],
+            'staff_id','staff_name','deadline_at_seconds','action_completed_at','action_report_required',
+            'action_reported_at','action_report_evidence','completed_at','completed_on_time','evidence','blockers')) for task in tasks],
         'fire': deepcopy(sim['fire']),
         'indoor': deepcopy(sim.get('environment', {}).get('indoor')),
         'robot': fields(data.get('robot') or {}, ('name','state','battery','x','y','current_task','reason')),

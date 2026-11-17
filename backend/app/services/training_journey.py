@@ -97,6 +97,10 @@ def project_journey(*, world: dict | None, status: str, elapsed: int,
         if missing or blocked:
             person = (missing or blocked)[0]
             offer("locate", f"定位{person['label']}", "人员失联或当前路线不可达，请核对位置与通道。", "locate", person["id"], "urgent")
+        ready_reports = [t for t in pending if t.get('can_report')]
+        for task in sorted(ready_reports, key=lambda t: (not t.get('overdue', False), t.get('remaining_seconds', 0)))[:1]:
+            offer('report-' + task['id'], '报告动作：' + task['title'],
+                  '核对实际动作后报告结果；报告更新现场并释放作业岗位，任务仍需核验。', 'task', task['id'], 'urgent')
         ready_tasks = [t for t in pending if t.get("can_submit")]
         for task in sorted(ready_tasks, key=lambda t: (not t.get("overdue", False), t.get("remaining_seconds", 0)))[:1]:
             offer("verify-" + task["id"], "提交核验：" + task["title"],
@@ -107,7 +111,7 @@ def project_journey(*, world: dict | None, status: str, elapsed: int,
             offer("rollcall", f"清点 {len(arrivals)} 名到场居民", "只核对实际到场人员，未到场人员仍保留待寻找状态。", "rollcall")
         if alarm and (need_help or not_ordered):
             offer("plan", "安排分流与重点护送", f"{len(not_ordered)} 人待安排撤离，{len(need_help)} 名重点人员待接应；先比较方案，再批准执行。", "plan")
-        actionable = [t for t in pending if t.get("status") in {"pending", "executing", "verifying"} and not t.get("can_submit")
+        actionable = [t for t in pending if t.get("status") in {"pending", "executing", "verifying"} and not t.get("can_submit") and not t.get('can_report')
                       and not (t.get('status') == 'pending' and t.get('can_accept') is False)]
         if actionable:
             task = min(actionable, key=lambda t: (not t.get("overdue", False), t.get("remaining_seconds", 0)))

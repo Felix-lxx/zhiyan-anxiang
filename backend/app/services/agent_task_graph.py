@@ -73,6 +73,8 @@ def _task_next_action(task):
         return '已完成现场动作并核验归档'
     if task['status'] == 'waiting':
         return '等待火情确认后下发责任任务'
+    if task.get('can_report'):
+        return '现场操作计时已满足，请报告实际动作结果；核验另行提交'
     if task.get('verification_ready'):
         return '现场条件已满足，请提交核验证据'
     blockers = task.get('blockers', [])
@@ -96,6 +98,8 @@ def case_task_view(steps, data):
             'completed_on_time': task.get('completed_on_time'),
             'blockers': task.get('blockers', []),
             'verification_ready': task.get('verification_ready', False),
+            'can_report': task.get('can_report', False),
+            'action_reported_at': task.get('action_reported_at'),
             'operation_phase': (task.get('operation') or {}).get('phase'),
             'depends_on': _task_dependencies(task, steps),
             'next_required_action': _task_next_action(task),

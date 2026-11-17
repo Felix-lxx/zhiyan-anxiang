@@ -22,6 +22,7 @@ flowchart TB
 - 路由层不实现仿真规则；新增规则应进入 `backend/app/services/`。
 - Three.js 只消费服务端确认的状态，不预测或直接修改演练结果。
 - 写操作必须保留命令、事件或评分证据；不要只修改浏览器状态。
+- 任务动作在前端统一引用`domain/task.ts`的`TaskActionKind`，不在各页面复制类型；后端输入仍由`schemas/operations.py`校验。
 - 新增服务不得反向依赖 Vue 或 HTTP 细节。现有少数历史适配点列在 ADR 中，应逐步迁移而不是复制。
 
 ## 提交前检查
@@ -43,6 +44,8 @@ npm run build
 若变更导演台、手机参演端或 Three.js 表现，还应检查 1440px、1024px、390px 宽度下的主操作路径；浮层应有独立滚动容器，不能遮挡当前必须操作的控件。
 
 真实浏览器脚本在`frontend/tests/*.e2e.mjs`，按注释区分真实隔离服务与协议/布局替身。执行`npm run test:e2e:map`、`test:e2e:realtime`或`test:e2e:account`前，显式设置`QA_BASE_URL`、`QA_API_URL`、`QA_PASSWORD`，并指向可丢弃数据库；`test:e2e:models`检查本地模型、包围盒、资源失败回退和人物/车辆操作，不要求正式业务账号。浏览器模块路径可用`PLAYWRIGHT_MODULE`，本机浏览器路径可用`QA_BROWSER_PATH`。不要把协议替身的通过记录写成外部服务接入成功。
+
+任务报告与双端场次回归使用`npm run test:e2e:tasks`，必须先配置指向可丢弃服务的`QA_BASE_URL`、`QA_API_URL`和`QA_PASSWORD`。该入口实际创建场景、场次和参演身份，验证刷新、返回、动作报告、岗位释放、核验与回放；不能对生产环境运行。
 
 ## Pull Request 要求
 

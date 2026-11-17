@@ -11,14 +11,14 @@ import TaskWorkflow from './TaskWorkflow.vue'
 import CommunityPlan from './CommunityPlan.vue'
 import type { DrillIndex, Simulation } from '../domain/drill'
 import '../atlas-participant.css'
-import type { ExerciseTask } from '../domain/task'
+import type { ExerciseTask, TaskActionKind } from '../domain/task'
 
 interface Scene { id: string; name: string; status: string }
 type Task = ExerciseTask
 interface EventItem { id: string; sequence: number; message: string; actor: string; event_type: string; elapsed_seconds: number }
-interface Drill { state_version?: string; id: string; name: string; status: string; elapsed_seconds: number; tasks: Task[]; events: EventItem[]; engine_version?: number; simulation: { community?:CommunityTraining|null;environment?:{response_staff?:DutyStaff[]}; residents?: Array<{ id: string; label: string; status: string; counted?: boolean; last_location?: string; search_responsible?: string }>; fire: { intensity: number }; summary: { total: number; evacuated: number; moving: number; missing: number; smoke_exposed?: number } } }
+interface Drill { state_version?: string; id: string; scene_id?: string; name: string; status: string; elapsed_seconds: number; tasks: Task[]; events: EventItem[]; engine_version?: number; simulation: { community?:CommunityTraining|null;environment?:{response_staff?:DutyStaff[]}; residents?: Array<{ id: string; label: string; status: string; counted?: boolean; last_location?: string; search_responsible?: string }>; fire: { intensity: number }; summary: { total: number; evacuated: number; moving: number; missing: number; smoke_exposed?: number } } }
 
-const props = defineProps<{ apiBaseUrl: string; accessToken?: string | null; community?: Community | null; drillId?: string; inviteCode?: string }>()
+const props = defineProps<{ apiBaseUrl: string; accessToken?: string | null; community?: Community | null; drillId?: string; sceneId?: string; inviteCode?: string }>()
 const api = createApiClient(props.apiBaseUrl, () => props.accessToken)
 const emit = defineEmits<{ back: [] }>()
 const drills = ref<Drill[]>([]), current = ref<Drill | null>(null), error = ref(''), busy = ref(false)
@@ -34,7 +34,8 @@ const selectedTaskId=ref(''), reportOpen=ref(false), reportText=ref(''), notice=
 const taskMapOpen=ref(typeof window === 'undefined' || !window.matchMedia('(max-width: 520px)').matches)
 const activeTask=computed(()=>myTasks.value.find(t=>t.id===selectedTaskId.value)??myTasks.value.find(t=>t.status!=='completed')??myTasks.value[0])
 const planSimulation=computed(()=>current.value?.simulation as Simulation|undefined)
-const taskStep=computed(()=>({waiting:0,pending:0,executing:1,verifying:2,completed:3}[activeTask.value?.status??'']??0))
+const taskStep=computed(()=>activeTask.value?.action_report_required&&activeTask.value.action_reported_at!=null?3:({waiting:0,pending:0,executing:1,verifying:2,completed:3}[activeTask.value?.status??'']??0))
+const taskSteps=computed(()=>activeTask.value?.action_report_required?['接收任务','前往目标','报告动作','核验归档']:['接收任务','前往目标','处置核验','完成任务'])
 const invite = ref(props.inviteCode ?? '')
 const displayName = ref(''), countedResidents = ref<string[]>([])
 const member = ref<{ token: string; role: string; name: string; participant_id: string } | null>(null)
@@ -60,17 +61,28 @@ const latestAlert = computed(() => current.value?.events.find((item) => item.eve
 const headers = (): HeadersInit => props.accessToken ? ({ Authorization: `Bearer ${props.accessToken}` }) : ({})
 
 async function load(): Promise<void> {
+  error.value = ''
   try {
     if (props.drillId && props.inviteCode) {
       const drill = await api.request<Drill>(`${props.apiBaseUrl}/participant/drills/${props.drillId}?code=${encodeURIComponent(props.inviteCode)}`)
-      drills.value = [drill]; selectDrill(drill); return
+      if (!disposed) { drills.value = [drill]; selectDrill(drill) }
+      return
     }
     if (!props.community || !props.accessToken) throw new Error('参演链接缺少场次信息。')
     const scenes = await api.request<Scene[]>(`${props.apiBaseUrl}/communities/${props.community.id}/scenes`, { headers: headers() })
-    const published = scenes.find((item) => item.status === 'published'); if (!published) throw new Error('尚无已发布演练场景。')
+    if (props.drillId) {
+      const drill = await api.get<Drill>('/drills/' + encodeURIComponent(props.drillId))
+      if (!scenes.some(scene => scene.id === drill.scene_id) || props.sceneId && drill.scene_id !== props.sceneId) throw new Error('指定场次与当前社区或场景不匹配，请返回导演台核对参演入口。')
+      if (!disposed) { drills.value = [drill]; selectDrill(drill) }
+      return
+    }
+    const published = scenes.find(item => props.sceneId ? item.id === props.sceneId : item.status === 'published')
+    if (!published) throw new Error(props.sceneId ? '指定场景不可访问，请返回导演台重新进入。' : '尚无已发布演练场景。')
     const index = await api.get<DrillIndex[]>(`/scenes/${published.id}/drills?summary=true`)
     const selected = index.find(item=>['running','paused','ready'].includes(item.status))??index[0]
-    if(selected){const drill=await api.get<Drill>('/drills/'+selected.id);drills.value=[drill];selectDrill(drill)}
+    if (!selected) throw new Error('当前场景尚无演练场次，请先在导演台创建训练。')
+    const drill=await api.get<Drill>('/drills/'+selected.id)
+    if (!disposed) { drills.value=[drill];selectDrill(drill) }
   } catch (cause) { error.value = cause instanceof Error ? cause.message : '参演端连接失败。' }
 }
 function selectDrill(drill: Drill): void {
@@ -130,9 +142,9 @@ async function action(actionName: 'acknowledge' | 'arrived' | 'resource_ready' |
   try { const path = invite.value ? `/participant/drills/${current.value.id}/actions?code=${encodeURIComponent(invite.value)}` : `/drills/${current.value.id}/participant-actions`; applyCurrent(await api.request<Drill>(`${props.apiBaseUrl}${path}`, { method: 'POST', headers: { ...headers(), 'Content-Type': 'application/json' }, body: JSON.stringify({ role: role.value, action: actionName, message, resident_ids: countedResidents.value, participant_token: member.value?.token }) })); notice.value='反馈已写入本场证据，导演台将同步更新'; if(actionName==='report'){reportOpen.value=false;reportText.value=''} }
   catch (cause) { error.value = cause instanceof Error ? cause.message : '反馈提交失败。' } finally { busy.value = false }
 }
-async function completeTask(taskId: string, taskAction: 'accept' | 'arrive' | 'submit' | 'release', evidence: string): Promise<void> {
+async function completeTask(taskId: string, taskAction: TaskActionKind, evidence: string): Promise<void> {
   if (!current.value) return; busy.value = true; error.value='';notice.value=''
-  try { const path = `/participant/drills/${current.value.id}/tasks/${taskId}/actions?code=${encodeURIComponent(invite.value)}`; applyCurrent(await api.request<Drill>(`${props.apiBaseUrl}${path}`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ action: taskAction, evidence, participant_token: member.value?.token }) })); notice.value = taskAction==='release'?'已撤回接收并释放岗位':taskAction === 'submit' ? '处置已核验，现场与过程评分同步更新' : taskAction === 'accept' ? '已接收任务，请到目标位置后回执到位' : '到位回执已记录，请完成处置后提交证据' }
+  try { const path = `/participant/drills/${current.value.id}/tasks/${taskId}/actions?code=${encodeURIComponent(invite.value)}`; applyCurrent(await api.request<Drill>(`${props.apiBaseUrl}${path}`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ action: taskAction, evidence, participant_token: member.value?.token }) })); notice.value = taskAction==='report'?'动作报告已记录，作业岗位已释放，请继续提交核验证据':taskAction==='release'?'已撤回接收并释放岗位':taskAction === 'submit' ? '处置已核验，现场与过程评分同步更新' : taskAction === 'accept' ? '已接收任务，请到目标位置后回执到位' : '到位回执已记录，请完成处置后提交证据' }
   catch (cause) { error.value = cause instanceof Error ? cause.message : '任务提交失败。' } finally { busy.value = false }
 }
 async function householdNotice(payload:HouseholdNotice){
@@ -152,7 +164,7 @@ onBeforeUnmount(() => { disposed = true; stopLive?.(); if (heartbeatTimer !== nu
 <template>
   <main id="main-content" class="participant-console atlas-participant" data-ui-theme="immersive" :data-view="participantView">
     <header class="participant-header"><button type="button" @click="emit('back')"><AppIcon name="back" />退出参演</button><div><strong>{{ current?.name ?? '智演安巷' }}</strong></div><i :data-live="connected && (!member || presence === 'online')">{{ !connected ? '现场断线' : member && presence !== 'online' ? '身份同步中' : '实时在线' }}</i></header>
-    <section v-if="!current" class="participant-empty"><h1>正在加入演练</h1><p>{{ error || '正在读取现场与责任任务…' }}</p><button type="button" @click="load">重新连接</button></section>
+    <section v-if="!current" class="participant-empty"><h1>{{error?'参演场次暂不可用':'正在加入演练'}}</h1><p :role="error?'alert':undefined">{{ error || '正在读取现场与责任任务…' }}</p><button type="button" @click="load">重新连接</button></section>
     <template v-else>
       <section id="participant-scene" class="participant-hero" :data-alarm="current.status === 'running' && current.simulation.fire.intensity > 35"><div><span>{{ statusLabel }}</span><h1>{{ current.status === 'ended' ? '本轮演练已结束' : member ? '做好当前这一项处置' : '登记身份，接收责任任务' }}</h1><details v-if="member && current.status !== 'ended'" class="participant-alert"><summary>现场消息</summary><p>{{ latestAlert }}</p></details><p v-else>{{ current.status === 'ended' ? '下方保留你的任务结果，未完成项不再接受提交。' : latestAlert }}</p></div><strong>{{ clock }}</strong></section>
       <section id="participant-role" class="participant-role" :data-joined="Boolean(member)"><h2>我的参演身份</h2><p v-if="member">{{ member.name }} · {{ member.role }}</p><div v-else><button v-for="item in roles" :key="item" type="button" :aria-pressed="role === item" :data-active="role === item" @click="selectRole(item)">{{ item }}</button></div>
@@ -164,7 +176,7 @@ onBeforeUnmount(() => { disposed = true; stopLive?.(); if (heartbeatTimer !== nu
       <nav v-if="member || current.status === 'ended'" class="participant-view-nav" aria-label="参演工作区"><button v-for="tab in ([{id:'task',label:'责任任务'},{id:'feedback',label:'现场回执'},{id:'rollcall',label:'集合清点'},{id:'result',label:'结果'}] as const)" :key="tab.id" type="button" :aria-pressed="participantView === tab.id" @click="showParticipantView(tab.id)">{{tab.label}}<b v-if="tab.id==='rollcall' && arrivedUncounted.length">{{arrivedUncounted.length}}</b></button></nav>
       <section v-show="participantView === 'task'" id="participant-tasks" class="participant-tasks"><header><h2>{{ current.status === 'ended' ? '本场责任任务结果' : '我的当前任务' }}</h2><span>{{ myTasks.filter(t => t.status === 'completed').length }}/{{ myTasks.length }} 已完成</span></header>
         <label v-if="myTasks.length>1" class="atlas-task-select">切换责任任务<select v-model="selectedTaskId"><option value="">优先处理未完成任务</option><option v-for="task in myTasks" :key="task.id" :value="task.id">{{task.title}} · {{task.status==='completed'?'已完成':'待处理'}}</option></select></label>
-        <template v-if="activeTask"><div class="atlas-task-title"><h2>{{activeTask.title}}</h2><span v-if="activeTask.overdue">已超时 · 可补救</span><p>{{activeTask.target}}</p></div><TaskWorkflow :key="activeTask.id" :task="activeTask" :running="canAct" :readonly="(current.engine_version ?? 1) >= 2 && !member" :busy="busy" @action="(actionName, evidence) => completeTask(activeTask!.id, actionName, evidence)" /><details v-if="planSimulation" class="atlas-task-map-disclosure" :open="taskMapOpen" @toggle="taskMapOpen=($event.currentTarget as HTMLDetailsElement).open"><summary><span>任务位置</span><small>{{taskMapOpen?'收起地图':'展开地图'}}</small></summary><div class="atlas-task-map"><CommunityPlan :simulation="planSimulation" :target="activeTask.target_position??undefined"/><span>实时场景平面 · 目标位置，不是手机定位</span></div></details><ol class="atlas-task-steps" aria-label="处置流程"><li v-for="(step,index) in ['接收任务','前往目标','处置核验','完成任务']" :key="step" :data-active="taskStep===index" :data-done="taskStep>index"><b>{{index+1}}</b><span>{{step}}</span></li></ol>
+        <template v-if="activeTask"><div class="atlas-task-title"><h2>{{activeTask.title}}</h2><span v-if="activeTask.overdue">已超时 · 可补救</span><p>{{activeTask.target}}</p></div><TaskWorkflow :key="activeTask.id" :task="activeTask" :running="canAct" :readonly="(current.engine_version ?? 1) >= 2 && !member" :busy="busy" @action="(actionName, evidence) => completeTask(activeTask!.id, actionName, evidence)" /><details v-if="planSimulation" class="atlas-task-map-disclosure" :open="taskMapOpen" @toggle="taskMapOpen=($event.currentTarget as HTMLDetailsElement).open"><summary><span>任务位置</span><small>{{taskMapOpen?'收起地图':'展开地图'}}</small></summary><div class="atlas-task-map"><CommunityPlan :simulation="planSimulation" :target="activeTask.target_position??undefined"/><span>实时场景平面 · 目标位置，不是手机定位</span></div></details><ol class="atlas-task-steps" aria-label="处置流程"><li v-for="(step,index) in taskSteps" :key="step" :data-active="taskStep===index" :data-done="taskStep>index"><b>{{index+1}}</b><span>{{step}}</span></li></ol>
         </template>
         <p v-if="!myTasks.length">{{current.tasks.length?'本场尚无分配给此身份的任务。请联系导演核对责任角色。':'本场未配置处置任务。请导演在场景准备的“任务策略”中配置、执行选项并新建场次，已冻结场次不会自动加入任务。'}} 仍可在下方提交告警回执与居民清点。</p>
       </section>
